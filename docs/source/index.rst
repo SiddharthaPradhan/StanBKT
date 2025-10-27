@@ -1,0 +1,17 @@
+.. StanBKT documentation master file, created by
+   sphinx-quickstart on Thu Nov 13 16:40:39 2025.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+StanBKT documentation
+=====================
+
+Add your content using ``reStructuredText`` syntax. See the
+`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
+documentation for details.
+
+
+.. toctree::
+   :maxdepth: 4
+   :caption: Contents:
+
