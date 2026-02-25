@@ -12,18 +12,24 @@ import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
 
+
+
+PARAMETERS = Literal["learn", "forget", "guess", "slip"]
+# Meta model types
 ModelType = Literal[
-    "global",  # parameters are shared across all students, complete pooling
-    "nested",  # group parameters are drawn from global parameters, partial pooling
-    "grouped",  # parameters vary by group, no pooling
+    "population",  # parameters are shared across all students, complete pooling
+    "grouped",  # parameters vary by a single grouping factor, no pooling
+    # The following two require a group and/or student-level identifier
+    "nested-population",  # group parameters are drawn from global parameters, partial pooling
+    "nested-grouped" # individuals parameters are drawn from group paramters
 ]
+
 
 
 class BKTModelBase(ABC):
     """Abstract base class for Stan Bayesian Knowledge Tracing (BKT) models.
 
     This class defines the interface that all Stan BKT model implementations must follow.
-    It provides common functionality and enforces implementation of key methods.
 
     Attributes
     ----------
@@ -35,30 +41,29 @@ class BKTModelBase(ABC):
         Path to the Stan model file.
     model_ : CmdStanModel
         The compiled Stan model.
-    fit_ : CmdStanMCMC, CmdStanVB, or CmdStanMLE
-        The fitted Stan model object.
+    fits_ : Dict[str, FitType]
+        Dictionary that maps Knowledge Components to it's corresponding Fit Object.
     is_fitted_ : bool
         Whether the model has been fitted.
     """
 
     def __init__(
-        self,
-        model_type: ModelType,
-        compile_kwargs: Optional[Dict[str, Any]] = None
+        self, model_type: ModelType, compile_kwargs: Optional[Dict[str, Any]] = None
     ):
         self.model_type = model_type
         self.model_name = self.__class__.__name__
         self.compile_kwargs = compile_kwargs or {}
         self.stan_file = None
+        self.params = {}
 
         # Model state attributes
         # Compiled Stan Model
         self._stan_model: Optional[csp.CmdStanModel] = None
         # Fitted model results
-        self._fit: Optional[Any] = None
+        self._fits: Optional[Any] = None
         # Fitted flag
         self._is_fitted: bool = False
-        # Data used for fitting
+        # Data used for fitting (this is built before fitting)
         self._data: Optional[Dict[str, Any]] = None
 
     def compile(self, force_recompile: bool = False) -> "BKTModelBase":
@@ -77,20 +82,33 @@ class BKTModelBase(ABC):
         """
         if self._stan_model is None or force_recompile:
             if not self._stan_file.exists():
-                raise FileNotFoundError(
-                    f"Stan file not found: {self._stan_file}")
+                raise FileNotFoundError(f"Stan file not found: {self._stan_file}")
 
             self._stan_model = csp.CmdStanModel(
-                stan_file=str(self._stan_file),
-                **self.compile_kwargs
+                stan_file=str(self._stan_file), **self.compile_kwargs
             )
         return self
 
+    def pin_parameters(self, **params: Dict[PARAMETERS, Union[float, npt.ArrayLike]]) -> "BKTModelBase":
+        """
+        Pin model parameters to fixed values.
+
+        Parameters
+        ----------
+        **params
+            Model parameters to pin (e.g., learn=0.2, forget=0.1).
+
+        Returns
+        -------
+        self
+            Returns self for method chaining.
+        """
+        # TODO do some sort of checking here.
+        self.params.update(params)
+        return self
+
     def fit(
-        self,
-        correctness: npt.NDArray[np.int_],
-        method: str = "sample",
-        **kwargs
+        self, correctness: npt.NDArray[np.int_], method: str = "sample", **kwargs
     ) -> "BKTModelBase":
         """
         Fit the BKT model to data.
@@ -101,11 +119,10 @@ class BKTModelBase(ABC):
             Binary correctness matrix of shape (n_students, n_problems).
             Values should be 0 (incorrect) or 1 (correct).
         method : str, default="sample"
-            Inference method: "sample" for MCMC, "variational" for VI, 
+            Inference method: "sample" for MCMC, "variational" for VI,
             "optimize" for MAP, "pathfinder" for pathfinder.
         **kwargs
             Additional arguments including:
-            - Model-specific parameters (e.g., vary_learn, vary_forget)
             - Stan sampling parameters (e.g., iter_sampling, chains, seed)
 
         Returns
@@ -122,7 +139,7 @@ class BKTModelBase(ABC):
         self._validate_data(correctness, **kwargs)
 
         # Prepare data for Stan
-        self.data_ = self._prepare_data(correctness, **kwargs)
+        self.data_ = self._build_data_json(correctness, **kwargs)
 
         # Compile model if needed
         if self.model_ is None:
@@ -149,10 +166,41 @@ class BKTModelBase(ABC):
         self.is_fitted_ = True
         return self
 
+    # prepare input data for Stan model
+    def _build_data_json(
+        self, correctness: npt.NDArray[np.int_], **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Build data dictionary for Stan model.
+
+        Parameters
+        ----------
+        correctness : np.ndarray
+            Binary correctness matrix of shape (n_students, n_problems).
+        **kwargs
+            Additional arguments for data preparation.
+
+        Returns
+        -------
+        dict
+            SelfoStan model.
+        """
+        n_students, n_problems = correctness.shape
+        data = {
+            "N_students": n_students,
+            "N_problems": n_problems,
+            "correctness": correctness.tolist(),
+        }
+        # Add pinned parameters if any
+        for param, value in self.params.items():
+            data[f"pin_{param}"] = 1
+            data[f"{param}_value"] = value
+        return data
+
     def predict(
         self,
         correctness: Optional[npt.NDArray[np.int_]] = None,
-        return_std: bool = False
+        return_std: bool = False,
     ) -> Union[npt.NDArray, Tuple[npt.NDArray, npt.NDArray]]:
         """
         Predict hidden knowledge states.
@@ -187,41 +235,15 @@ class BKTModelBase(ABC):
             return predictions, std
         return predictions
 
-    @abstractmethod
-    def _extract_predictions(self) -> npt.NDArray:
-        """
-        Extract predictions from fitted model.
-
-        Returns
-        -------
-        np.ndarray
-            Array of predictions.
-        """
-        pass
-
-    def _extract_prediction_std(self) -> npt.NDArray:
-        """
-        Extract standard deviations of predictions from fitted model.
-
-        Returns
-        -------
-        np.ndarray
-            Array of standard deviations.
-        """
-        if not hasattr(self.fit_, 'stan_variable'):
-            raise NotImplementedError(
-                "Standard deviation extraction not available for this fit method"
-            )
-
-        # Get draws and compute std
-        hidden_probs = self.fit_.stan_variable("hidden_probs")
-        # hidden_probs shape: (n_draws, n_students, n_states, n_problems)
-        return np.std(hidden_probs, axis=0)
-
+    # This is heavily dependent on the method that was used to fit the model.
+    # I should abstract out the fit to another class and add it to this class.
+    # TODO
+    # and I can just call the fits .summary method.
+    
     def summary(
         self,
         params: Optional[list[str]] = None,
-        percentiles: Tuple[float, ...] = (5, 50, 95)
+        percentiles: Tuple[float, ...] = (5, 50, 95),
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -246,13 +268,33 @@ class BKTModelBase(ABC):
         if not self.is_fitted_:
             raise RuntimeError("Model must be fitted before calling summary()")
 
-        if hasattr(self.fit_, 'summary'):
+        if hasattr(self.fit_, "summary"):
             if params:
                 return self.fit_.summary(var_names=params, percentiles=percentiles)
             return self.fit_.summary(percentiles=percentiles)
 
         raise NotImplementedError("Summary not available for this fit method")
 
+    def predict():
+        pass
+    
+    def get_smoothed_state_probs():
+        pass
+    
+    def get_PSIS_LOO():
+        pass
+    
+    # call GQ from CmdStanPy
+    def _generate_quantity():
+        pass
+    
+    
+    # check if the object has been fitted
+    def _fitted_check():
+        pass
+
+
+    # only available for those that were fit with MCMC
     def diagnose(self) -> Dict[str, Any]:
         """
         Run diagnostics on the fitted model.
@@ -268,24 +310,22 @@ class BKTModelBase(ABC):
             If model has not been fitted yet or not using MCMC.
         """
         if not self.is_fitted_:
-            raise RuntimeError(
-                "Model must be fitted before running diagnostics")
+            raise RuntimeError("Model must be fitted before running diagnostics")
 
-        if not hasattr(self.fit_, 'diagnose'):
-            raise NotImplementedError(
-                "Diagnostics only available for MCMC sampling")
+        if not hasattr(self.fit_, "diagnose"):
+            raise NotImplementedError("Diagnostics only available for MCMC sampling")
 
         diagnostics = {}
 
         # Get divergences
-        if hasattr(self.fit_, 'divergences'):
-            diagnostics['n_divergences'] = self.fit_.divergences
+        if hasattr(self.fit_, "divergences"):
+            diagnostics["n_divergences"] = self.fit_.divergences
 
         # Get Rhat
         summary = self.fit_.summary()
-        if 'R_hat' in summary.columns:
-            diagnostics['max_rhat'] = summary['R_hat'].max()
-            diagnostics['n_high_rhat'] = (summary['R_hat'] > 1.05).sum()
+        if "R_hat" in summary.columns:
+            diagnostics["max_rhat"] = summary["R_hat"].max()
+            diagnostics["n_high_rhat"] = (summary["R_hat"] > 1.05).sum()
 
         return diagnostics
 
@@ -299,9 +339,11 @@ class BKTModelBase(ABC):
         return self.__repr__()
 
 
+# Move this to a stan helper file that loads,
+# compiles, and stores exe logic
 def build_stan_file(model_type: ModelType, **kwargs):
     """Build a Stan file for the specified model type.
-       Assembles the necessary components based model type and kwargs and 
+       Assembles the necessary components based model type and kwargs and
        writes them to a .stan file.
 
     Args:
@@ -319,5 +361,5 @@ def build_stan_file(model_type: ModelType, **kwargs):
         raise ValueError(f"Unknown model type: {model_type}")
 
     stan_file = base_mapping[model_type]
-    with open(stan_file, 'r') as f:
+    with open(stan_file, "r") as f:
         return f.read()
