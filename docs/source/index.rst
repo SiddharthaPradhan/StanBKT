@@ -15,3 +15,9 @@ documentation for details.
    :maxdepth: 4
    :caption: Contents:
 
+   api/modules
+   api/stanbkt.fits
+   api/stanbkt.models
+   api/stanbkt
+   api/stanbkt.utils
+

@@ -1,3 +1,10 @@
+# Ignore executables without extensions
+# Used to ignore compiled binaries from Stan.
+*
+!*.*
+!*/
+
+
 .venv/
 *.code-workspace
 
