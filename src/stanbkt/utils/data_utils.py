@@ -1,19 +1,21 @@
 import pandas as pd
-from typing import Optional
+from typing import Optional, Callable
 import numpy.typing as npt
 import numpy as np
 from dataclasses import dataclass
 from collections.abc import Iterator
 from stanbkt.utils.verbose import VerbosityLevel
+from enum import Enum
 
 
-class ColumnNames:
+class ColumnNames(str, Enum):
     STUDENT_ID = "student_id"
     PROBLEM_ID = "problem_id"
     CORRECTNESS = "correct"
     KC_ID = "kc_id"
     GROUP = "group_id"
 
+    @staticmethod
     def get_default_mapping() -> dict[str, str]:
         return {
             ColumnNames.STUDENT_ID: ColumnNames.STUDENT_ID,
@@ -23,9 +25,11 @@ class ColumnNames:
             ColumnNames.GROUP: ColumnNames.GROUP,
         }
 
+
 # the maximum number of dims allowed in generated quantities for variables of interest
 # the dims are usually (student, problem)
 MAX_GQ_DIMENSION = 3
+
 
 @dataclass(slots=True)
 class KCData:
@@ -84,7 +88,7 @@ def format_data(
     data: pd.DataFrame,
     col_mapping: Optional[dict[str, str]] = None,
     return_groups: bool = False,
-    print_fn: Optional[callable] = None,
+    print_fn: Optional[Callable] = None,
 ) -> dict[str, KCData]:
     """
     Format input data for BKT model fitting.
@@ -119,7 +123,7 @@ def iter_kc_data(
     data: pd.DataFrame,
     col_mapping: Optional[dict[str, str]] = None,
     return_groups: bool = False,
-    print_fn: Optional[Optional[callable]] = None,
+    print_fn: Optional[Callable] = None,
 ) -> Iterator[tuple[str, KCData]]:
     """
     Yield formatted KC data one KC at a time.
@@ -162,13 +166,15 @@ def iter_kc_data(
     working_data[student_col] = working_data[student_col].astype(str)
     working_data[kc_column] = working_data[kc_column].astype(str)
 
-    # If column name for group_id is the same as student_id (i.e., individualized), create a dummy group column
+    # If column name for group_id is the same as student_id (i.e., individualized),
+    # create a dummy group column
     if return_groups and col_mapping.get(ColumnNames.GROUP) == col_mapping.get(
         ColumnNames.STUDENT_ID
     ):
-        group_col = col_mapping.get(ColumnNames.GROUP)
+        group_col = ColumnNames.GROUP
         working_data = working_data.copy()
         working_data[group_col] = working_data[col_mapping.get(ColumnNames.STUDENT_ID)]
+        col_mapping[ColumnNames.GROUP] = group_col
 
     for kc, subset in working_data.groupby(kc_column, sort=False, observed=True):
         correctness_wide = pd.pivot(
@@ -279,7 +285,7 @@ def rename_summary_var_columns(
 def summarize_state_predictions_test(
     gq_df: pd.DataFrame,
     quantiles=(0.025, 0.975),
-    array_index_names: list = None,
+    array_index_names: list[str] = [],
 ) -> pd.DataFrame:
     """
     Summarize generated-quantities draws for Hidden State Predictions.
@@ -299,8 +305,10 @@ def summarize_state_predictions_test(
     if array_index_names and len(array_index_names) > 3:
         raise ValueError("array_index_names cannot have more than 3 elements.")
 
-    mask = ~gq_df.index.to_series().str.startswith(("chain__", "iter__", "draw__"))
-    gq_df_clean = gq_df[mask]
+    mask: pd.Series = ~gq_df.index.to_series().str.startswith(
+        ("chain__", "iter__", "draw__")
+    )
+    gq_df_clean: pd.DataFrame = gq_df[mask]
 
     # check the range of quantiles
     if not all(0 <= q <= 1 for q in quantiles):
@@ -317,21 +325,27 @@ def summarize_state_predictions_test(
         gq_summary[f"{round(q*100, 2)}%"] = gq_df_clean.quantile(q, axis=1)
 
     variable_dim = len(gq_summary.iloc[0]["variable"].split(","))
-    
+
     if array_index_names:
         # check if size of array_index_names matches the number of dimensions in the draws 'variable' columns
         if variable_dim != len(array_index_names):
             raise ValueError(
                 f"Length of array_index_names must match the number of dimensions in the variable columns. Expected {variable_dim}, got {len(array_index_names)}."
             )
-    else: # we assert variable_dim is at most 3 for our use case
-        array_index_names = ["i", "j", "k"][:variable_dim] # default names for up to 3 dimensions
-    
+    else:  # we assert variable_dim is at most 3 for our use case
+        array_index_names = ["i", "j", "k"][
+            :variable_dim
+        ]  # default names for up to 3 dimensions
+
     # seperate each of the dimension indices in the 'variable' columns into separate columns
-    variable_split = gq_summary.index.to_series().str.rstrip("]").str.split("[\\[,\\]]", expand=True)
+    variable_split = (
+        gq_summary.index.to_series().str.rstrip("]").str.split("[\\[,\\]]", expand=True)
+    )
     variable_split.columns = ["variable_name"] + array_index_names
-    gq_summary = pd.concat([variable_split, gq_summary], axis=1)
+    gq_summary: pd.DataFrame = pd.concat([variable_split, gq_summary], axis=1)
     gq_summary.reset_index(drop=True, inplace=True)
-    gq_summary.sort_values(by=["variable_name"] + array_index_names, inplace=True, ignore_index=True)
+    gq_summary.sort_values(
+        by=["variable_name"] + array_index_names, inplace=True, ignore_index=True
+    )
 
     return gq_summary

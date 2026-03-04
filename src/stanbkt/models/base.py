@@ -5,8 +5,17 @@ This module provides the abstract base class that all BKT model implementations
 should inherit from.
 """
 
+from __future__ import annotations
+
+from IPython.terminal.pt_inputhooks.osx import n
+
+from pandas.core.algorithms import mode
+
+from numba.core.ir import Raise
+
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union
+from enum import Enum
 import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
@@ -19,6 +28,25 @@ from stanbkt.utils.data_utils import iter_kc_data
 # columns: student_id, problem_id, correctness (0/1), KC
 
 
+# Types (enums) for model configuration
+class ModelType(str, Enum):
+    STANDARD = "standard"
+    GROUPED = "grouped"
+    NESTED = "nested"
+
+
+class FitMethodType(str, Enum):
+    MCMC = "sample"
+    VB = "variational"
+    MLE = "optimize"
+    PF = "pathfinder"
+
+
+class PriorEstimationType(str, Enum):
+    JOINT = "joint"
+    DEFAULT = "default"
+
+
 class BKTModelBase(VerboseMixin, ABC):
     """Abstract base class for Stan Bayesian Knowledge Tracing (BKT) models.
 
@@ -26,48 +54,41 @@ class BKTModelBase(VerboseMixin, ABC):
 
     Attributes
     ----------
-    model_type : str
-        The type of BKT model.
-    model_name : str
-        Name of the model.
-    is_fitted_ : bool
-        Whether the model has been fitted.
+    verbose : VerbosityLevel
+        Verbosity level for logging.
+    stan_compile_kwargs : dict
+        Additional keyword arguments for Stan model compilation.
+    cpp_compile_kwargs : dict
+        Additional keyword arguments for C++ compilation of the Stan model.
+    fits_ : Optional[dict[str, Any]]
+        Dictionary to store fitted model results for each KC.
     """
 
     def __init__(
         self,
-        model_type: str,
-        verbose: int = 0,
-        compile_kwargs: Optional[Dict[str, Any]] = None,
+        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        stan_compile_kwargs: Optional[Dict[str, Any]] = None,
+        cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(verbose=verbose)
-        self.model_name = self.__class__.__name__
-        self.stan_compile_kwargs = compile_kwargs or {}
+        self.stan_compile_kwargs = stan_compile_kwargs or {}
+        self.cpp_compile_kwargs = cpp_compile_kwargs or {}
         # Model state attributes
         self._stan_model: Optional[csp.CmdStanModel] = None
         self.fits_: Optional[dict[str, Any]] = (
             None  # TODO replace type with fit base type
         )
-        self.is_fitted: bool = False
+        self._is_fitted: bool = False
         self._previous_fit_method: Optional[str] = None  # TODO
-
-    @property
-    @abstractmethod
-    def _stan_model_filename(self) -> str:
-        """Return stan file name inside stanbkt.stan_code."""
-        pass
-
-
-    @property
-    @abstractmethod
-    def _stan_files_base_location(self) -> str:
-        """Return stan file base location inside stanbkt.stan_code."""
-        pass
 
     @abstractmethod
     def fit(
-        self, data: pd.DataFrame, column_mapping: Optional[dict[str, str]] = None, method: str = "sample", **kwargs
-    ) -> "BKTModelBase":
+        self,
+        data: pd.DataFrame,
+        column_mapping: Optional[dict[str, str]] = None,
+        method: FitMethodType = FitMethodType.MCMC,
+        **kwargs,
+    ) -> BKTModelBase:
         """
         Fit the BKT model to data.
 
@@ -80,9 +101,9 @@ class BKTModelBase(VerboseMixin, ABC):
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
-        method : str, default="sample"
-            Inference method: "sample" for MCMC, "variational" for VI,
-            "optimize" for MAP, "pathfinder" for pathfinder.
+        method : FitMethodType, default=FitMethodType.MCMC
+            Inference method: FitMethodType.MCMC for MCMC, FitMethodType.VB for VI,
+            FitMethodType.OPTIMIZE for MAP, FitMethodType.PATHFINDER for pathfinder.
         **kwargs
             Additional arguments including:
             - Stan sampling parameters (e.g., iter_sampling, chains, seed)
@@ -98,7 +119,6 @@ class BKTModelBase(VerboseMixin, ABC):
             If data validation fails or invalid method specified.
         """
         pass
-
 
     def summary(
         self,
@@ -125,42 +145,49 @@ class BKTModelBase(VerboseMixin, ABC):
         RuntimeError
             If model has not been fitted yet.
         """
-        if not self.is_fitted:
+        if not self._is_fitted:
             raise RuntimeError("Model must be fitted before calling summary()")
 
-        if hasattr(self.fit, "summary"):
-            if params:
-                return self.fit.summary(var_names=params, percentiles=percentiles)
-            return self._fit.summary(percentiles=percentiles)
+        # if hasattr(self.fit, "summary"):
+        #     if params:
+        #         return self.fit.summary(var_names=params, percentiles=percentiles)
+        #     return self._fit.summary(percentiles=percentiles)
 
         raise NotImplementedError("Summary not available for this fit method")
 
     def fit_check(self) -> None:
         """Check if model has been fitted."""
-        if not self.is_fitted:
+        if not self._is_fitted or self.fits_ is None:
             raise RuntimeError("Model must be fitted before calling this method")
-        
+
     def check_data_contains_fitted_kcs(self, kcs: set[str]) -> None:
         """Check if data contains any KC that was fitted.
-            Raises an error if data contains KCs that were not fitted.
+        Raises an error if data contains KCs that were not fitted.
         """
         self.fit_check()
-        fitted_kcs = set(self.fits_.keys())
+        fitted_kcs = set(self.fits_.keys()) if self.fits_ else set()
         if not kcs.issubset(fitted_kcs):
             raise ValueError(
                 f"Data contains KCs {kcs - fitted_kcs} that were not fitted"
             )
         kcs_not_fitted = kcs - fitted_kcs
         if kcs_not_fitted:
-            self._print(f"Data contains {len(kcs_not_fitted)} KCs that were not fitted.", level=VerbosityLevel.INFO)
-            self._print(f"{list(kcs_not_fitted)} do not have fits.", level=VerbosityLevel.WARNING)
+            self._print(
+                f"Data contains {len(kcs_not_fitted)} KCs that were not fitted.",
+                level=VerbosityLevel.INFO,
+            )
+            self._print(
+                f"{list(kcs_not_fitted)} do not have fits.",
+                level=VerbosityLevel.WARN,
+            )
 
     def get_kc_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
         """Return the set of KCs in the data that were fitted previously."""
         self.fit_check()
-        fitted_kcs = set(self.fits_.keys())
+        fitted_kcs = set(self.fits_.keys()) if self.fits_ else set()
         return kcs.intersection(fitted_kcs)
 
+    # TODO FIXME
     def predict(
         self,
         correctness: Optional[npt.NDArray[np.int_]] = None,
@@ -192,12 +219,7 @@ class BKTModelBase(VerboseMixin, ABC):
         if not self._is_fitted:
             raise RuntimeError("Model must be fitted before calling predict()")
 
-        predictions = self._extract_predictions()
-
-        if return_std:
-            std = self._extract_prediction_std()
-            return predictions, std
-        return predictions
+        raise NotImplementedError("Predict method not implemented for this model")
 
     @abstractmethod
     def evaluate(self, **kwargs) -> Dict[str, Any]:
@@ -219,8 +241,22 @@ class BKTModelBase(VerboseMixin, ABC):
         RuntimeError
             If model has not been fitted yet.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Model must be fitted before calling evaluate()")
+        pass
+
+    @property
+    @abstractmethod
+    def _stan_model_filename(self) -> str:
+        """Return stan file name inside stanbkt.stan_code."""
+        pass
+
+    @property
+    @abstractmethod
+    def _stan_hidden_filename(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def _stan_smoothed_hidden_filename(self) -> str:
         pass
 
     def _compile_model(self) -> None:
@@ -228,17 +264,132 @@ class BKTModelBase(VerboseMixin, ABC):
         # TODO: add caching of compiled models to avoid recompilation
         # TODO: look into deprecated params argument in CmdStanModel constructor
         model = csp.CmdStanModel(
-            stan_file=self.stan_filename,
-            cpp_options=self.stan_compile_kwargs,
+            stan_file=self._stan_model_filename,
+            cpp_options=self.cpp_compile_kwargs,
+            stanc_options=self.stan_compile_kwargs,
         )
         self._stan_model = model
 
-    @abstractmethod
-    def _extract_predictions(self) -> npt.NDArray:
-        """Extract predictions from fitted model."""
-        pass
 
-    @abstractmethod
-    def _extract_prediction_std(self) -> npt.NDArray:
-        """Extract prediction standard deviations from fitted model."""
-        pass
+# Parameter Classess
+class BayesianPriors(str, Enum):
+    PI_KNOW_MU = "pi_know_mu"
+    PI_KNOW_STD = "pi_know_std"
+    LEARN_MU = "learn_mu"
+    LEARN_STD = "learn_std"
+    FORGET_MU = "forget_mu"
+    FORGET_STD = "forget_std"
+    GUESS_MU = "guess_mu"
+    GUESS_STD = "guess_std"
+    SLIP_MU = "slip_mu"
+    SLIP_STD = "slip_std"
+
+    @staticmethod
+    def _default_scalar_priors() -> dict[BayesianPriors, float]:
+        return {
+            BayesianPriors.PI_KNOW_MU: -2.0,
+            BayesianPriors.PI_KNOW_STD: 5.0,
+            BayesianPriors.LEARN_MU: 0.0,
+            BayesianPriors.LEARN_STD: 5.0,
+            BayesianPriors.FORGET_MU: -2.0,
+            BayesianPriors.FORGET_STD: 5.0,
+            BayesianPriors.GUESS_MU: -1.0,
+            BayesianPriors.GUESS_STD: 5.0,
+            BayesianPriors.SLIP_MU: -1.0,
+            BayesianPriors.SLIP_STD: 5.0,
+        }
+
+    # TODO: add features to customize the number of groups for each of the parameters.
+    # for example we can fix learning and forgetting to be the same across groups,
+    # but allow guess and slip to vary by group.
+    @staticmethod
+    def _expand_grouped_priors(
+        scalar_priors: dict[BayesianPriors, float],
+        n_groups: int,
+    ) -> dict[BayesianPriors, list[float]]:
+        return {prior: [value] * n_groups for prior, value in scalar_priors.items()}
+
+    # TODO: add additional priors for advanced models
+    @staticmethod
+    def get_default_priors(
+        model_type: ModelType,
+        estimation_type: PriorEstimationType,
+        n_groups: Optional[int] = None,
+    ) -> Union[dict[BayesianPriors, float], dict[BayesianPriors, list[float]]]:
+        """Return default priors used for BKT parameters.
+
+        Notes
+        -----
+        Priors are modeled as Normal distributions with means and standard deviations specified on the logit scale
+        for probability parameters.
+        """
+        if estimation_type == PriorEstimationType.JOINT:
+            raise NotImplementedError(
+                "Joint prior estimation defaults are not implemented yet"
+            )
+
+        if estimation_type != PriorEstimationType.DEFAULT:
+            raise ValueError(f"Unsupported prior estimation type: {estimation_type}")
+
+        scalar_priors = BayesianPriors._default_scalar_priors()
+
+        if model_type in [ModelType.STANDARD, ModelType.NESTED]:
+            return scalar_priors
+
+        if model_type == ModelType.GROUPED:
+            if not isinstance(n_groups, int):
+                raise ValueError(
+                    "n_groups must be an integer for default grouped model priors"
+                )
+            if n_groups <= 0:
+                raise ValueError("n_groups must be > 0 for grouped model priors")
+            return BayesianPriors._expand_grouped_priors(scalar_priors, n_groups)
+
+        raise ValueError(f"Unsupported model type: {model_type}")
+
+    @staticmethod
+    def add_missing_priors(
+        values: Mapping[BayesianPriors | str, float | list[float]],
+        model_type: ModelType,
+        estimation_type: PriorEstimationType,
+        n_groups: Optional[int] = None,
+    ) -> Union[dict[BayesianPriors, float], dict[BayesianPriors, list[float]]]:
+        """Fill missing priors with defaults and return a normalized dictionary.
+
+        Parameters
+        ----------
+        values : Mapping[BayesianPriors | str, float | list[float]]
+            Partial prior values keyed by `BayesianPriors` or by string names.
+            Missing keys are filled from defaults.
+        model_type : ModelType
+            BKT model type for selecting prior structure.
+        estimation_type : PriorEstimationType
+            Prior estimation mode.
+        n_groups : int, optional
+            Number of groups for grouped models.
+        """
+        defaults = dict(
+            BayesianPriors.get_default_priors(
+                model_type=model_type,
+                estimation_type=estimation_type,
+                n_groups=n_groups,
+            )
+        )
+
+        normalized_values: dict[BayesianPriors, float | list[float]] = {}
+        for key, value in values.items():
+            if isinstance(key, BayesianPriors):
+                prior_key = key
+            elif isinstance(key, str):
+                # ensure string keys are valid and members of the BayesianPriors enum
+                try:
+                    prior_key = BayesianPriors(key)
+                except ValueError as exc:
+                    raise ValueError(f"Unsupported prior key: {key}") from exc
+            else:
+                raise ValueError(f"Unsupported prior key type: {type(key).__name__}")
+
+            normalized_values[prior_key] = value
+
+        defaults.update(normalized_values)
+        return defaults

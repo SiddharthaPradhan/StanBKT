@@ -6,18 +6,24 @@
 StanBKT documentation
 =====================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+User documentation
+------------------
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Getting Started
+
+   quickstart
+
+
+API Reference
+-------------
 
 
 .. toctree::
    :maxdepth: 4
-   :caption: Contents:
-
+   :caption: API Reference
+   
    api/modules
-   api/stanbkt.fits
-   api/stanbkt.models
-   api/stanbkt
-   api/stanbkt.utils
 
