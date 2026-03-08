@@ -61,7 +61,7 @@ class StandardBKT(BKTModelBase):
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
         method: FitMethodType = FitMethodType.MCMC,
-        **kwargs,
+        stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> StandardBKT:
         """
         Fit the BKT model to data. Each KC is fitted independently with its own model.
@@ -161,7 +161,7 @@ class StandardBKT(BKTModelBase):
             fits[kc_id] = fit_result
 
         self.fits_ = fits
-        self.is_fitted = True
+        self._is_fitted = True
 
         return self
 
@@ -264,7 +264,7 @@ class StandardBKT(BKTModelBase):
         column_mapping: Optional[dict[str, str]] = None,
     ) -> pd.DataFrame:
         """
-        Predict probability of hidden-states (:math:`p(hidden_{t} \mid correct_{1:t})`) and .
+        Predict probability of hidden-states (:math:`p(hidden_{t} \\mid correct_{1:t})`) and .
 
 
         """

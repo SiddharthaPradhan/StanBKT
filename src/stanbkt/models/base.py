@@ -81,7 +81,7 @@ class BKTModelBase(VerboseMixin, ABC):
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
         method: FitMethodType = FitMethodType.MCMC,
-        **kwargs,
+        stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> BKTModelBase:
         """
         Fit the BKT model to data.
@@ -98,9 +98,12 @@ class BKTModelBase(VerboseMixin, ABC):
         method : FitMethodType, default=FitMethodType.MCMC
             Inference method: FitMethodType.MCMC for MCMC, FitMethodType.VB for VI,
             FitMethodType.OPTIMIZE for MAP, FitMethodType.PATHFINDER for pathfinder.
-        **kwargs
-            Additional arguments including:
-            - Stan sampling parameters (e.g., iter_sampling, chains, seed)
+        stan_fit_kwargs : dict, optional
+            Arguments to pass to the CmdStanPy fit method. This depends on the chosen method.
+            For example:
+            - MCMC parameters (e.g., iter_sampling, chains, seed)
+            - VB parameters (e.g., iter, tol_rel_obj)
+
 
         Returns
         -------
@@ -110,7 +113,8 @@ class BKTModelBase(VerboseMixin, ABC):
         Raises
         ------
         ValueError
-            If data validation fails or invalid method specified.
+            If data validation fails, invalid method specified, or invalid fit arguments provided.
+
         """
         pass
 
