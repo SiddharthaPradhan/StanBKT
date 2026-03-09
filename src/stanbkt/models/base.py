@@ -3,6 +3,7 @@ Base abstract class for BKT models using Stan.
 
 This module provides the abstract base class that all BKT model implementations
 should inherit from.
+
 """
 
 from __future__ import annotations
@@ -186,11 +187,8 @@ class BKTModelBase(VerboseMixin, ABC):
         return kcs.intersection(fitted_kcs)
 
     # TODO FIXME
-    def predict(
-        self,
-        correctness: Optional[npt.NDArray[np.int_]] = None,
-        return_std: bool = False,
-    ) -> Union[npt.NDArray, Tuple[npt.NDArray, npt.NDArray]]:
+    #
+    def predict(self) -> Union[npt.NDArray, Tuple[npt.NDArray, npt.NDArray]]:
         """
         Predict hidden knowledge states.
 
@@ -269,7 +267,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self._stan_model = model
 
 
-# Parameter Classess
+# Parameter Classes
 class BayesianPriors(str, Enum):
     PI_KNOW_MU = "pi_know_mu"
     PI_KNOW_STD = "pi_know_std"
@@ -297,7 +295,7 @@ class BayesianPriors(str, Enum):
             BayesianPriors.SLIP_STD: 5.0,
         }
 
-    # TODO: add features to customize the number of groups for each of the parameters.
+    # TODO: post initial release: add features to customize the number of groups for each of the parameters.
     # for example we can fix learning and forgetting to be the same across groups,
     # but allow guess and slip to vary by group.
     @staticmethod
