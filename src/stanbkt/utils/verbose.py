@@ -12,6 +12,13 @@ class VerboseMixin:
         super().__init__(**kwargs)
         self.verbose = verbose
 
+    def set_verbosity(self, level: VerbosityLevel):
+        if level not in VerbosityLevel:
+            raise ValueError(
+                f"Invalid verbosity level: {level}. Must be one of {list(VerbosityLevel)}."
+            )
+        self.verbose = level
+
     def _print(self, msg: str, level: VerbosityLevel = VerbosityLevel.INFO):
         if self.verbose.value >= level.value:
             if level == VerbosityLevel.WARN:

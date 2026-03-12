@@ -151,7 +151,7 @@ def iter_kc_data(
         default_mapping = ColumnNames.get_default_mapping()
         for key in default_mapping.keys():
             col_mapping.setdefault(key, default_mapping[key])
-        validate_data(data, col_mapping, return_groups)
+    validate_data(data, col_mapping, return_groups)
 
     student_col = col_mapping.get(ColumnNames.STUDENT_ID)
     problem_col = col_mapping.get(ColumnNames.PROBLEM_ID)
