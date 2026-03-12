@@ -3,10 +3,10 @@ import pytest
 from stanbkt.models.base import (
     BayesianPriors,
     BKTModelBase,
-    FitMethodType,
     ModelType,
     PriorEstimationType,
 )
+from stanbkt.fits.fit_types import FitMethod
 from stanbkt.utils.verbose import VerbosityLevel
 
 
@@ -14,8 +14,11 @@ from stanbkt.utils.verbose import VerbosityLevel
 # Minimal concrete subclass — only satisfies the abstract interface
 # ---------------------------------------------------------------------------
 
+
 class _ConcreteModel(BKTModelBase):
-    def fit(self, data, column_mapping=None, method=FitMethodType.MCMC, stan_fit_kwargs=None):
+    def fit(
+        self, data, column_mapping=None, method=FitMethod.MCMC, stan_fit_kwargs=None
+    ):
         return self
 
     def evaluate(self, **kwargs):
@@ -45,6 +48,7 @@ def _make_fitted_model(kcs=("kc_a", "kc_b")):
 # ---------------------------------------------------------------------------
 # BKTModelBase.__init__
 # ---------------------------------------------------------------------------
+
 
 class TestBKTModelBaseInit:
     def test_default_verbose(self):
@@ -76,7 +80,9 @@ class TestBKTModelBaseInit:
         assert m._previous_fit_method is None
 
     def test_custom_compile_kwargs_stored(self):
-        m = _ConcreteModel(stan_compile_kwargs={"foo": "bar"}, cpp_compile_kwargs={"baz": 1})
+        m = _ConcreteModel(
+            stan_compile_kwargs={"foo": "bar"}, cpp_compile_kwargs={"baz": 1}
+        )
         assert m.stan_compile_kwargs == {"foo": "bar"}
         assert m.cpp_compile_kwargs == {"baz": 1}
 
@@ -84,6 +90,7 @@ class TestBKTModelBaseInit:
 # ---------------------------------------------------------------------------
 # fit_check
 # ---------------------------------------------------------------------------
+
 
 class TestFitCheck:
     def test_raises_when_not_fitted(self):
@@ -107,6 +114,7 @@ class TestFitCheck:
 # summary
 # ---------------------------------------------------------------------------
 
+
 class TestSummary:
     def test_raises_when_not_fitted(self):
         m = _ConcreteModel()
@@ -118,6 +126,7 @@ class TestSummary:
 # predict
 # ---------------------------------------------------------------------------
 
+
 class TestPredict:
     def test_raises_when_not_fitted(self):
         m = _ConcreteModel()
@@ -128,6 +137,7 @@ class TestPredict:
 # ---------------------------------------------------------------------------
 # check_data_contains_fitted_kcs
 # ---------------------------------------------------------------------------
+
 
 class TestCheckDataContainsFittedKCs:
     def test_passes_when_all_kcs_are_fitted(self):
@@ -158,6 +168,7 @@ class TestCheckDataContainsFittedKCs:
 # get_kc_in_fitted_kcs
 # ---------------------------------------------------------------------------
 
+
 class TestGetKCInFittedKCs:
     def test_returns_exact_intersection(self):
         m = _make_fitted_model(kcs=("kc_a", "kc_b"))
@@ -183,6 +194,7 @@ class TestGetKCInFittedKCs:
 # ---------------------------------------------------------------------------
 # BayesianPriors.get_default_priors
 # ---------------------------------------------------------------------------
+
 
 class TestBayesianPriorsGetDefaultPriors:
     def test_standard_returns_scalar_priors(self):
@@ -258,6 +270,7 @@ class TestBayesianPriorsGetDefaultPriors:
 # ---------------------------------------------------------------------------
 # BayesianPriors.add_missing_priors
 # ---------------------------------------------------------------------------
+
 
 class TestBayesianPriorsAddMissingPriors:
     def test_empty_input_returns_all_defaults(self):

@@ -16,6 +16,7 @@ dependencies = [
     "numba>=0.64.0",
     "numpy>=2.3.4",
     "pandas>=2.3.3",
+    "roman-numerals==4.0.0",
     "scikit-learn>=1.8.0",
     "xarray>=2025.10.1",
 ]

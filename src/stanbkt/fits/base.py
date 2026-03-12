@@ -24,6 +24,7 @@ from stanbkt.fits.persistence import (
 
 # TODO: create_inits
 # diagnose support for MCMC
+# check API in __init__.py.
 
 
 class BaseFit(VerboseMixin, ABC):
@@ -66,6 +67,24 @@ class BaseFit(VerboseMixin, ABC):
         )
 
     def add_fit(self, kc: str, fit: BaseCmdStanFit, overwrite_kcs: bool = False):
+        """Add a fit for a knowledge component to the model's fit state.
+
+        Parameters
+        ----------
+        kc : str
+            Knowledge component identifier.
+        fit : BaseCmdStanFit
+            CmdStan fit object to add for the KC.
+        overwrite_kcs : bool, default=False
+            Whether to overwrite existing fits for KCs that are being added again.
+
+        Raises
+        ------
+        ValueError
+            If the fit's method is incompatible with the model's fit method, or if a fit
+            for the KC already exists and ``overwrite_kcs=False``.
+
+        """
         # check if the fit method matches the class's fit method
         kc_fit_method = FitMethod.get_method_from_fit(fit)
         if kc_fit_method != self._fit_method:
@@ -103,7 +122,7 @@ class BaseFit(VerboseMixin, ABC):
         )
         self.fit_metadata.fit_saves.add(metadata_entry)
 
-    def update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
+    def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
         if kc in self.summary_cache:
             self._print(
                 f"Overwriting existing summary cache for KC '{kc}'.",

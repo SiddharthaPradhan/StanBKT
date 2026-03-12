@@ -1,10 +1,14 @@
 import pytest
-
+from typing import no_type_check
 import stanbkt.fits.fit_types as fit_types
 from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveFolder
 
+# Some tests check for unsupported fit types, hence the no_type_check to avoid type errors
+# from the dummy fit classes.
+
 
 class TestFitMethodResolution:
+    @no_type_check
     def test_get_method_from_fit_resolves_all_supported_methods(self, monkeypatch):
         class _DummyMCMC:
             pass
@@ -28,6 +32,7 @@ class TestFitMethodResolution:
         assert FitMethod.get_method_from_fit(_DummyVB()) == FitMethod.VB
         assert FitMethod.get_method_from_fit(_DummyPathfinder()) == FitMethod.PATHFINDER
 
+    @no_type_check
     def test_get_method_from_fit_raises_for_unsupported_type(self):
         with pytest.raises(ValueError, match="Unsupported fit type"):
             FitMethod.get_method_from_fit(object())

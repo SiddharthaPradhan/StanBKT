@@ -8,7 +8,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from stanbkt.models.base import BKTModelBase, FitMethodType
+from stanbkt.models.base import BKTModelBase, FitMethod
 from stanbkt.utils.data_utils import (
     ColumnNames,
     iter_kc_data,
@@ -60,7 +60,7 @@ class StandardBKT(BKTModelBase):
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethodType = FitMethodType.MCMC,
+        method: FitMethod = FitMethod.MCMC,
         stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> StandardBKT:
         """
@@ -77,7 +77,7 @@ class StandardBKT(BKTModelBase):
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
-        method : FitMethodType, default='sample'
+        method : FitMethod, default='sample'
             Method for fitting the model. Options are 'sample' for MCMC sampling,
             'vb' for variational inference, and 'optimize' for MAP estimation.
         **kwargs:
@@ -167,20 +167,20 @@ class StandardBKT(BKTModelBase):
 
     # TODO complete this method, no
     def _fit_using_method(
-        self, method: FitMethodType, data_dict: dict[str, Any], **kwargs
+        self, method: FitMethod, data_dict: dict[str, Any], **kwargs
     ) -> Any:
 
-        if method == FitMethodType.MCMC:
+        if method == FitMethod.MCMC:
             return self._stan_model.sample(data=data_dict, **kwargs)
-        elif method == FitMethodType.VB:
+        elif method == FitMethod.VB:
             raise NotImplementedError(
                 "Variational inference fitting is not implemented yet."
             )
-        elif method == FitMethodType.MLE:
+        elif method == FitMethod.MLE:
             raise NotImplementedError("MAP estimation fitting is not implemented yet.")
         else:
             raise ValueError(
-                f"Invalid fitting method '{method}'. Supported methods are '{FitMethodType.MCMC}', '{FitMethodType.VB}', and '{FitMethodType.MLE}'."
+                f"Invalid fitting method '{method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', and '{FitMethod.MLE}'."
             )
 
     def _build_stan_data_dict(self, correctness: np.ndarray) -> dict[str, Any]:

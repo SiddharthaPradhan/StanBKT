@@ -9,37 +9,20 @@ should inherit from.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union
-from enum import Enum
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
 import pandas as pd
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
+from stanbkt.fits.fit_types import FitMethod
+from stanbkt.models.model_types import ModelType, PriorEstimationType
+from stanbkt.models.priors import BayesianPriors
 from stanbkt.utils.data_utils import iter_kc_data
 
 # expectations for data
 # long format
 # columns: student_id, problem_id, correctness (0/1), KC
-
-
-# Types (enums) for model configuration
-class ModelType(str, Enum):
-    STANDARD = "standard"
-    GROUPED = "grouped"
-    NESTED = "nested"
-
-
-class FitMethodType(str, Enum):
-    MCMC = "sample"
-    VB = "variational"
-    MLE = "optimize"
-    PF = "pathfinder"
-
-
-class PriorEstimationType(str, Enum):
-    JOINT = "joint"
-    DEFAULT = "default"
 
 
 class BKTModelBase(VerboseMixin, ABC):
@@ -81,7 +64,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethodType = FitMethodType.MCMC,
+        method: FitMethod = FitMethod.MCMC,
         stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> BKTModelBase:
         """
@@ -265,127 +248,3 @@ class BKTModelBase(VerboseMixin, ABC):
             stanc_options=self.stan_compile_kwargs,
         )
         self._stan_model = model
-
-
-# Parameter Classes
-class BayesianPriors(str, Enum):
-    PI_KNOW_MU = "pi_know_mu"
-    PI_KNOW_STD = "pi_know_std"
-    LEARN_MU = "learn_mu"
-    LEARN_STD = "learn_std"
-    FORGET_MU = "forget_mu"
-    FORGET_STD = "forget_std"
-    GUESS_MU = "guess_mu"
-    GUESS_STD = "guess_std"
-    SLIP_MU = "slip_mu"
-    SLIP_STD = "slip_std"
-
-    @staticmethod
-    def _default_scalar_priors() -> dict[BayesianPriors, float]:
-        return {
-            BayesianPriors.PI_KNOW_MU: -2.0,
-            BayesianPriors.PI_KNOW_STD: 5.0,
-            BayesianPriors.LEARN_MU: 0.0,
-            BayesianPriors.LEARN_STD: 5.0,
-            BayesianPriors.FORGET_MU: -2.0,
-            BayesianPriors.FORGET_STD: 5.0,
-            BayesianPriors.GUESS_MU: -1.0,
-            BayesianPriors.GUESS_STD: 5.0,
-            BayesianPriors.SLIP_MU: -1.0,
-            BayesianPriors.SLIP_STD: 5.0,
-        }
-
-    # TODO: post initial release: add features to customize the number of groups for each of the parameters.
-    # for example we can fix learning and forgetting to be the same across groups,
-    # but allow guess and slip to vary by group.
-    @staticmethod
-    def _expand_grouped_priors(
-        scalar_priors: dict[BayesianPriors, float],
-        n_groups: int,
-    ) -> dict[BayesianPriors, list[float]]:
-        return {prior: [value] * n_groups for prior, value in scalar_priors.items()}
-
-    # TODO: add additional priors for advanced models
-    @staticmethod
-    def get_default_priors(
-        model_type: ModelType,
-        estimation_type: PriorEstimationType,
-        n_groups: Optional[int] = None,
-    ) -> Union[dict[BayesianPriors, float], dict[BayesianPriors, list[float]]]:
-        """Return default priors used for BKT parameters.
-
-        Notes
-        -----
-        Priors are modeled as Normal distributions with means and standard deviations specified on the logit scale
-        for probability parameters.
-        """
-        if estimation_type == PriorEstimationType.JOINT:
-            raise NotImplementedError(
-                "Joint prior estimation defaults are not implemented yet"
-            )
-
-        if estimation_type != PriorEstimationType.DEFAULT:
-            raise ValueError(f"Unsupported prior estimation type: {estimation_type}")
-
-        scalar_priors = BayesianPriors._default_scalar_priors()
-
-        if model_type in [ModelType.STANDARD, ModelType.NESTED]:
-            return scalar_priors
-
-        if model_type == ModelType.GROUPED:
-            if not isinstance(n_groups, int):
-                raise ValueError(
-                    "n_groups must be an integer for default grouped model priors"
-                )
-            if n_groups <= 0:
-                raise ValueError("n_groups must be > 0 for grouped model priors")
-            return BayesianPriors._expand_grouped_priors(scalar_priors, n_groups)
-
-        raise ValueError(f"Unsupported model type: {model_type}")
-
-    @staticmethod
-    def add_missing_priors(
-        values: Mapping[BayesianPriors | str, float | list[float]],
-        model_type: ModelType,
-        estimation_type: PriorEstimationType,
-        n_groups: Optional[int] = None,
-    ) -> Union[dict[BayesianPriors, float], dict[BayesianPriors, list[float]]]:
-        """Fill missing priors with defaults and return a normalized dictionary.
-
-        Parameters
-        ----------
-        values : Mapping[BayesianPriors | str, float | list[float]]
-            Partial prior values keyed by `BayesianPriors` or by string names.
-            Missing keys are filled from defaults.
-        model_type : ModelType
-            BKT model type for selecting prior structure.
-        estimation_type : PriorEstimationType
-            Prior estimation mode.
-        n_groups : int, optional
-            Number of groups for grouped models.
-        """
-        defaults = dict(
-            BayesianPriors.get_default_priors(
-                model_type=model_type,
-                estimation_type=estimation_type,
-                n_groups=n_groups,
-            )
-        )
-
-        normalized_values: dict[BayesianPriors, float | list[float]] = {}
-        for key, value in values.items():
-            if isinstance(key, BayesianPriors):
-                prior_key = key
-            elif isinstance(key, str):
-                # ensure string keys are valid and members of the BayesianPriors enum
-                try:
-                    prior_key = BayesianPriors(key)
-                except ValueError as exc:
-                    raise ValueError(f"Unsupported prior key: {key}") from exc
-            else:
-                raise ValueError(f"Unsupported prior key type: {type(key).__name__}")
-
-            normalized_values[prior_key] = value
-
-        defaults.update(normalized_values)
-        return defaults

@@ -32,7 +32,7 @@ class TestSaveFitArtifacts:
 
         updated = fit_io.save_fit_artifacts(
             base_save_location=str(save_dir),
-            fits={"kc_with_fit": _DummySavedFit()},
+            fits={"kc_with_fit": _DummySavedFit()},  # ty:ignore[invalid-argument-type]
             fit_metadata=metadata,
             summary_cache={"kc_with_fit": pd.DataFrame({"mean": [0.2]})},
         )
@@ -58,7 +58,7 @@ class TestSaveFitArtifacts:
 
         fit_io.save_fit_artifacts(
             base_save_location=str(save_dir),
-            fits={kc: _DummySavedFit()},
+            fits={kc: _DummySavedFit()},  # ty:ignore[invalid-argument-type]
             fit_metadata=metadata,
             summary_cache={},
         )
@@ -87,7 +87,7 @@ class TestLoadFitArtifacts:
 
         fit_io.save_fit_artifacts(
             base_save_location=str(save_dir),
-            fits={kc: _DummySavedFit()},
+            fits={kc: _DummySavedFit()},  # ty:ignore[invalid-argument-type]
             fit_metadata=metadata,
             summary_cache={},
         )
@@ -124,7 +124,7 @@ class TestLoadFitArtifacts:
 
         fit_io.save_fit_artifacts(
             base_save_location=str(save_dir),
-            fits={kc: _DummySavedFit()},
+            fits={kc: _DummySavedFit()},  # ty:ignore[invalid-argument-type]
             fit_metadata=metadata,
             summary_cache={kc: pd.DataFrame({"mean": [0.5]})},
         )

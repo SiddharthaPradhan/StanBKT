@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stanbkt.models.base import FitMethodType
+from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.standard import StandardBKT
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -12,6 +12,7 @@ from stanbkt.utils.verbose import VerbosityLevel
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _minimal_df() -> pd.DataFrame:
     """Smallest valid long-format DataFrame (single KC inferred)."""
@@ -32,6 +33,7 @@ def _correctness_array(n_students=3, n_problems=4) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # __init__
 # ---------------------------------------------------------------------------
+
 
 class TestStandardBKTInit:
     def test_hidden_states_model_is_none(self):
@@ -70,6 +72,7 @@ class TestStandardBKTInit:
 # ---------------------------------------------------------------------------
 # _build_stan_data_dict
 # ---------------------------------------------------------------------------
+
 
 class TestBuildStanDataDict:
     def test_contains_required_keys(self):
@@ -129,47 +132,48 @@ class TestBuildStanDataDict:
 # (both checks occur before any Stan call)
 # ---------------------------------------------------------------------------
 
+
 class TestFitMethodGuards:
     def test_raises_for_variational_method(self):
         model = StandardBKT()
         with pytest.raises(ValueError, match="Only method='sample'"):
-            model.fit(_minimal_df(), method=FitMethodType.VB)
+            model.fit(_minimal_df(), method=FitMethod.VB)
 
     def test_raises_for_optimize_method(self):
         model = StandardBKT()
         with pytest.raises(ValueError, match="Only method='sample'"):
-            model.fit(_minimal_df(), method=FitMethodType.MLE)
+            model.fit(_minimal_df(), method=FitMethod.MLE)
 
     def test_raises_for_pathfinder_method(self):
         model = StandardBKT()
         with pytest.raises(ValueError, match="Only method='sample'"):
-            model.fit(_minimal_df(), method=FitMethodType.PF)
+            model.fit(_minimal_df(), method=FitMethod.PATHFINDER)
 
     def test_method_switch_raises_before_stan(self):
         """If a model was previously fitted (simulated), refit with a different method raises."""
         model = StandardBKT()
         # Simulate a previous fit with MCMC without actually running Stan
-        model._previous_fit_method = FitMethodType.MCMC
+        model._previous_fit_method = FitMethod.MCMC
         with pytest.raises(ValueError, match="Refitting with a different method"):
-            model.fit(_minimal_df(), method=FitMethodType.VB)
+            model.fit(_minimal_df(), method=FitMethod.VB)
 
     def test_method_switch_error_message_contains_previous_method(self):
         model = StandardBKT()
-        model._previous_fit_method = FitMethodType.MCMC
+        model._previous_fit_method = FitMethod.MCMC
         with pytest.raises(ValueError) as exc_info:
-            model.fit(_minimal_df(), method=FitMethodType.VB)
+            model.fit(_minimal_df(), method=FitMethod.VB)
         assert "previously fitted" in str(exc_info.value)
 
     def test_same_method_does_not_trigger_switch_guard(self):
         """Calling fit again with the same method should not raise the switch error."""
         model = StandardBKT()
-        model._previous_fit_method = FitMethodType.MCMC
+        model._previous_fit_method = FitMethod.MCMC
         # Raises the "only sample" error, not the switch error, confirming the guard passed.
         # Since MCMC == "sample", it should proceed past both guards and attempt Stan —
         # at that point it will try to compile the Stan model, which we DON'T want.
         # Instead, confirm no ValueError about "Refitting with a different method" is raised.
         try:
-            model.fit(_minimal_df(), method=FitMethodType.MCMC)
+            model.fit(_minimal_df(), method=FitMethod.MCMC)
         except ValueError as e:
             assert "Refitting with a different method" not in str(e)
         except Exception:
@@ -180,16 +184,17 @@ class TestFitMethodGuards:
 # _fit_using_method — raises for unimplemented methods
 # ---------------------------------------------------------------------------
 
+
 class TestFitUsingMethod:
     def test_vb_raises_not_implemented(self):
         model = StandardBKT()
         with pytest.raises(NotImplementedError):
-            model._fit_using_method(FitMethodType.VB, {})
+            model._fit_using_method(FitMethod.VB, {})
 
     def test_mle_raises_not_implemented(self):
         model = StandardBKT()
         with pytest.raises(NotImplementedError):
-            model._fit_using_method(FitMethodType.MLE, {})
+            model._fit_using_method(FitMethod.MLE, {})
 
     def test_unknown_method_raises_value_error(self):
         model = StandardBKT()
@@ -201,6 +206,7 @@ class TestFitUsingMethod:
 # evaluate
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluate:
     def test_raises_not_implemented(self):
         model = StandardBKT()
@@ -211,6 +217,7 @@ class TestEvaluate:
 # ---------------------------------------------------------------------------
 # predict / predict_smoothed_states — known bug: missing `self` parameter
 # ---------------------------------------------------------------------------
+
 
 class TestPredictMissingSelfBug:
     def test_predict_raises_typeerror_on_instance_call(self):
@@ -234,6 +241,7 @@ class TestPredictMissingSelfBug:
 # predict_posterior / predict_smoothed_states_posterior — fit_check
 # ---------------------------------------------------------------------------
 
+
 class TestPredictPosteriorUnfitted:
     def test_predict_posterior_raises_when_not_fitted(self):
         model = StandardBKT()
@@ -250,6 +258,7 @@ class TestPredictPosteriorUnfitted:
 # Stan file path properties — verify files exist on disk
 # ---------------------------------------------------------------------------
 
+
 class TestStanFilePaths:
     def test_stan_model_filename_is_string(self):
         model = StandardBKT()
@@ -257,9 +266,9 @@ class TestStanFilePaths:
 
     def test_stan_model_file_exists(self):
         model = StandardBKT()
-        assert os.path.isfile(model._stan_model_filename), (
-            f"Stan model file not found: {model._stan_model_filename}"
-        )
+        assert os.path.isfile(
+            model._stan_model_filename
+        ), f"Stan model file not found: {model._stan_model_filename}"
 
     def test_stan_hidden_filename_is_string(self):
         model = StandardBKT()
@@ -267,9 +276,9 @@ class TestStanFilePaths:
 
     def test_stan_hidden_file_exists(self):
         model = StandardBKT()
-        assert os.path.isfile(model._stan_hidden_filename), (
-            f"Hidden states Stan file not found: {model._stan_hidden_filename}"
-        )
+        assert os.path.isfile(
+            model._stan_hidden_filename
+        ), f"Hidden states Stan file not found: {model._stan_hidden_filename}"
 
     def test_stan_smoothed_hidden_filename_is_string(self):
         model = StandardBKT()
@@ -277,6 +286,6 @@ class TestStanFilePaths:
 
     def test_stan_smoothed_hidden_file_exists(self):
         model = StandardBKT()
-        assert os.path.isfile(model._stan_smoothed_hidden_filename), (
-            f"Smoothed hidden states Stan file not found: {model._stan_smoothed_hidden_filename}"
-        )
+        assert os.path.isfile(
+            model._stan_smoothed_hidden_filename
+        ), f"Smoothed hidden states Stan file not found: {model._stan_smoothed_hidden_filename}"

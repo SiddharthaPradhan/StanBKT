@@ -160,7 +160,7 @@ class TestAddFit:
 
 
 # ---------------------------------------------------------------------------
-# update_summary_cache
+# _update_summary_cache
 # ---------------------------------------------------------------------------
 
 
@@ -168,14 +168,14 @@ class TestUpdateSummaryCache:
     def test_stores_dataframe(self):
         fit = _ConcreteFit(save_base_location="/tmp/test")
         df = pd.DataFrame({"mean": [0.5], "std": [0.1]})
-        fit.update_summary_cache("kc_a", df)
+        fit._update_summary_cache("kc_a", df)
         pd.testing.assert_frame_equal(fit.summary_cache["kc_a"], df)
 
     def test_overwrites_existing_entry(self):
         fit = _ConcreteFit(save_base_location="/tmp/test")
-        fit.update_summary_cache("kc_a", pd.DataFrame({"mean": [0.1]}))
+        fit._update_summary_cache("kc_a", pd.DataFrame({"mean": [0.1]}))
         new_df = pd.DataFrame({"mean": [0.9]})
-        fit.update_summary_cache("kc_a", new_df)
+        fit._update_summary_cache("kc_a", new_df)
         pd.testing.assert_frame_equal(fit.summary_cache["kc_a"], new_df)
 
 
@@ -216,7 +216,7 @@ class TestSaveLoadRoundTrip:
         loaded_fit_obj = _DummyLoadedFit()
         fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
         original_summary_df = pd.DataFrame({"mean": [0.5], "std": [0.1]})
-        fit.update_summary_cache("kc_a", original_summary_df)
+        fit._update_summary_cache("kc_a", original_summary_df)
 
         monkeypatch.setattr(persistence_io, "BaseCmdStanFit", _DummyLoadedFit)
         monkeypatch.setattr(
@@ -257,7 +257,7 @@ class TestSaveLoadRoundTrip:
                     f.write("lp__\n0\n")
 
         fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
-        fit.update_summary_cache("kc_a", pd.DataFrame({"mean": [0.5]}))
+        fit._update_summary_cache("kc_a", pd.DataFrame({"mean": [0.5]}))
         fit._save()
 
         monkeypatch.setattr(persistence_io, "cmdstan_from_csv", lambda _: object())
