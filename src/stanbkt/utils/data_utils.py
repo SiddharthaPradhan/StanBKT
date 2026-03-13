@@ -189,8 +189,8 @@ def iter_kc_data(
                 f"Warning: {null_count} null values detected. These problems will be dropped.",
                 VerbosityLevel.INFO,
             )
-
-        correctness_wide.dropna(inplace=True)
+        # drop along problem axis rather than the student axis.
+        correctness_wide.dropna(axis=1, inplace=True)
         kc_data = KCData(
             correctness=correctness_wide.values.astype(np.int8, copy=False)
         )

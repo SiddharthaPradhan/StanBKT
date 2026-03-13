@@ -63,6 +63,7 @@ def test_iter_kc_data_builds_group_indices_and_mapping() -> None:
     assert kc_data.groups is not None
     assert kc_data.group_2_index is not None
     assert kc_data.groups.dtype == np.int32
+    assert kc_data.group_2_index is not None
     assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}
     assert sorted(np.unique(kc_data.groups).tolist()) == [1, 2]
 
@@ -75,7 +76,7 @@ def test_iter_kc_data_group_equals_student() -> None:
     assert dict(iter_kc_data(df, col_mapping=col_mapping, return_groups=True))
 
 
-def test_iter_kc_data_warns_and_drops_rows_with_null_pivot_values() -> None:
+def test_iter_kc_data_warns_and_drops_cols_with_null_pivot_values() -> None:
     df = pd.DataFrame(
         {
             "student_id": ["s1", "s1", "s2"],
@@ -96,7 +97,7 @@ def test_iter_kc_data_warns_and_drops_rows_with_null_pivot_values() -> None:
     assert calls
     assert "null values detected" in calls[0][0]
     assert calls[0][1] == VerbosityLevel.INFO
-    assert kc_data.correctness.shape == (1, 2)
+    assert kc_data.correctness.shape == (2, 1)
 
 
 def test_format_data_returns_same_kc_structure() -> None:
@@ -154,7 +155,9 @@ def test_summarize_state_predictions_test_input_validation() -> None:
 
 def test_validate_data_with_check_groups_passes_when_group_id_present() -> None:
     df = _base_df()
-    validate_data(df, ColumnNames.get_default_mapping(), check_groups=True)  # should not raise
+    validate_data(
+        df, ColumnNames.get_default_mapping(), check_groups=True
+    )  # should not raise
 
 
 def test_validate_data_with_check_groups_raises_when_group_id_absent() -> None:
@@ -217,6 +220,7 @@ def test_format_data_with_return_groups_correct_mapping() -> None:
     df = _base_df()
     formatted = format_data(df, return_groups=True)
     kc_data = formatted["kc_a"]
+    assert kc_data.group_2_index is not None
     assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}
 
 
@@ -257,6 +261,4 @@ def test_summarize_state_predictions_test_raises_for_too_many_index_names() -> N
         index=pd.Index(["pred[1,1]"], dtype="object"),
     )
     with pytest.raises(ValueError, match="array_index_names cannot have more than 3"):
-        summarize_state_predictions_test(
-            gq_df, array_index_names=["a", "b", "c", "d"]
-        )
+        summarize_state_predictions_test(gq_df, array_index_names=["a", "b", "c", "d"])

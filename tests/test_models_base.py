@@ -230,7 +230,9 @@ class TestBayesianPriorsGetDefaultPriors:
         priors = BayesianPriors.get_default_priors(
             ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=n
         )
-        assert all(len(v) == n for v in priors.values())
+        assert all(
+            len(v) == n for v in priors.values()  # ty:ignore[invalid-argument-type]
+        )
 
     def test_grouped_values_replicated_from_scalar(self):
         scalar = BayesianPriors.get_default_priors(
@@ -283,7 +285,9 @@ class TestBayesianPriorsAddMissingPriors:
         assert result == defaults
 
     def test_partial_override_merges_correctly(self):
-        override = {BayesianPriors.LEARN_MU: 1.5}
+        override: dict[BayesianPriors, int | float | list[int | float]] = {
+            BayesianPriors.LEARN_MU: 1.5
+        }
         result = BayesianPriors.add_missing_priors(
             override, ModelType.STANDARD, PriorEstimationType.DEFAULT
         )
@@ -298,14 +302,17 @@ class TestBayesianPriorsAddMissingPriors:
 
     def test_string_key_accepted(self):
         result = BayesianPriors.add_missing_priors(
-            {"learn_mu": 2.0}, ModelType.STANDARD, PriorEstimationType.DEFAULT
+            {"learn_mu": 2.0},  # ty:ignore[invalid-argument-type]
+            ModelType.STANDARD,
+            PriorEstimationType.DEFAULT,
         )
         assert result[BayesianPriors.LEARN_MU] == 2.0
 
     def test_invalid_string_key_raises(self):
         with pytest.raises(ValueError, match="Unsupported prior key"):
+            vals = {"nonexistent_param": 1.0}
             BayesianPriors.add_missing_priors(
-                {"nonexistent_param": 1.0},
+                vals,  # ty:ignore[invalid-argument-type]
                 ModelType.STANDARD,
                 PriorEstimationType.DEFAULT,
             )
@@ -319,14 +326,18 @@ class TestBayesianPriorsAddMissingPriors:
         assert set(result.keys()) == set(BayesianPriors)
 
     def test_grouped_partial_override(self):
-        override = {BayesianPriors.LEARN_MU: [1.5, 1.5, 1.5]}
+        override: dict[BayesianPriors, int | float | list[float | int]] = {
+            BayesianPriors.LEARN_MU: [1.5, 1.5, 1.5]
+        }
         result = BayesianPriors.add_missing_priors(
             override, ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=3
         )
         assert result[BayesianPriors.LEARN_MU] == [1.5, 1.5, 1.5]
 
     def test_full_override_with_enum_keys(self):
-        overrides = {prior: 0.0 for prior in BayesianPriors}
+        overrides: dict[BayesianPriors, int | float | list[int | float]] = {
+            prior: 0.0 for prior in BayesianPriors
+        }
         result = BayesianPriors.add_missing_priors(
             overrides, ModelType.STANDARD, PriorEstimationType.DEFAULT
         )

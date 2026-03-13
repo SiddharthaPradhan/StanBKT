@@ -1,6 +1,7 @@
 """Filesystem persistence helpers for fit artifacts."""
 
 from __future__ import annotations
+from IPython.utils.decorators import F
 
 import hashlib
 import os
@@ -151,6 +152,7 @@ def load_fit_artifacts(
     fits: dict[str, BaseCmdStanFit] = {}
     summary_cache: dict[str, pd.DataFrame] = {}
     error_kcs: set[str] = set()
+    error_cache: set[FitSaveFolder] = set()
 
     fits_base_location = os.path.join(base_save_location, FIT_SAVE_FOLDER)
     cache_base_location = os.path.join(fits_base_location, CACHE_SAVE_FOLDER)
@@ -207,7 +209,7 @@ def load_fit_artifacts(
                     ),
                     stacklevel=2,
                 )
-                error_kcs.add(fit_save.kc)
+                error_cache.add(fit_save)
                 continue
 
             try:
@@ -216,11 +218,11 @@ def load_fit_artifacts(
                 warnings.warn(
                     (
                         f"Failed to load summary cache for KC '{fit_save.kc}' from "
-                        f"'{cache_file_path}': {exc}. Skipping this KC during load."
+                        f"'{cache_file_path}': {exc}."
                     ),
                     stacklevel=2,
                 )
-                error_kcs.add(fit_save.kc)
+                error_cache.add(fit_save)
                 continue
 
     if error_kcs:
@@ -232,6 +234,16 @@ def load_fit_artifacts(
             for fit_save in loaded_fit_metadata.fit_saves
             if fit_save.kc not in error_kcs
         }
+    if error_cache:
+        for error_fit_save in error_cache:
+            loaded_fit_metadata.fit_saves.remove(error_fit_save)
+            # set summary_cache_available to False
+            fit_save = FitSaveFolder(
+                kc=error_fit_save.kc,
+                save_folder=error_fit_save.save_folder,
+                summary_cache_available=False,
+            )
+            loaded_fit_metadata.fit_saves.add(fit_save)
 
     return loaded_fit_metadata, fits, summary_cache
 

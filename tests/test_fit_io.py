@@ -104,7 +104,7 @@ class TestLoadFitArtifacts:
         assert set(fits.keys()) == {kc}
         assert summary_cache == {}
 
-    def test_load_fit_artifacts_drops_kc_when_summary_cache_csv_is_malformed(
+    def test_load_fit_artifacts_retains_kc_when_summary_cache_csv_is_malformed(
         self, tmp_path, monkeypatch
     ):
         save_dir = tmp_path / "fit_saves"
@@ -121,10 +121,10 @@ class TestLoadFitArtifacts:
                 )
             },
         )
-
+        dummy_fit = _DummySavedFit()
         fit_io.save_fit_artifacts(
             base_save_location=str(save_dir),
-            fits={kc: _DummySavedFit()},  # ty:ignore[invalid-argument-type]
+            fits={kc: dummy_fit},  # ty:ignore[invalid-argument-type]
             fit_metadata=metadata,
             summary_cache={kc: pd.DataFrame({"mean": [0.5]})},
         )
@@ -147,6 +147,8 @@ class TestLoadFitArtifacts:
                 expected_fit_method=FitMethod.MCMC,
             )
 
-        assert fits == {}
+        # Loaded fit instances are reconstructed from disk, so identity differs.
+        assert set(fits.keys()) == {kc}
+        assert isinstance(fits[kc], _DummyLoadedFit)
         assert summary_cache == {}
-        assert loaded_metadata.fit_saves == set()
+        assert loaded_metadata.fit_saves.pop().summary_cache_available == False

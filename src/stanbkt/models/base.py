@@ -150,7 +150,7 @@ class BKTModelBase(VerboseMixin, ABC):
         fitted_kcs = set(self.fits_.keys()) if self.fits_ else set()
         if not kcs.issubset(fitted_kcs):
             raise ValueError(
-                f"Data contains KCs {kcs - fitted_kcs} that were not fitted"
+                f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
             )
         kcs_not_fitted = kcs - fitted_kcs
         if kcs_not_fitted:
