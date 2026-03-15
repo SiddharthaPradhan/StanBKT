@@ -9,6 +9,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from stanbkt.models.base import BKTModelBase, FitMethod
+from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     ColumnNames,
     iter_kc_data,
@@ -118,16 +119,8 @@ class StandardBKT(BKTModelBase):
                 "Only method='sample' is currently implemented for StandardBKT."
             )
 
-        # TODO need caching logic here, create and use a util method here.
-        # Move logic to __init__
-        # no need for check everytime when fit is called
-        # verification of the stan and cpp options
         if self._stan_model is None:
-            self._stan_model = csp.CmdStanModel(
-                stan_file=self._stan_model_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-            )
+            self._compile_model(self._stan_model_filename)
 
         fits: dict[str, Any] = {}
         for kc_id, kc_data in iter_kc_data(
@@ -278,9 +271,10 @@ class StandardBKT(BKTModelBase):
         self._fit_check()
 
         if self._hidden_states_model is None:
-            self._hidden_states_model = csp.CmdStanModel(
-                stan_file=self._stan_hidden_filename,
-                cpp_options=self.stan_compile_kwargs,
+            self._hidden_states_model = compile_stan_model(
+                self._stan_hidden_filename,
+                cpp_options=self.cpp_compile_kwargs,
+                stanc_options=self.stan_compile_kwargs,
             )
 
         return self._predict_generated_quantities(
@@ -298,9 +292,10 @@ class StandardBKT(BKTModelBase):
         self._fit_check()
 
         if self._smoothed_hidden_states_model is None:
-            self._smoothed_hidden_states_model = csp.CmdStanModel(
-                stan_file=self._stan_smoothed_hidden_filename,
-                cpp_options=self.stan_compile_kwargs,
+            self._smoothed_hidden_states_model = compile_stan_model(
+                self._stan_smoothed_hidden_filename,
+                cpp_options=self.cpp_compile_kwargs,
+                stanc_options=self.stan_compile_kwargs,
             )
 
         return self._predict_generated_quantities(

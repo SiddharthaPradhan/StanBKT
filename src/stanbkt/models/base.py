@@ -14,12 +14,14 @@ import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
 import pandas as pd
+import os
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.base import BaseFit
 from stanbkt.models.model_types import ModelType, PriorEstimationType
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import BayesianPriors
+from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import iter_kc_data
 
 
@@ -47,8 +49,11 @@ class BKTModelBase(VerboseMixin, ABC):
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(verbose=verbose)
-        self.stan_compile_kwargs = stan_compile_kwargs or {}
-        self.cpp_compile_kwargs = cpp_compile_kwargs or {}
+        # TODO: NEED defaults for compile kwargs?
+        # Does this need to be a dataclass?
+        # TODO: catch the Error thrown and re-raise with custom error for invalid
+        self.stan_compile_kwargs: dict[str, Any] = stan_compile_kwargs or {}
+        self.cpp_compile_kwargs: dict[str, Any] = cpp_compile_kwargs or {}
         # Model state attributes
         self._stan_model: Optional[csp.CmdStanModel] = None
         self.fits: Optional[BaseFit] = None
@@ -238,13 +243,13 @@ class BKTModelBase(VerboseMixin, ABC):
     def _stan_smoothed_hidden_filename(self) -> str:
         pass
 
-    def _compile_model(self) -> None:
+    def _compile_model(self, stan_file: str | os.PathLike[str]) -> None:
         """Compile the Stan model and cache it."""
-        # TODO: add caching of compiled models to avoid recompilation
-        # TODO: look into deprecated params argument in CmdStanModel constructor
-        model = csp.CmdStanModel(
-            stan_file=self._stan_model_filename,
-            cpp_options=self.cpp_compile_kwargs,
-            stanc_options=self.stan_compile_kwargs,
+        self._print(
+            f"Compiling Stan model from {stan_file}...", level=VerbosityLevel.INFO
         )
-        self._stan_model = model
+        self._stan_model = compile_stan_model(
+            stan_file,
+            stanc_options=self.stan_compile_kwargs,
+            cpp_options=self.cpp_compile_kwargs,
+        )
