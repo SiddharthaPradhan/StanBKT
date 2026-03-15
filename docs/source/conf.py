@@ -28,6 +28,7 @@ extensions = [
     "sphinx.ext.intersphinx",  # External links for CmdStanPy
     "sphinx_new_tab_link",
     "sphinx_autodoc_typehints",
+    "sphinx.ext.coverage",  # External links for CmdStanPy
 ]
 
 intersphinx_mapping = {

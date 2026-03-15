@@ -1,3 +1,5 @@
+from cmdstanpy import CmdStanMCMC
+from stanbkt.fits.base import BaseFit
 import pytest
 
 from stanbkt.models.base import (
@@ -37,11 +39,27 @@ class _ConcreteModel(BKTModelBase):
         return "/nonexistent_smoothed.stan"
 
 
+class DummyFit(BaseFit):
+
+    @property
+    def _fit_method(self):
+        return FitMethod.MCMC
+
+    def _create_inits(self, *args, **kwargs):
+        return None
+
+    def summary(self, *args, **kwargs):
+        return "summary"
+
+
 def _make_fitted_model(kcs=("kc_a", "kc_b")):
-    """Return a model whose _is_fitted and fits_ reflect a completed fit."""
+    """Return a model whose _is_fitted and fits reflect a completed fit."""
     model = _ConcreteModel()
     model._is_fitted = True
-    model.fits_ = {kc: object() for kc in kcs}
+    model.fits: BaseFit = DummyFit()
+    # bypass add_fit since we don't have actual fit objects to add, but want the fitted KC keys to be present in the model's fit state
+    model.fits.kc_fits = {kc: object() for kc in kcs}  # ty:ignore[invalid-assignment]
+    model.fits.num_fitted_kcs = len(kcs)
     return model
 
 
@@ -67,9 +85,9 @@ class TestBKTModelBaseInit:
         m = _ConcreteModel()
         assert m._stan_model is None
 
-    def test_fits_is_none(self):
+    def test_fitsis_none(self):
         m = _ConcreteModel()
-        assert m.fits_ is None
+        assert m.fits is None
 
     def test_is_fitted_is_false(self):
         m = _ConcreteModel()
@@ -96,18 +114,18 @@ class TestFitCheck:
     def test_raises_when_not_fitted(self):
         m = _ConcreteModel()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            m.fit_check()
+            m._fit_check()
 
-    def test_raises_when_fits_is_none_even_if_is_fitted_true(self):
+    def test_raises_when_fitsis_none_even_if_is_fitted_true(self):
         m = _ConcreteModel()
         m._is_fitted = True
-        m.fits_ = None
+        m.fits = None
         with pytest.raises(RuntimeError, match="must be fitted"):
-            m.fit_check()
+            m._fit_check()
 
     def test_passes_when_fitted(self):
         m = _make_fitted_model()
-        m.fit_check()  # should not raise
+        m._fit_check()  # should not raise
 
 
 # ---------------------------------------------------------------------------

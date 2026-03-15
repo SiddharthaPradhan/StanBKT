@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 import warnings
-
+from dataclasses import replace
 import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
 
@@ -237,12 +237,10 @@ def load_fit_artifacts(
     if error_cache:
         for error_fit_save in error_cache:
             loaded_fit_metadata.fit_saves.remove(error_fit_save)
-            # set summary_cache_available to False
-            fit_save = FitSaveFolder(
-                kc=error_fit_save.kc,
-                save_folder=error_fit_save.save_folder,
-                summary_cache_available=False,
-            )
+
+            # set summary_cache_available to False, using replace as FitSaveFolder is frozen
+            fit_save = replace(error_fit_save, summary_cache_available=False)
+
             loaded_fit_metadata.fit_saves.add(fit_save)
 
     return loaded_fit_metadata, fits, summary_cache

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Optional, Union
 
 from stanbkt.models.model_types import ModelType, PriorEstimationType
 
 
-class BayesianPriors(str, Enum):
+class BayesianPriors(StrEnum):
+    # TODO add more for the more complex models.
+    # Need to add verification for compatibility with the model type.
+    # This does not depend on the estimation method as the same priors are use across
+    # but it varies by the selected model type.
+
     PI_KNOW_MU = "pi_know_mu"
     PI_KNOW_STD = "pi_know_std"
     LEARN_MU = "learn_mu"
@@ -21,7 +26,7 @@ class BayesianPriors(str, Enum):
     SLIP_STD = "slip_std"
 
     @staticmethod
-    def _default_scalar_priors() -> dict["BayesianPriors", float]:
+    def _default_scalar_priors() -> dict[BayesianPriors, float | None]:
         return {
             BayesianPriors.PI_KNOW_MU: -2.0,
             BayesianPriors.PI_KNOW_STD: 5.0,
@@ -37,9 +42,9 @@ class BayesianPriors(str, Enum):
 
     @staticmethod
     def _expand_grouped_priors(
-        scalar_priors: dict["BayesianPriors", float],
+        scalar_priors: dict[BayesianPriors, float | None],
         n_groups: int,
-    ) -> dict["BayesianPriors", list[float]]:
+    ) -> dict[BayesianPriors, list[float | None]]:
         return {prior: [value] * n_groups for prior, value in scalar_priors.items()}
 
     @staticmethod
@@ -48,8 +53,8 @@ class BayesianPriors(str, Enum):
         estimation_type: PriorEstimationType,
         n_groups: Optional[int] = None,
     ) -> Union[
-        dict["BayesianPriors", float],
-        dict["BayesianPriors", list[float]],
+        dict[BayesianPriors, float | None],
+        dict[BayesianPriors, list[float | None]],
     ]:
         """Return default priors used for BKT parameters.
 
@@ -84,19 +89,19 @@ class BayesianPriors(str, Enum):
 
     @staticmethod
     def add_missing_priors(
-        values: dict[BayesianPriors, float | list[float]],
+        values: dict[BayesianPriors, float | list[float | None]],
         model_type: ModelType,
         estimation_type: PriorEstimationType,
         n_groups: Optional[int] = None,
     ) -> Union[
-        dict["BayesianPriors", float],
-        dict["BayesianPriors", list[float]],
+        dict[BayesianPriors, float | None],
+        dict[BayesianPriors, list[float | None]],
     ]:
         """Fill missing priors with defaults and return a normalized dictionary.
 
         Parameters
         ----------
-        values : dict[BayesianPriors | str, float | list[float]]
+        values : dict[BayesianPriors | str, float | list[float | None]]
             Partial prior values keyed by `BayesianPriors` or by string names.
             Missing keys are filled from defaults.
         model_type : ModelType
@@ -114,7 +119,7 @@ class BayesianPriors(str, Enum):
             )
         )
 
-        normalized_values: dict[BayesianPriors, float | list[float]] = {}
+        normalized_values: dict[BayesianPriors, float | list[float | None]] = {}
         for key, value in values.items():
             if isinstance(key, BayesianPriors):
                 prior_key = key

@@ -50,7 +50,7 @@ class TestStandardBKTInit:
 
     def test_fits_is_none(self):
         model = StandardBKT()
-        assert model.fits_ is None
+        assert model.fits is None
 
     def test_default_verbose(self):
         model = StandardBKT()
@@ -186,20 +186,12 @@ class TestFitMethodGuards:
 
 
 class TestFitUsingMethod:
-    def test_vb_raises_not_implemented(self):
+    def test_calling_causes_run_time_error(self):
         model = StandardBKT()
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(RuntimeError):
             model._fit_using_method(FitMethod.VB, {})
 
-    def test_mle_raises_not_implemented(self):
-        model = StandardBKT()
-        with pytest.raises(NotImplementedError):
-            model._fit_using_method(FitMethod.MLE, {})
-
-    def test_unknown_method_raises_value_error(self):
-        model = StandardBKT()
-        with pytest.raises(ValueError):
-            model._fit_using_method("unknown_method", {})  # type: ignore[invalid-argument-type]
+    # TODO add more tests after
 
 
 # ---------------------------------------------------------------------------

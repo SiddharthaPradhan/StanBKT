@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ModelType(str, Enum):
+class ModelType(StrEnum):
     STANDARD = "standard"
     GROUPED = "grouped"
     NESTED = "nested"
 
 
-class PriorEstimationType(str, Enum):
+# TODO need better names for these, ASK Prof. Adam
+class PriorEstimationType(StrEnum):
     JOINT = "joint"
     DEFAULT = "default"

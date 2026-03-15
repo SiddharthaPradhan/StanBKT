@@ -65,29 +65,26 @@ def _mock_fit_method_detection_for_test_doubles(monkeypatch):
 
 
 class TestBaseFitInit:
-    def test_save_base_location_stored(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
-        assert fit.save_base_location == "/tmp/test"
 
-    def test_fits_starts_empty(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
-        assert fit.fits == {}
+    def test_kc_fits_starts_empty(self):
+        fit = _ConcreteFit()
+        assert fit.kc_fits == {}
 
     def test_fit_metadata_starts_empty(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         assert fit.fit_metadata.fit_method == FitMethod.MCMC
         assert fit.fit_metadata.fit_saves == set()
 
     def test_summary_cache_starts_empty(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         assert fit.summary_cache == {}
 
     def test_default_verbose_is_info(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         assert fit.verbose == VerbosityLevel.INFO
 
     def test_explicit_verbose(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test", verbose=VerbosityLevel.WARN)
+        fit = _ConcreteFit(verbose=VerbosityLevel.WARN)
         assert fit.verbose == VerbosityLevel.WARN
 
 
@@ -98,19 +95,19 @@ class TestBaseFitInit:
 
 class TestAddFit:
     def test_adds_new_kc_to_fits(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         mock_stan_fit = MagicMock()
         fit.add_fit("kc_a", mock_stan_fit)
-        assert "kc_a" in fit.fits
-        assert fit.fits["kc_a"] is mock_stan_fit
+        assert "kc_a" in fit.kc_fits
+        assert fit.kc_fits["kc_a"] is mock_stan_fit
 
     def test_adds_metadata_entry_for_new_kc(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         assert any(entry.kc == "kc_a" for entry in fit.fit_metadata.fit_saves)
 
     def test_metadata_entry_contains_save_folder(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         matching_entries = [
             entry for entry in fit.fit_metadata.fit_saves if entry.kc == "kc_a"
@@ -120,29 +117,29 @@ class TestAddFit:
         assert len(matching_entries[0].save_folder) > 0
 
     def test_adding_multiple_kcs(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         fit.add_fit("kc_b", MagicMock())
-        assert set(fit.fits.keys()) == {"kc_a", "kc_b"}
+        assert set(fit.kc_fits.keys()) == {"kc_a", "kc_b"}
         assert {entry.kc for entry in fit.fit_metadata.fit_saves} == {"kc_a", "kc_b"}
 
     def test_overwrite_replaces_fit(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         first = MagicMock()
         second = MagicMock()
         fit.add_fit("kc_a", first)
         fit.add_fit("kc_a", second, overwrite_kcs=True)
-        assert fit.fits["kc_a"] is second
+        assert fit.kc_fits["kc_a"] is second
 
     def test_overwrite_clears_summary_cache(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         fit.summary_cache["kc_a"] = pd.DataFrame({"x": [1]})
         fit.add_fit("kc_a", MagicMock(), overwrite_kcs=True)
         assert "kc_a" not in fit.summary_cache
 
     def test_overwrite_does_not_clear_other_kc_cache(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         fit.add_fit("kc_b", MagicMock())
         fit.summary_cache["kc_b"] = pd.DataFrame({"x": [1]})
@@ -151,7 +148,7 @@ class TestAddFit:
 
     def test_overwrite_emits_warning(self, capsys):
         # Must use WARN verbose level so the warning is not suppressed
-        fit = _ConcreteFit(save_base_location="/tmp/test", verbose=VerbosityLevel.WARN)
+        fit = _ConcreteFit(verbose=VerbosityLevel.WARN)
         fit.add_fit("kc_a", MagicMock())
         fit.add_fit("kc_a", MagicMock(), overwrite_kcs=True)
         out = capsys.readouterr().out
@@ -166,13 +163,13 @@ class TestAddFit:
 
 class TestUpdateSummaryCache:
     def test_stores_dataframe(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         df = pd.DataFrame({"mean": [0.5], "std": [0.1]})
         fit._update_summary_cache("kc_a", df)
         pd.testing.assert_frame_equal(fit.summary_cache["kc_a"], df)
 
     def test_overwrites_existing_entry(self):
-        fit = _ConcreteFit(save_base_location="/tmp/test")
+        fit = _ConcreteFit()
         fit._update_summary_cache("kc_a", pd.DataFrame({"mean": [0.1]}))
         new_df = pd.DataFrame({"mean": [0.9]})
         fit._update_summary_cache("kc_a", new_df)
@@ -187,11 +184,9 @@ class TestUpdateSummaryCache:
 class TestSaveLoadRoundTrip:
     def test_save_with_empty_fits_is_noop_and_writes_no_files(self, tmp_path, capsys):
         save_dir = tmp_path / "fit_saves"
-        fit = _ConcreteFit(
-            save_base_location=str(save_dir), verbose=VerbosityLevel.WARN
-        )
+        fit = _ConcreteFit(verbose=VerbosityLevel.WARN)
 
-        fit._save()
+        fit._save(save_dir)
 
         out = capsys.readouterr().out
         assert "WARNING" in out
@@ -200,7 +195,7 @@ class TestSaveLoadRoundTrip:
 
     def test_save_then_load_round_trip_with_tmp_path(self, tmp_path, monkeypatch):
         save_dir = tmp_path / "fit_saves"
-        fit = _ConcreteFit(save_base_location=str(save_dir))
+        fit = _ConcreteFit()
 
         class _DummySavedFit:
             def save_csvfiles(self, folder: str) -> None:
@@ -223,14 +218,13 @@ class TestSaveLoadRoundTrip:
             persistence_io, "cmdstan_from_csv", lambda _: loaded_fit_obj
         )
 
-        fit._save()
+        fit._save(str(save_dir))
 
         loaded = _ConcreteFit._load(str(save_dir))
 
-        assert loaded.save_base_location == str(save_dir)
         assert loaded.fit_metadata == fit.fit_metadata
-        assert set(loaded.fits.keys()) == {"kc_a"}
-        assert loaded.fits["kc_a"] is loaded_fit_obj
+        assert set(loaded.kc_fits.keys()) == {"kc_a"}
+        assert loaded.kc_fits["kc_a"] is loaded_fit_obj
         pd.testing.assert_frame_equal(loaded.summary_cache["kc_a"], original_summary_df)
 
         assert (save_dir / "fit_metadata.json").exists()
@@ -246,7 +240,7 @@ class TestSaveLoadRoundTrip:
         self, tmp_path, monkeypatch
     ):
         save_dir = tmp_path / "fit_saves"
-        fit = _ConcreteFit(save_base_location=str(save_dir))
+        fit = _ConcreteFit()
 
         class _DummySavedFit:
             def save_csvfiles(self, folder: str) -> None:
@@ -258,14 +252,14 @@ class TestSaveLoadRoundTrip:
 
         fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
         fit._update_summary_cache("kc_a", pd.DataFrame({"mean": [0.5]}))
-        fit._save()
+        fit._save(str(save_dir))
 
         monkeypatch.setattr(persistence_io, "cmdstan_from_csv", lambda _: object())
 
         with pytest.warns(UserWarning, match="unsupported Fit type"):
             loaded = _ConcreteFit._load(str(save_dir))
 
-        assert loaded.fits == {}
+        assert loaded.kc_fits == {}
         assert "kc_a" not in loaded.summary_cache
         assert loaded.fit_metadata.fit_saves == set()
 

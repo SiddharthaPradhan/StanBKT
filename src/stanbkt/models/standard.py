@@ -60,7 +60,7 @@ class StandardBKT(BKTModelBase):
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethod = FitMethod.MCMC,
+        method: FitMethod | None = FitMethod.MCMC,
         stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> StandardBKT:
         """
@@ -169,6 +169,8 @@ class StandardBKT(BKTModelBase):
     def _fit_using_method(
         self, method: FitMethod, data_dict: dict[str, Any], **kwargs
     ) -> Any:
+        if self._stan_model is None:
+            raise RuntimeError("Stan model is not compiled. Cannot fit the model.")
 
         if method == FitMethod.MCMC:
             return self._stan_model.sample(data=data_dict, **kwargs)
@@ -186,11 +188,16 @@ class StandardBKT(BKTModelBase):
     def _build_stan_data_dict(self, correctness: np.ndarray) -> dict[str, Any]:
         """Build data dictionary for the stan models.
 
-        Args:
-            correctness (np.ndarray): Array of correctness values with shape (n_students, n_problems).
+        Parameters
+        ----------
+        correctness : np.ndarray
+            Array of correctness values with shape
+            ``(n_students, n_problems)``.
 
-        Returns:
-            dict[str, Any]: Dictionary containing data for the Stan model.
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing data for the Stan model.
         """
         n_students, n_problems = correctness.shape
         return {
@@ -268,7 +275,7 @@ class StandardBKT(BKTModelBase):
 
 
         """
-        self.fit_check()
+        self._fit_check()
 
         if self._hidden_states_model is None:
             self._hidden_states_model = csp.CmdStanModel(
@@ -288,7 +295,7 @@ class StandardBKT(BKTModelBase):
         column_mapping: Optional[dict[str, str]] = None,
     ) -> pd.DataFrame:
         """Generate the posterior of the smoothed probability of hidden-states."""
-        self.fit_check()
+        self._fit_check()
 
         if self._smoothed_hidden_states_model is None:
             self._smoothed_hidden_states_model = csp.CmdStanModel(

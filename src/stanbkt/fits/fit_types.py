@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TypeAlias, Union
 
 from cmdstanpy import CmdStanMCMC, CmdStanMLE, CmdStanPathfinder, CmdStanVB
@@ -17,7 +17,7 @@ BaseCmdStanFit = Union[CmdStanMCMC, CmdStanMLE, CmdStanVB, CmdStanPathfinder]
 """Alias for supported CmdStan fit result objects."""
 
 
-class FitMethod(str, Enum):
+class FitMethod(StrEnum):
     """Enumeration of supported fitting methods.
 
     Attributes
@@ -38,7 +38,7 @@ class FitMethod(str, Enum):
     PATHFINDER = "pathfinder"
 
     @staticmethod
-    def get_method_from_fit(fit: BaseCmdStanFit) -> "FitMethod":
+    def get_method_from_fit(fit: BaseCmdStanFit) -> FitMethod:
         """Infer the fit method from a CmdStan fit object.
 
         Parameters

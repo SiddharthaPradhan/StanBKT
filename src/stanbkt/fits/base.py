@@ -22,11 +22,10 @@ from stanbkt.fits.persistence import (
     save_fit_artifacts,
 )
 
+
 # TODO: create_inits
 # diagnose support for MCMC
 # check API in __init__.py.
-
-
 class BaseFit(VerboseMixin, ABC):
     """Base class for StanBKT fits.
 
@@ -35,10 +34,10 @@ class BaseFit(VerboseMixin, ABC):
 
     Attributes
     ----------
-    save_base_location : str
-        Base path where fit artifacts are saved.
     fits : dict[str, BaseCmdStanFit]
         Mapping of knowledge component IDs to CmdStan fit objects.
+    num_fitted_kcs : int
+        Number of knowledge components that have been fitted.
     fit_metadata : FitMetadata
         Metadata used to resolve persisted fit folders.
     summary_cache : dict[str, pandas.DataFrame]
@@ -48,15 +47,16 @@ class BaseFit(VerboseMixin, ABC):
 
     def __init__(
         self,
-        save_base_location: str,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         fits: dict[str, BaseCmdStanFit] | None = None,
         fit_metadata: FitMetadata | None = None,
         summary_cache: dict[str, pd.DataFrame] | None = None,
     ):
         super().__init__(verbose=verbose)
-        self.save_base_location: str = save_base_location
-        self.fits: dict[str, BaseCmdStanFit] = fits.copy() if fits is not None else {}
+        self.kc_fits: dict[str, BaseCmdStanFit] = (
+            fits.copy() if fits is not None else {}
+        )
+        self.num_fitted_kcs = len(self.kc_fits)
         self.fit_metadata: FitMetadata = (
             fit_metadata
             if fit_metadata is not None
@@ -66,7 +66,9 @@ class BaseFit(VerboseMixin, ABC):
             summary_cache.copy() if summary_cache is not None else {}
         )
 
-    def add_fit(self, kc: str, fit: BaseCmdStanFit, overwrite_kcs: bool = False):
+    def add_fit(
+        self, kc: str, fit: BaseCmdStanFit, overwrite_kcs: bool = False
+    ) -> None:
         """Add a fit for a knowledge component to the model's fit state.
 
         Parameters
@@ -96,7 +98,7 @@ class BaseFit(VerboseMixin, ABC):
             )
 
         # check if there is already a fit for this KC
-        if kc in self.fits:
+        if kc in self.kc_fits:
             if not overwrite_kcs:
                 raise ValueError(
                     f"Fit for KC '{kc}' already exists. Set 'overwrite_kcs=True' to overwrite."
@@ -107,10 +109,11 @@ class BaseFit(VerboseMixin, ABC):
             self.summary_cache.pop(
                 kc, None
             )  # remove summary cache for this updated KC fit
-        self.fits[kc] = fit
+        self.kc_fits[kc] = fit
+        self.num_fitted_kcs = len(self.kc_fits)
         # Presume we can create the save folder based on the KC.
         # Sid thinks this is a reasonable assumption since the base folder will be forced to be
-        # unique, and the KC will be sanitized to be filesystem safe.
+        # unique, and the KCwill be sanitized to be filesystem safe.
         # Collisions will be handled by appending a hash suffix to the folder name.
         self.fit_metadata.fit_saves = {
             entry for entry in self.fit_metadata.fit_saves if entry.kc != kc
@@ -151,28 +154,32 @@ class BaseFit(VerboseMixin, ABC):
         ValueError
             If metadata fit method mismatches subclass method.
         """
-        expected_fit_method = cls(save_base_location=base_save_location)._fit_method
+        expected_fit_method = cls()._fit_method
         loaded_fit_metadata, fits, summary_cache = load_fit_artifacts(
             base_save_location=base_save_location,
             expected_fit_method=expected_fit_method,
         )
 
         return cls(
-            save_base_location=base_save_location,
             fits=fits,
             fit_metadata=loaded_fit_metadata,
             summary_cache=summary_cache,
         )
 
-    def _save(self) -> None:
+    def _save(self, save_base_location: str) -> None:
         """Save fits, summary cache, and metadata to disk.
+
+        Parameters
+        ----------
+        save_base_location : str
+            Root folder to save fit artifacts.
 
         Returns
         -------
         None
         """
         # save fits if not empty
-        if not self.fits:
+        if not self.kc_fits:
             # users cannot remove fits once added, so empty means this model has never been fitted.
             self._print(
                 "Model has not been fitted. Skipping fit save.",
@@ -183,7 +190,7 @@ class BaseFit(VerboseMixin, ABC):
         stale_kcs = {
             fit_save.kc
             for fit_save in self.fit_metadata.fit_saves
-            if fit_save.kc not in self.fits
+            if fit_save.kc not in self.kc_fits
         }
         for stale_kc in stale_kcs:
             self._print(
@@ -194,12 +201,12 @@ class BaseFit(VerboseMixin, ABC):
         self.fit_metadata.fit_saves = {
             fit_save
             for fit_save in self.fit_metadata.fit_saves
-            if fit_save.kc in self.fits
+            if fit_save.kc in self.kc_fits
         }
 
         self.fit_metadata = save_fit_artifacts(
-            base_save_location=self.save_base_location,
-            fits=self.fits,
+            base_save_location=save_base_location,
+            fits=self.kc_fits,
             fit_metadata=self.fit_metadata,
             summary_cache=self.summary_cache,
         )

@@ -16,13 +16,11 @@ import cmdstanpy as csp
 import pandas as pd
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 from stanbkt.fits.fit_types import FitMethod
+from stanbkt.fits.base import BaseFit
 from stanbkt.models.model_types import ModelType, PriorEstimationType
+from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import BayesianPriors
 from stanbkt.utils.data_utils import iter_kc_data
-
-# expectations for data
-# long format
-# columns: student_id, problem_id, correctness (0/1), KC
 
 
 class BKTModelBase(VerboseMixin, ABC):
@@ -38,8 +36,8 @@ class BKTModelBase(VerboseMixin, ABC):
         Additional keyword arguments for Stan model compilation.
     cpp_compile_kwargs : dict
         Additional keyword arguments for C++ compilation of the Stan model.
-    fits_ : Optional[dict[str, Any]]
-        Dictionary to store fitted model results for each KC.
+    fits : Optional[BaseFit]
+        Object to store fitted model results for each KC.
     """
 
     def __init__(
@@ -53,9 +51,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self.cpp_compile_kwargs = cpp_compile_kwargs or {}
         # Model state attributes
         self._stan_model: Optional[csp.CmdStanModel] = None
-        self.fits_: Optional[dict[str, Any]] = (
-            None  # TODO replace type with fit base type
-        )
+        self.fits: Optional[BaseFit] = None
         self._is_fitted: bool = False
         self._previous_fit_method: Optional[str] = None  # TODO
 
@@ -64,7 +60,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethod = FitMethod.MCMC,
+        method: FitMethod | None = None,
         stan_fit_kwargs: Optional[dict[str, Any]] = None,
     ) -> BKTModelBase:
         """
@@ -79,9 +75,10 @@ class BKTModelBase(VerboseMixin, ABC):
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
-        method : FitMethodType, default=FitMethodType.MCMC
-            Inference method: FitMethodType.MCMC for MCMC, FitMethodType.VB for VI,
-            FitMethodType.OPTIMIZE for MAP, FitMethodType.PATHFINDER for pathfinder.
+        method : FitMethod | None, default=None
+            Inference method: FitMethod.MCMC for MCMC, FitMethod.VB for VI,
+            FitMethod.OPTIMIZE for MAP, FitMethod.PATHFINDER for pathfinder.
+            If None, defaults to the previous fit method used. Raises an error if no previous method exists.
         stan_fit_kwargs : dict, optional
             Arguments to pass to the CmdStanPy fit method. This depends on the chosen method.
             For example:
@@ -106,6 +103,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         params: Optional[list[str]] = None,
         percentiles: Tuple[float, ...] = (5, 50, 95),
+        refresh_cache: bool = False,
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -116,6 +114,8 @@ class BKTModelBase(VerboseMixin, ABC):
             List of parameters to summarize. If None, summarizes all.
         percentiles : tuple of float, default=(5, 50, 95)
             Percentiles to include in summary.
+        refresh_cache : bool, default=False
+            Whether to refresh the cached summary.
 
         Returns
         -------
@@ -137,17 +137,17 @@ class BKTModelBase(VerboseMixin, ABC):
 
         raise NotImplementedError("Summary not available for this fit method")
 
-    def fit_check(self) -> None:
+    def _fit_check(self) -> None:
         """Check if model has been fitted."""
-        if not self._is_fitted or self.fits_ is None:
+        if not self._is_fitted or self.fits is None or self.fits.num_fitted_kcs == 0:
             raise RuntimeError("Model must be fitted before calling this method")
 
     def check_data_contains_fitted_kcs(self, kcs: set[str]) -> None:
         """Check if data contains any KC that was fitted.
         Raises an error if data contains KCs that were not fitted.
         """
-        self.fit_check()
-        fitted_kcs = set(self.fits_.keys()) if self.fits_ else set()
+        self._fit_check()
+        fitted_kcs: set[str] = set(self.fits.kc_fits.keys()) if self.fits else set()
         if not kcs.issubset(fitted_kcs):
             raise ValueError(
                 f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
@@ -165,8 +165,8 @@ class BKTModelBase(VerboseMixin, ABC):
 
     def get_kc_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
         """Return the set of KCs in the data that were fitted previously."""
-        self.fit_check()
-        fitted_kcs = set(self.fits_.keys()) if self.fits_ else set()
+        self._fit_check()
+        fitted_kcs: set[str] = set(self.fits.kc_fits.keys()) if self.fits else set()
         return kcs.intersection(fitted_kcs)
 
     # TODO FIXME
