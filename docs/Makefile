@@ -19,6 +19,13 @@ help:
 
 apidoc:
 	@$(SPHINXAPIDOC) -f -e -M -o "$(APIOUTDIR)" "$(PACKAGEDIR)"
+	@# Remove :members: from parent packages to avoid duplicate warnings
+	@sed -i '/^   :members:/d' "$(APIOUTDIR)/stanbkt.fits.rst"
+	@sed -i '/^   :members:/d' "$(APIOUTDIR)/stanbkt.models.rst"
+	@sed -i '/^   :members:/d' "$(APIOUTDIR)/stanbkt.models.core.rst"
+	@sed -i '/^   :undoc-members:/d' "$(APIOUTDIR)/stanbkt.fits.rst"
+	@sed -i '/^   :undoc-members:/d' "$(APIOUTDIR)/stanbkt.models.rst"
+	@sed -i '/^   :undoc-members:/d' "$(APIOUTDIR)/stanbkt.models.core.rst"
 
 html: apidoc
 	@$(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)

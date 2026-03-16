@@ -55,7 +55,7 @@ Fit and predict
 
 .. code-block:: python
 
-   from stanbkt.models.standard import StandardBKT
+   from stanbkt.models.core.standard import StandardBKT
 
    model = StandardBKT()
    model.fit(data, method="sample")

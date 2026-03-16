@@ -1,14 +1,17 @@
 from __future__ import annotations
+from stanbkt.fits.fit_options import StanFitOptions
+from stanbkt.fits.fit_factory import FitFactory
+from stanbkt.fits.core.base import BaseFit
 
 from importlib.resources import files
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import cmdstanpy as csp
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from stanbkt.models.base import BKTModelBase, FitMethod
+from stanbkt.models.core.base import BKTModelBase, FitMethod
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     ColumnNames,
@@ -29,11 +32,20 @@ class StandardBKT(BKTModelBase):
 
     Parameters
     ----------
-    compile_kwargs : dict, optional
+    fit_method : FitMethod, default=FitMethod.MCMC
+        The method to use for fitting the Stan model. Supported methods include:
+        - FitMethod.MCMC: Markov Chain Monte Carlo sampling for full posterior inference.
+        - FitMethod.MLE: Maximum Likelihood Estimation for point estimates of parameters.
+        - FitMethod.VB: Variational Bayes for faster approximate inference.
+        - FitMethod.PATHFINDER: Pathfinder variational approximation for fast inference.
+    verbose : VerbosityLevel, default=VerbosityLevel.INFO
+        Verbosity level for logging during fitting and prediction.
+    stan_compile_kwargs : dict, optional
+        Additional Stan compile options forwarded as ``stanc_options`` to
+        :external+cmdstanpy:py:class:`cmdstanpy.CmdStanModel`.
+    cpp_compile_kwargs : dict, optional
         Additional C++ compile options forwarded as ``cpp_options`` to
         :external+cmdstanpy:py:class:`cmdstanpy.CmdStanModel`.
-        See :external+cmdstanpy:py:meth:`cmdstanpy.CmdStanModel.__init__`
-        for accepted values.
 
     Attributes
     ----------
@@ -45,29 +57,43 @@ class StandardBKT(BKTModelBase):
 
     def __init__(
         self,
+        fit_method: FitMethod = FitMethod.MCMC,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
     ):
         super().__init__(
             verbose=verbose,
+            fit_method=fit_method,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
         )
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
 
+    @property
+    def _stan_model_filename(self) -> str:
+        return str(files("stanbkt").joinpath("stan_code", "BKT", "BKT_model.stan"))
+
+    @property
+    def _stan_hidden_filename(self) -> str:
+        return str(files("stanbkt").joinpath("stan_code", "BKT", "hidden_states.stan"))
+
+    @property
+    def _stan_smoothed_hidden_filename(self) -> str:
+        return str(
+            files("stanbkt").joinpath("stan_code", "BKT", "smoothed_hidden_states.stan")
+        )
+
     def fit(
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethod | None = FitMethod.MCMC,
-        stan_fit_kwargs: Optional[dict[str, Any]] = None,
+        stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
     ) -> StandardBKT:
         """
         Fit the BKT model to data. Each KC is fitted independently with its own model.
-        Additional KCs can be fitted by calling fit again with new data. However, refitting
-        with a different method is not allowed on the same model instance.
+        Additional KCs can be fitted by calling fit again with new data.
 
         Parameters
         ----------
@@ -78,21 +104,13 @@ class StandardBKT(BKTModelBase):
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
-        method : FitMethod, default='sample'
-            Method for fitting the model. Options are 'sample' for MCMC sampling,
-            'vb' for variational inference, and 'optimize' for MAP estimation.
-        **kwargs:
-            Method-specific keyword arguments forwarded to :mod:`cmdstanpy`.
+        stan_fit_options : StanFitOptions or dict, optional
+                Additional keyword arguments to pass to the Stan fitting method. If a dict is passed, it will be forwarded as-is to the CmdStanPy fit method.
+                It is recommended to use the typed :class:`StanFitOptions` for better type checking and validation. The accepted options depend on the chosen fit method. For example:
+                - MCMC parameters (e.g., iter_sampling, chains, seed)
+                - VB parameters (e.g., iter, tol_rel_obj)
+                If None, default fitting options for the chosen fit method will be used.
 
-            Supported by ``method``:
-
-            - ``method='sample'``: passed to :py:meth:`cmdstanpy.CmdStanModel.sample`
-                (for example: ``iter_sampling``, ``iter_warmup``, ``chains``,
-                ``parallel_chains``, ``thin``, ``seed``, ``show_progress``).
-            - ``method='vb'``: passed to :py:meth:`cmdstanpy.CmdStanModel.variational`
-                when implemented.
-            - ``method='optimize'``: passed to :py:meth:`cmdstanpy.CmdStanModel.optimize`
-                when implemented.
 
         Returns
         -------
@@ -104,25 +122,36 @@ class StandardBKT(BKTModelBase):
         ValueError
             If data validation fails or invalid method specified.
         """
-        if self._previous_fit_method is None:
-            self._previous_fit_method = method
-        elif method != self._previous_fit_method:
-            raise ValueError(
-                f"Model was previously fitted with method '{self._previous_fit_method}'. "
-                f"Refitting with a different method '{method}' is not allowed. "
-                "Please create a new model instance to fit with a different method."
-            )
-
-        # TODO: remove after implementing VB and MLE fitting methods
-        if method != "sample":
-            raise ValueError(
-                "Only method='sample' is currently implemented for StandardBKT."
-            )
+        # Intialize new fits object if not already initialized.
+        if self.fits is None:
+            self.fits = self.fit_class()
 
         if self._stan_model is None:
             self._compile_model(self._stan_model_filename)
 
-        fits: dict[str, Any] = {}
+        # ensure _compile_model succeeded before proceeding
+        # this helps with: (1) type checking and  (2) catches any missed compilation failures
+        if self._stan_model is None:
+            raise RuntimeError(
+                "Failed to compile and load the Stan model. Cannot fit the model."
+            )
+
+        # check stan_fit_options
+        if stan_fit_options is None:
+            stan_fit_options = FitFactory.create_default_fit_options(self._fit_method)
+        else:
+            # convert to StanFitOptions if it is a dict, mainly for better type checking and validation, but also to ensure compatibility with the FitFactory verification method
+            if isinstance(stan_fit_options, dict):
+                stan_fit_options = FitFactory.create_fit_options_from_dict(
+                    stan_fit_options, self._fit_method
+                )
+            # verify compatibility of provided options with the fit method
+            FitFactory.verify_fit_options_compatibility(
+                stan_fit_options, self._fit_method
+            )
+        # convert to dict for CmdStanPy
+        fit_options_dict = stan_fit_options.to_dict()
+
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
@@ -133,50 +162,21 @@ class StandardBKT(BKTModelBase):
 
             correctness = kc_data.correctness
             n_students, n_problems = correctness.shape
+            # TODO move this to data helper
             data_dict = {
                 "nStudents": int(n_students),
                 "nProblems": int(n_problems),
                 "correctness": correctness,
-                "nGroups": 1,
+                "nGroups": 1,  # standard BKT does not use groups
                 "groups": np.ones(n_students, dtype=np.int32),
             }
-
-            fit_result = self._stan_model.sample(
-                data=data_dict,
-                seed=[1, 2, 3, 4],
-                chains=4,
-                threads_per_chain=4,
-                parallel_chains=4,
-                iter_sampling=1500,
-                iter_warmup=2000,
-                thin=2,
+            fit_result = self._fit_stan_model_using_method(
+                data_dict=data_dict, fit_options=stan_fit_options
             )
-            fits[kc_id] = fit_result
+            self.fits.add_fit(str(kc_id), fit_result)
 
-        self.fits_ = fits
         self._is_fitted = True
-
         return self
-
-    # TODO complete this method, no
-    def _fit_using_method(
-        self, method: FitMethod, data_dict: dict[str, Any], **kwargs
-    ) -> Any:
-        if self._stan_model is None:
-            raise RuntimeError("Stan model is not compiled. Cannot fit the model.")
-
-        if method == FitMethod.MCMC:
-            return self._stan_model.sample(data=data_dict, **kwargs)
-        elif method == FitMethod.VB:
-            raise NotImplementedError(
-                "Variational inference fitting is not implemented yet."
-            )
-        elif method == FitMethod.MLE:
-            raise NotImplementedError("MAP estimation fitting is not implemented yet.")
-        else:
-            raise ValueError(
-                f"Invalid fitting method '{method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', and '{FitMethod.MLE}'."
-            )
 
     def _build_stan_data_dict(self, correctness: np.ndarray) -> dict[str, Any]:
         """Build data dictionary for the stan models.
@@ -217,6 +217,11 @@ class StandardBKT(BKTModelBase):
         data = data.copy()  # avoid modifying original data
         data = data.loc[data[kc_column_name].isin(overlapping_kcs)]
 
+        if self.fits is None:
+            raise RuntimeError(
+                "Fits object is not initialized. Cannot call generated quantities for prediction."
+            )
+
         result_frames: list[pd.DataFrame] = []
         for kc_id, kc_data in iter_kc_data(
             data=data,
@@ -224,7 +229,7 @@ class StandardBKT(BKTModelBase):
             return_groups=False,
             print_fn=self._print,
         ):
-            fit_result = self.fits_.get(kc_id)
+            fit_result = self.fits.get_fit(kc_id)
             if fit_result is None:
                 continue
 
@@ -233,6 +238,10 @@ class StandardBKT(BKTModelBase):
                 data=data_dict,
                 previous_fit=fit_result,
             )
+
+            # make pretty and store in dict
+
+            # return the dict
 
             # TODO: we do not want to summarize this directly in the predict method
             # instead we should create a base class for generated quantity predictions
@@ -275,6 +284,7 @@ class StandardBKT(BKTModelBase):
                 self._stan_hidden_filename,
                 cpp_options=self.cpp_compile_kwargs,
                 stanc_options=self.stan_compile_kwargs,
+                print_fn=self._print,
             )
 
         return self._predict_generated_quantities(
@@ -296,6 +306,7 @@ class StandardBKT(BKTModelBase):
                 self._stan_smoothed_hidden_filename,
                 cpp_options=self.cpp_compile_kwargs,
                 stanc_options=self.stan_compile_kwargs,
+                print_fn=self._print,
             )
 
         return self._predict_generated_quantities(
@@ -306,17 +317,3 @@ class StandardBKT(BKTModelBase):
 
     def evaluate(self, **kwargs) -> dict[str, Any]:
         raise NotImplementedError("evaluate is not implemented for StandardBKT yet")
-
-    @property
-    def _stan_model_filename(self) -> str:
-        return str(files("stanbkt").joinpath("stan_code", "BKT", "BKT_model.stan"))
-
-    @property
-    def _stan_hidden_filename(self) -> str:
-        return str(files("stanbkt").joinpath("stan_code", "BKT", "hidden_states.stan"))
-
-    @property
-    def _stan_smoothed_hidden_filename(self) -> str:
-        return str(
-            files("stanbkt").joinpath("stan_code", "BKT", "smoothed_hidden_states.stan")
-        )

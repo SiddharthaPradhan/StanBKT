@@ -4,14 +4,15 @@ This module defines a small set of strongly-typed, commonly used fitting options
 for Stan workflows in this project. These options are intentionally conservative:
 only frequently used arguments are exposed as explicit dataclass fields, while
 less-common (or future) CmdStanPy keyword arguments can still be passed via
-``extra_kwargs``.
+``extra_kwargs``. It also defines the default options for each fit method.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 import os
-from typing import Any, TypeAlias, Union
+from typing import Any, Self, TypeAlias, Union
+from stanbkt.fits.fit_types import FitMethod
 
 
 @dataclass
@@ -20,6 +21,8 @@ class BaseFitOptions:
 
     Parameters
     ----------
+    seed : int | None
+        RNG seed for reproducibility.
     extra_kwargs : dict[str, Any]
         Additional keyword arguments forwarded directly to CmdStanPy.
         These keys are merged last and therefore override generated defaults
@@ -27,11 +30,22 @@ class BaseFitOptions:
 
     Notes
     -----
-    This class is intended to be extended.
     Subclasses can add strongly typed fields and use ``extra_kwargs`` for less common or future CmdStanPy options.
     """
 
+    seed: int | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Self:
+        field_names = {f.name for f in fields(cls)}
+
+        known = {k: v for k, v in d.items() if k in field_names}
+        extra = {k: v for k, v in d.items() if k not in field_names}
+
+        obj = cls(**known)
+        obj.extra_kwargs.update(extra)
+        return obj
 
     def to_dict(self) -> dict[str, Any]:
         """Convert options to a CmdStanPy kwargs dictionary.
@@ -47,6 +61,11 @@ class BaseFitOptions:
         extras: dict[str, Any] = return_dict.pop("extra_kwargs", {}) or {}
         return_dict = {k: v for k, v in return_dict.items() if v is not None}
         return_dict.update(extras)
+        # Remove any keys with None values so CmdStanPy can apply its own defaults
+        # also allows for more cache hits.
+        return_dict = {k: v for k, v in return_dict.items() if v is not None}
+        # sort by key for consistent ordering (more cache hits and easier viewing)
+        return_dict = dict(sorted(return_dict.items()))
         return return_dict
 
 
@@ -66,6 +85,8 @@ class MCMCFitOptions(BaseFitOptions):
         Warmup iterations per chain.
     iter_sampling : int
         Sampling iterations per chain.
+    save_warmup : bool
+        Whether to save warmup samples.
     thin : int
         Thinning period.
     seed : int | list[int] | None
@@ -76,6 +97,8 @@ class MCMCFitOptions(BaseFitOptions):
         Maximum tree depth for NUTS.
     show_progress : bool
         Whether to show sampling progress.
+    show_console : bool
+        Whether to stream CmdStan console output.
     """
 
     chains: int = 4
@@ -83,11 +106,13 @@ class MCMCFitOptions(BaseFitOptions):
     threads_per_chain: int = 1
     iter_warmup: int = 1000
     iter_sampling: int = 1000
+    save_warmup: bool | None = None
     thin: int = 1
     seed: int | list[int] | None = None
     adapt_delta: float | None = None
     max_treedepth: int | None = None
-    show_progress: bool = False
+    show_progress: bool = True
+    show_console: bool = False
 
 
 @dataclass
@@ -118,7 +143,6 @@ class VBFitOptions(BaseFitOptions):
     elbo_samples: int = 100
     eta: float = 1.0
     output_samples: int = 1000
-    seed: int | None = None
 
 
 @dataclass
@@ -140,7 +164,6 @@ class MLEFitOptions(BaseFitOptions):
 
     algorithm: str = "lbfgs"
     iter: int = 2000
-    seed: int | None = None
     jacobian: bool = False
 
 
@@ -207,7 +230,6 @@ class PFFitOptions(BaseFitOptions):
     num_elbo_draws: int | None = None
     psis_resample: bool = True
     calculate_lp: bool = True
-    seed: int | None = None
     inits: dict[str, float] | float | os.PathLike | str | None = None
     show_console: bool = False
     refresh: int | None = None

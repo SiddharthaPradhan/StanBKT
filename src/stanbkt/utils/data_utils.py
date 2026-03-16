@@ -5,10 +5,10 @@ import numpy as np
 from dataclasses import dataclass
 from collections.abc import Iterator
 from stanbkt.utils.verbose import VerbosityLevel
-from enum import Enum
+from enum import StrEnum
 
 
-class ColumnNames(str, Enum):
+class ColumnNames(StrEnum):
     STUDENT_ID = "student_id"
     PROBLEM_ID = "problem_id"
     CORRECTNESS = "correct"
@@ -17,18 +17,19 @@ class ColumnNames(str, Enum):
 
     @staticmethod
     def get_default_mapping() -> dict[str, str]:
-        return {
-            ColumnNames.STUDENT_ID: ColumnNames.STUDENT_ID,
-            ColumnNames.PROBLEM_ID: ColumnNames.PROBLEM_ID,
-            ColumnNames.CORRECTNESS: ColumnNames.CORRECTNESS,
-            ColumnNames.KC_ID: ColumnNames.KC_ID,
-            ColumnNames.GROUP: ColumnNames.GROUP,
-        }
+        return {col: col for col in ColumnNames}
 
 
 # the maximum number of dims allowed in generated quantities for variables of interest
 # the dims are usually (student, problem)
 MAX_GQ_DIMENSION = 3
+
+# the basic columns required for any BKT model fitting.
+BASE_REQUIRED_COLS: set[ColumnNames] = {
+    ColumnNames.STUDENT_ID,
+    ColumnNames.PROBLEM_ID,
+    ColumnNames.CORRECTNESS,
+}
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ def validate_data(
     data: pd.DataFrame,
     col_mapping: dict[str, str],
     check_groups: bool = False,
+    additional_required_cols: Optional[set[str]] = None,
 ) -> None:
     """
     Validate input data for BKT model fitting.
@@ -65,19 +67,24 @@ def validate_data(
         If required columns are missing or if correctness values are not binary.
     """
 
-    required_cols = {
-        col_mapping.get(ColumnNames.STUDENT_ID),
-        col_mapping.get(ColumnNames.PROBLEM_ID),
-        col_mapping.get(ColumnNames.CORRECTNESS),
+    required_cols_mapped: set[str] = {
+        col_mapping.get(col, col) for col in BASE_REQUIRED_COLS
     }
-    if check_groups:
-        required_cols.add(col_mapping.get(ColumnNames.GROUP))
 
-    if not required_cols.issubset(data.columns):
-        missing = required_cols - set(data.columns)
+    # add any additional required columns to the mapped required columns sets
+    if additional_required_cols:
+        for additional_col in additional_required_cols:
+            required_cols_mapped.add(col_mapping.get(additional_col, additional_col))
+
+    if check_groups:
+        required_cols_mapped.add(col_mapping.get(ColumnNames.GROUP, ColumnNames.GROUP))
+
+    data_col_set = set(data.columns)
+    if not required_cols_mapped.issubset(data_col_set):
+        missing = required_cols_mapped - data_col_set
         raise ValueError(f"Missing required columns: {missing}")
 
-    correctness_col = col_mapping.get(ColumnNames.CORRECTNESS)
+    correctness_col = col_mapping.get(ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS)
     if not data[correctness_col].isin([0, 1]).all():
         raise ValueError(
             f"Correctness column '{correctness_col}' must contain only 0 and 1 values."
@@ -214,45 +221,6 @@ def iter_kc_data(
         yield str(kc), kc_data
 
 
-# TODO: Make this accept user input for control
-def summarize_state_predictions(gq_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Summarize generated-quantities draws for Hidden State Predictions.
-
-    Parameters
-    ----------
-    gq_df : pd.DataFrame
-        DataFrame of draws, typically ``gq_fit.draws_pd().T``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Summary with columns: mean, std, median, 2.5%, 97.5%.
-    """
-    mask = ~gq_df.index.to_series().str.startswith(("chain__", "iter__", "draw__"))
-    gq_df_clean = gq_df[mask]
-
-    gq_summary = pd.DataFrame(
-        {
-            "mean": gq_df_clean.mean(axis=1),
-            "std": gq_df_clean.std(axis=1),
-            "median": gq_df_clean.median(axis=1),
-            "2.5%": gq_df_clean.quantile(0.025, axis=1),
-            "97.5%": gq_df_clean.quantile(0.975, axis=1),
-        }
-    )
-
-    idx_nums = gq_summary.index.to_series().str.extract(r"(\d+),(\d+)")
-    valid_rows = idx_nums.notna().all(axis=1)
-    if valid_rows.any():
-        sortable = idx_nums[valid_rows].astype(int)
-        order = np.lexsort((sortable[1].values, sortable[0].values))
-        sorted_valid = gq_summary.loc[valid_rows].iloc[order]
-        gq_summary = pd.concat([sorted_valid, gq_summary.loc[~valid_rows]], axis=0)
-
-    return gq_summary
-
-
 def rename_summary_var_columns(
     summary_df: pd.DataFrame, expected_var_cols: list
 ) -> pd.DataFrame:
@@ -282,10 +250,10 @@ def rename_summary_var_columns(
     return summary_df.rename(columns=rename_mapping)
 
 
-def summarize_state_predictions_test(
+def summarize_state_predictions(
     gq_df: pd.DataFrame,
     quantiles=(0.025, 0.975),
-    array_index_names: list[str] = [],
+    array_index_names: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """
     Summarize generated-quantities draws for Hidden State Predictions.
@@ -302,7 +270,7 @@ def summarize_state_predictions_test(
     """
     if len(gq_df) < 1:
         raise ValueError("Input DataFrame is empty.")
-    if array_index_names and len(array_index_names) > 3:
+    if array_index_names and len(array_index_names) > MAX_GQ_DIMENSION:
         raise ValueError("array_index_names cannot have more than 3 elements.")
 
     mask: pd.Series = ~gq_df.index.to_series().str.startswith(
@@ -314,6 +282,12 @@ def summarize_state_predictions_test(
     if not all(0 <= q <= 1 for q in quantiles):
         raise ValueError("Quantiles must be between 0 and 1.")
 
+    if gq_df_clean.empty:
+        summary_cols = ["mean", "std", "median"] + [
+            f"{round(q*100, 2)}%" for q in quantiles
+        ]
+        return pd.DataFrame(columns=summary_cols, index=pd.Index([], dtype="object"))
+
     gq_summary = pd.DataFrame(
         {
             "mean": gq_df_clean.mean(axis=1),
@@ -324,28 +298,46 @@ def summarize_state_predictions_test(
     for q in quantiles:
         gq_summary[f"{round(q*100, 2)}%"] = gq_df_clean.quantile(q, axis=1)
 
-    variable_dim = len(gq_summary.iloc[0]["variable"].split(","))
+    extracted = gq_summary.index.to_series().str.extract(
+        r"^(?P<variable_name>[^\[]+)\[(?P<indices>\d+(?:,\d+)*)\]$"
+    )
+    matched_rows = extracted["indices"].notna()
 
-    if array_index_names:
-        # check if size of array_index_names matches the number of dimensions in the draws 'variable' columns
-        if variable_dim != len(array_index_names):
+    if matched_rows.any():
+        index_lengths = extracted.loc[matched_rows, "indices"].str.count(",") + 1
+        variable_dim = int(index_lengths.iloc[0])
+
+        if variable_dim > MAX_GQ_DIMENSION:
             raise ValueError(
-                f"Length of array_index_names must match the number of dimensions in the variable columns. Expected {variable_dim}, got {len(array_index_names)}."
+                f"Generated quantity indices cannot have more than {MAX_GQ_DIMENSION} elements."
             )
-    else:  # we assert variable_dim is at most 3 for our use case
-        array_index_names = ["i", "j", "k"][
-            :variable_dim
-        ]  # default names for up to 3 dimensions
 
-    # seperate each of the dimension indices in the 'variable' columns into separate columns
-    variable_split = (
-        gq_summary.index.to_series().str.rstrip("]").str.split("[\\[,\\]]", expand=True)
-    )
-    variable_split.columns = ["variable_name"] + array_index_names
-    gq_summary: pd.DataFrame = pd.concat([variable_split, gq_summary], axis=1)
-    gq_summary.reset_index(drop=True, inplace=True)
-    gq_summary.sort_values(
-        by=["variable_name"] + array_index_names, inplace=True, ignore_index=True
-    )
+        if array_index_names and variable_dim != len(array_index_names):
+            raise ValueError(
+                "Length of array_index_names must match the number of dimensions "
+                f"in the variable indices. Expected {variable_dim}, got {len(array_index_names)}."
+            )
+
+        sort_df = pd.DataFrame(index=gq_summary.index)
+        sort_df["_unmatched"] = (~matched_rows).astype(int)
+        sort_df["_variable_name"] = extracted["variable_name"].fillna("")
+        split_indices = extracted.loc[matched_rows, "indices"].str.split(
+            ",", expand=True
+        )
+        for column_idx in range(variable_dim):
+            column_name = f"_dim_{column_idx}"
+            sort_df[column_name] = pd.Series(np.inf, index=gq_summary.index)
+            sort_df.loc[matched_rows, column_name] = split_indices[column_idx].astype(
+                int
+            )
+        sort_df["_position"] = np.arange(len(sort_df))
+
+        sort_columns = (
+            ["_unmatched", "_variable_name"]
+            + [f"_dim_{column_idx}" for column_idx in range(variable_dim)]
+            + ["_position"]
+        )
+        ordered_index = sort_df.sort_values(sort_columns).index
+        gq_summary = gq_summary.loc[ordered_index]
 
     return gq_summary

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from stanbkt.utils.verbose import VerbosityLevel
 
 import hashlib
 import json
@@ -6,7 +7,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Callable
 
 import cmdstanpy as csp
 from platformdirs import PlatformDirs
@@ -301,6 +302,7 @@ def compile_stan_model(
     stan_file: str | os.PathLike[str],
     cpp_options: dict[str, Any] | None = None,
     stanc_options: dict[str, Any] | None = None,
+    print_fn: Optional[Callable] = None,
 ) -> csp.CmdStanModel:
     """Compile or reuse a cached Stan executable and return a CmdStan model.
 
@@ -341,11 +343,22 @@ def compile_stan_model(
     cached_exe_file = _cached_executable_path(resolved_stan_file, cache_dir)
 
     if cached_exe_file.exists():
+        if print_fn is not None:
+            print_fn(
+                f"Using cached compiled Stan model executable at {cached_exe_file}",
+                level=VerbosityLevel.INFO,
+            )
         return csp.CmdStanModel(
             stan_file=str(resolved_stan_file),
             exe_file=str(cached_exe_file),
             stanc_options=stanc_options,
             cpp_options=cpp_options,
+        )
+
+    if print_fn is not None:
+        print_fn(
+            f"Compiling Stan model. This may take a while. Subsequent calls for the same model and compile options will use cached executable.",
+            level=VerbosityLevel.INFO,
         )
 
     compiled_model = csp.CmdStanModel(
@@ -371,3 +384,151 @@ def compile_stan_model(
         stanc_options=stanc_options,
         cpp_options=cpp_options,
     )
+
+
+def get_cache_root() -> Path:
+    """Return the root cache directory for all compiled Stan models.
+
+    Returns
+    -------
+    Path
+        Platform-specific cache root directory for StanBKT compiled models.
+    """
+    cache_root = PlatformDirs(appname="stanbkt", appauthor=False).user_cache_path
+    return cache_root / _CACHE_NAMESPACE
+
+
+def clear_stan_cache(
+    stan_file: str | os.PathLike[str] | None = None,
+    cpp_options: dict[str, Any] | None = None,
+    stanc_options: dict[str, Any] | None = None,
+    print_fn: Optional[Callable] = None,
+) -> int:
+    """Clear the compiled Stan model cache.
+
+    Parameters
+    ----------
+    stan_file : str or os.PathLike[str] or None, default=None
+        If provided, only clear the cache for this specific Stan file with the
+        given compile options. If None, clear the entire cache for all models.
+    cpp_options : dict[str, Any] or None, default=None
+        C++ compiler options. Only used if ``stan_file`` is provided.
+    stanc_options : dict[str, Any] or None, default=None
+        Stan compiler options. Only used if ``stan_file`` is provided.
+    print_fn : Callable or None, default=None
+        Optional function to print status messages.
+
+    Returns
+    -------
+    int
+        Number of cache directories removed.
+
+    Examples
+    --------
+    Clear the entire cache:
+
+    >>> clear_stan_cache()
+
+    Clear cache for a specific model:
+
+    >>> clear_stan_cache("path/to/model.stan")
+
+    Clear cache for a specific model with specific compile options:
+
+    >>> clear_stan_cache("path/to/model.stan", cpp_options={"STAN_THREADS": True})
+    """
+    if stan_file is not None:
+        # Clear cache for specific model
+        cache_dir = get_stan_model_cache_dir(
+            stan_file,
+            cpp_options=cpp_options,
+            stanc_options=stanc_options,
+        )
+        if cache_dir.exists():
+            if print_fn is not None:
+                print_fn(
+                    f"Removing cached model at {cache_dir}",
+                    level=VerbosityLevel.INFO,
+                )
+            shutil.rmtree(cache_dir)
+            return 1
+        else:
+            if print_fn is not None:
+                print_fn(
+                    f"No cache found for {stan_file}",
+                    level=VerbosityLevel.INFO,
+                )
+            return 0
+    else:
+        # Clear entire cache
+        cache_root = get_cache_root()
+        if not cache_root.exists():
+            if print_fn is not None:
+                print_fn(
+                    "Cache directory does not exist. Nothing to clear.",
+                    level=VerbosityLevel.INFO,
+                )
+            return 0
+
+        # Count subdirectories before removal
+        cache_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+        count = len(cache_dirs)
+
+        if count > 0:
+            if print_fn is not None:
+                print_fn(
+                    f"Removing {count} cached model(s) from {cache_root}",
+                    level=VerbosityLevel.INFO,
+                )
+            shutil.rmtree(cache_root)
+        else:
+            if print_fn is not None:
+                print_fn(
+                    "Cache directory is empty. Nothing to clear.",
+                    level=VerbosityLevel.INFO,
+                )
+
+        return count
+
+
+def list_cached_models(print_fn: Optional[Callable] = None) -> list[Path]:
+    """List all cached Stan model directories.
+
+    Parameters
+    ----------
+    print_fn : Callable or None, default=None
+        Optional function to print status messages.
+
+    Returns
+    -------
+    list[Path]
+        List of cache directory paths for compiled models.
+
+    Examples
+    --------
+    >>> cached = list_cached_models()
+    >>> print(f"Found {len(cached)} cached models")
+    """
+    cache_root = get_cache_root()
+    if not cache_root.exists():
+        if print_fn is not None:
+            print_fn(
+                "Cache directory does not exist.",
+                level=VerbosityLevel.INFO,
+            )
+        return []
+
+    cache_dirs = sorted([d for d in cache_root.iterdir() if d.is_dir()])
+
+    if print_fn is not None:
+        if cache_dirs:
+            print_fn(
+                f"Found {len(cache_dirs)} cached model(s):",
+                level=VerbosityLevel.INFO,
+            )
+            for cache_dir in cache_dirs:
+                print_fn(f"  - {cache_dir.name}", level=VerbosityLevel.INFO)
+        else:
+            print_fn("No cached models found.", level=VerbosityLevel.INFO)
+
+    return cache_dirs

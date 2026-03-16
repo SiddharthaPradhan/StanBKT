@@ -20,7 +20,7 @@ class VerboseMixin:
         self.verbose = level
 
     def _print(self, msg: str, level: VerbosityLevel = VerbosityLevel.INFO):
-        if self.verbose.value >= level.value:
+        if self.verbose >= level:
             if level == VerbosityLevel.WARN:
                 msg = f"WARNING: {msg}"
             elif level == VerbosityLevel.DEBUG:

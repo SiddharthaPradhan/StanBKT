@@ -1,13 +1,10 @@
 from cmdstanpy import CmdStanMCMC
-from stanbkt.fits.base import BaseFit
+from stanbkt.fits.core.base import BaseFit
 import pytest
 
-from stanbkt.models.base import (
-    BayesianPriors,
-    BKTModelBase,
-    ModelType,
-    PriorEstimationType,
-)
+from stanbkt.models.core.base import BKTModelBase
+from stanbkt.models.priors import BayesianPriors
+from stanbkt.models.model_types import ModelType, PriorEstimationType
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -93,9 +90,9 @@ class TestBKTModelBaseInit:
         m = _ConcreteModel()
         assert m._is_fitted is False
 
-    def test_previous_fit_method_is_none(self):
+    def test_default_fit_method_is_mcmc(self):
         m = _ConcreteModel()
-        assert m._previous_fit_method is None
+        assert m._fit_method == FitMethod.MCMC
 
     def test_custom_compile_kwargs_stored(self):
         m = _ConcreteModel(

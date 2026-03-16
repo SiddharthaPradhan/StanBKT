@@ -12,7 +12,7 @@ import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
 
 from stanbkt.fits.fit_types import (
-    BaseCmdStanFit,
+    CmdStanFit,
     FitMetadata,
     FitMethod,
     FitSaveFolder,
@@ -106,7 +106,7 @@ def get_summary_cache_file(kc: str) -> str:
 def load_fit_artifacts(
     base_save_location: str,
     expected_fit_method: FitMethod,
-) -> tuple[FitMetadata, dict[str, BaseCmdStanFit], dict[str, pd.DataFrame]]:
+) -> tuple[FitMetadata, dict[str, CmdStanFit], dict[str, pd.DataFrame]]:
     """Load fit, metadata, and cache artifacts from disk.
 
     Parameters
@@ -149,7 +149,7 @@ def load_fit_artifacts(
             f"into loader expecting method '{expected_fit_method.value}'."
         )
 
-    fits: dict[str, BaseCmdStanFit] = {}
+    fits: dict[str, CmdStanFit] = {}
     summary_cache: dict[str, pd.DataFrame] = {}
     error_kcs: set[str] = set()
     error_cache: set[FitSaveFolder] = set()
@@ -183,7 +183,7 @@ def load_fit_artifacts(
             error_kcs.add(fit_save.kc)
             continue
 
-        if not isinstance(loaded_fit, BaseCmdStanFit):
+        if not isinstance(loaded_fit, CmdStanFit):
             warnings.warn(
                 (
                     f"Encountered unsupported Fit type '{type(loaded_fit).__name__}' "
@@ -248,7 +248,7 @@ def load_fit_artifacts(
 
 def save_fit_artifacts(
     base_save_location: str,
-    fits: dict[str, BaseCmdStanFit],
+    fits: dict[str, CmdStanFit],
     fit_metadata: FitMetadata,
     summary_cache: dict[str, pd.DataFrame],
 ) -> FitMetadata:

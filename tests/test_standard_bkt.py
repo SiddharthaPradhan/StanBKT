@@ -1,11 +1,12 @@
 import os
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from stanbkt.fits.fit_types import FitMethod
-from stanbkt.models.standard import StandardBKT
+from stanbkt.models.core.standard import StandardBKT
 from stanbkt.utils.verbose import VerbosityLevel
 
 
@@ -136,48 +137,36 @@ class TestBuildStanDataDict:
 class TestFitMethodGuards:
     def test_raises_for_variational_method(self):
         model = StandardBKT()
-        with pytest.raises(ValueError, match="Only method='sample'"):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.VB)
 
     def test_raises_for_optimize_method(self):
         model = StandardBKT()
-        with pytest.raises(ValueError, match="Only method='sample'"):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.MLE)
 
     def test_raises_for_pathfinder_method(self):
         model = StandardBKT()
-        with pytest.raises(ValueError, match="Only method='sample'"):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.PATHFINDER)
 
     def test_method_switch_raises_before_stan(self):
-        """If a model was previously fitted (simulated), refit with a different method raises."""
+        """Legacy method kwarg path no longer exists; fit method is constructor-driven."""
         model = StandardBKT()
-        # Simulate a previous fit with MCMC without actually running Stan
-        model._previous_fit_method = FitMethod.MCMC
-        with pytest.raises(ValueError, match="Refitting with a different method"):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.VB)
 
     def test_method_switch_error_message_contains_previous_method(self):
         model = StandardBKT()
-        model._previous_fit_method = FitMethod.MCMC
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(TypeError) as exc_info:
             model.fit(_minimal_df(), method=FitMethod.VB)
-        assert "previously fitted" in str(exc_info.value)
+        assert "unexpected keyword argument 'method'" in str(exc_info.value)
 
     def test_same_method_does_not_trigger_switch_guard(self):
-        """Calling fit again with the same method should not raise the switch error."""
+        """fit() no longer accepts per-call method overrides."""
         model = StandardBKT()
-        model._previous_fit_method = FitMethod.MCMC
-        # Raises the "only sample" error, not the switch error, confirming the guard passed.
-        # Since MCMC == "sample", it should proceed past both guards and attempt Stan —
-        # at that point it will try to compile the Stan model, which we DON'T want.
-        # Instead, confirm no ValueError about "Refitting with a different method" is raised.
-        try:
+        with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.MCMC)
-        except ValueError as e:
-            assert "Refitting with a different method" not in str(e)
-        except Exception:
-            pass  # Stan compilation or runtime error — acceptable, guards passed
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +178,7 @@ class TestFitUsingMethod:
     def test_calling_causes_run_time_error(self):
         model = StandardBKT()
         with pytest.raises(RuntimeError):
-            model._fit_using_method(FitMethod.VB, {})
+            model._fit_stan_model_using_method({}, MagicMock())
 
     # TODO add more tests after
 

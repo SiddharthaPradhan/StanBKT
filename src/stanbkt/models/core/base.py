@@ -7,17 +7,20 @@ should inherit from.
 """
 
 from __future__ import annotations
+from stanbkt.fits.fit_factory import FitFactory
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, Literal, Optional, Tuple, Union, Final
 import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
 import pandas as pd
 import os
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
+from stanbkt.fits.fit_options import StanFitOptions
+from stanbkt.fits.fit_types import CmdStanFit
 from stanbkt.fits.fit_types import FitMethod
-from stanbkt.fits.base import BaseFit
+from stanbkt.fits.core.base import BaseFit
 from stanbkt.models.model_types import ModelType, PriorEstimationType
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import BayesianPriors
@@ -32,6 +35,8 @@ class BKTModelBase(VerboseMixin, ABC):
 
     Attributes
     ----------
+    fit_method : FitMethod
+        The method used for fitting the model (e.g., MCMC, VB, MAP).
     verbose : VerbosityLevel
         Verbosity level for logging.
     stan_compile_kwargs : dict
@@ -44,29 +49,60 @@ class BKTModelBase(VerboseMixin, ABC):
 
     def __init__(
         self,
+        fit_method: FitMethod = FitMethod.MCMC,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(verbose=verbose)
+        self._fit_method: Final[FitMethod] = fit_method
+        self.fit_class: Final[type[BaseFit]] = FitFactory.get_fit_class_from_method(
+            fit_method
+        )
         # TODO: NEED defaults for compile kwargs?
         # Does this need to be a dataclass?
         # TODO: catch the Error thrown and re-raise with custom error for invalid
         self.stan_compile_kwargs: dict[str, Any] = stan_compile_kwargs or {}
         self.cpp_compile_kwargs: dict[str, Any] = cpp_compile_kwargs or {}
-        # Model state attributes
+        # Model is instantiated lazily during first fit and cached
         self._stan_model: Optional[csp.CmdStanModel] = None
         self.fits: Optional[BaseFit] = None
         self._is_fitted: bool = False
-        self._previous_fit_method: Optional[str] = None  # TODO
+
+    def __str__(self) -> str:
+        """Return a user-friendly string representation of the model."""
+        class_name = self.__class__.__name__
+        fit_status = "fitted" if self._is_fitted else "not fitted"
+        num_kcs = self.fits.num_fitted_kcs if self._is_fitted and self.fits else 0
+        
+        lines = [
+            f"{class_name}(",
+            f"  fit_method={self._fit_method.value}",
+            f"  status={fit_status}",
+        ]
+        
+        if self._is_fitted and num_kcs > 0:
+            lines.append(f"  num_kcs={num_kcs}")
+        
+        lines.append(")")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Return a detailed string representation of the model."""
+        class_name = self.__class__.__name__
+        return (
+            f"{class_name}("
+            f"fit_method={self._fit_method!r}, "
+            f"verbose={self.verbose!r}, "
+            f"is_fitted={self._is_fitted})"
+        )
 
     @abstractmethod
     def fit(
         self,
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
-        method: FitMethod | None = None,
-        stan_fit_kwargs: Optional[dict[str, Any]] = None,
+        stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
     ) -> BKTModelBase:
         """
         Fit the BKT model to data.
@@ -80,12 +116,9 @@ class BKTModelBase(VerboseMixin, ABC):
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
-        method : FitMethod | None, default=None
-            Inference method: FitMethod.MCMC for MCMC, FitMethod.VB for VI,
-            FitMethod.OPTIMIZE for MAP, FitMethod.PATHFINDER for pathfinder.
-            If None, defaults to the previous fit method used. Raises an error if no previous method exists.
-        stan_fit_kwargs : dict, optional
-            Arguments to pass to the CmdStanPy fit method. This depends on the chosen method.
+        stan_fit_options : StanFitOptions or dict, optional
+            Arguments to pass to the CmdStanPy fit method. It is recommended to use the typed
+            :class:`StanFitOptions`, but a raw dictionary of option, value pairs can also be passed. See :externa
             For example:
             - MCMC parameters (e.g., iter_sampling, chains, seed)
             - VB parameters (e.g., iter, tol_rel_obj)
@@ -103,6 +136,25 @@ class BKTModelBase(VerboseMixin, ABC):
 
         """
         pass
+
+    def _fit_stan_model_using_method(
+        self, data_dict: dict[str, Any], fit_options: StanFitOptions
+    ) -> CmdStanFit:
+        if self._stan_model is None:
+            raise RuntimeError("Stan model is not compiled. Cannot fit the model.")
+
+        if self._fit_method == FitMethod.MCMC:
+            return self._stan_model.sample(data=data_dict, **fit_options.to_dict())
+        elif self._fit_method == FitMethod.VB:
+            return self._stan_model.variational(data=data_dict, **fit_options.to_dict())
+        elif self._fit_method == FitMethod.MLE:
+            return self._stan_model.optimize(data=data_dict, **fit_options.to_dict())
+        elif self._fit_method == FitMethod.PATHFINDER:
+            return self._stan_model.pathfinder(data=data_dict, **fit_options.to_dict())
+        else:
+            raise ValueError(
+                f"Invalid fitting method '{self._fit_method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', '{FitMethod.MLE}', and '{FitMethod.PATHFINDER}'."
+            )
 
     def summary(
         self,
@@ -245,11 +297,10 @@ class BKTModelBase(VerboseMixin, ABC):
 
     def _compile_model(self, stan_file: str | os.PathLike[str]) -> None:
         """Compile the Stan model and cache it."""
-        self._print(
-            f"Compiling Stan model from {stan_file}...", level=VerbosityLevel.INFO
-        )
+
         self._stan_model = compile_stan_model(
             stan_file,
             stanc_options=self.stan_compile_kwargs,
             cpp_options=self.cpp_compile_kwargs,
+            print_fn=self._print,
         )

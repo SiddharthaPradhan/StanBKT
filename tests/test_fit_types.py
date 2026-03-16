@@ -27,15 +27,18 @@ class TestFitMethodResolution:
         monkeypatch.setattr(fit_types, "CmdStanVB", _DummyVB)
         monkeypatch.setattr(fit_types, "CmdStanPathfinder", _DummyPathfinder)
 
-        assert FitMethod.get_method_from_fit(_DummyMCMC()) == FitMethod.MCMC
-        assert FitMethod.get_method_from_fit(_DummyMLE()) == FitMethod.MLE
-        assert FitMethod.get_method_from_fit(_DummyVB()) == FitMethod.VB
-        assert FitMethod.get_method_from_fit(_DummyPathfinder()) == FitMethod.PATHFINDER
+        assert FitMethod.infer_fit_method_from_stan_fit(_DummyMCMC()) == FitMethod.MCMC
+        assert FitMethod.infer_fit_method_from_stan_fit(_DummyMLE()) == FitMethod.MLE
+        assert FitMethod.infer_fit_method_from_stan_fit(_DummyVB()) == FitMethod.VB
+        assert (
+            FitMethod.infer_fit_method_from_stan_fit(_DummyPathfinder())
+            == FitMethod.PATHFINDER
+        )
 
     @no_type_check
     def test_get_method_from_fit_raises_for_unsupported_type(self):
         with pytest.raises(ValueError, match="Unsupported fit type"):
-            FitMethod.get_method_from_fit(object())
+            FitMethod.infer_fit_method_from_stan_fit(object())
 
 
 class TestFitMetadataTypes:

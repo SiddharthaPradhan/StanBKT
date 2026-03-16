@@ -8,7 +8,6 @@ from stanbkt.utils.data_utils import (
     iter_kc_data,
     rename_summary_var_columns,
     summarize_state_predictions,
-    summarize_state_predictions_test,
     validate_data,
 )
 from stanbkt.utils.verbose import VerbosityLevel
@@ -42,6 +41,22 @@ def test_validate_data_raises_for_non_binary_correctness() -> None:
     df.loc[0, "correct"] = 2
     with pytest.raises(ValueError, match="must contain only 0 and 1"):
         validate_data(df, ColumnNames.get_default_mapping())
+
+
+def test_validate_data_with_additional_required_cols() -> None:
+    df = _base_df()
+    # Should pass with extra column present
+    validate_data(
+        df, ColumnNames.get_default_mapping(), additional_required_cols={"group_id"}
+    )
+
+
+def test_validate_data_raises_when_additional_col_missing() -> None:
+    df = _base_df().drop(columns=["group_id"])
+    with pytest.raises(ValueError, match="Missing required columns"):
+        validate_data(
+            df, ColumnNames.get_default_mapping(), additional_required_cols={"group_id"}
+        )
 
 
 def test_iter_kc_data_adds_default_kc_when_absent() -> None:
@@ -136,16 +151,16 @@ def test_rename_summary_var_columns_raises_on_length_mismatch() -> None:
         rename_summary_var_columns(df, ["mean"])
 
 
-def test_summarize_state_predictions_test_input_validation() -> None:
+def test_summarize_state_predictions_input_validation() -> None:
     with pytest.raises(ValueError, match="Input DataFrame is empty"):
-        summarize_state_predictions_test(pd.DataFrame())
+        summarize_state_predictions(pd.DataFrame())
 
     gq_df = pd.DataFrame(
         {"d1": [0.5]},
         index=pd.Index(["pred[1,1]"], dtype="object"),
     )
     with pytest.raises(ValueError, match="Quantiles must be between 0 and 1"):
-        summarize_state_predictions_test(gq_df, quantiles=(-0.1, 0.5))
+        summarize_state_predictions(gq_df, quantiles=(-0.1, 0.5))
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +266,14 @@ def test_summarize_state_predictions_rows_without_index_pattern_appended_last() 
 
 
 # ---------------------------------------------------------------------------
-# summarize_state_predictions_test — additional validation paths
+# summarize_state_predictions — additional validation paths
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_state_predictions_test_raises_for_too_many_index_names() -> None:
+def test_summarize_state_predictions_raises_for_too_many_index_names() -> None:
     gq_df = pd.DataFrame(
         {"d1": [0.5]},
         index=pd.Index(["pred[1,1]"], dtype="object"),
     )
     with pytest.raises(ValueError, match="array_index_names cannot have more than 3"):
-        summarize_state_predictions_test(gq_df, array_index_names=["a", "b", "c", "d"])
+        summarize_state_predictions(gq_df, array_index_names=["a", "b", "c", "d"])

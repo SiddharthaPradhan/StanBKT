@@ -6,17 +6,24 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-import stanbkt.fits.base as base_module
 import stanbkt.fits.persistence.fit_io as persistence_io
-from stanbkt.fits.base import (
+from stanbkt.fits.persistence.fit_io import (
+    FitMetadata,
+    FitSaveFolder,
+    FitMethod,
     CACHE_SAVE_FOLDER,
     FIT_SAVE_FOLDER,
     METADATA_SAVE_FILE,
-    BaseFit,
-    FitMethod,
-    FitMetadata,
-    FitSaveFolder,
+    sanitize_kc_name,
+    add_hash_suffix,
+    get_fit_save_folder,
+    get_summary_cache_file,
 )
+from stanbkt.fits.persistence.metadata import (
+    fit_metadata_to_json,
+    fit_metadata_from_json,
+)
+from stanbkt.fits.core.base import BaseFit
 from stanbkt.utils.verbose import VerbosityLevel
 
 
@@ -54,7 +61,7 @@ def _mock_fit_method_detection_for_test_doubles(monkeypatch):
     # Most tests in this module use lightweight doubles instead of real CmdStan fit types.
     monkeypatch.setattr(
         FitMethod,
-        "get_method_from_fit",
+        "infer_fit_method_from_stan_fit",
         staticmethod(lambda _: FitMethod.MCMC),
     )
 
@@ -213,7 +220,7 @@ class TestSaveLoadRoundTrip:
         original_summary_df = pd.DataFrame({"mean": [0.5], "std": [0.1]})
         fit._update_summary_cache("kc_a", original_summary_df)
 
-        monkeypatch.setattr(persistence_io, "BaseCmdStanFit", _DummyLoadedFit)
+        monkeypatch.setattr(persistence_io, "CmdStanFit", (_DummyLoadedFit,))
         monkeypatch.setattr(
             persistence_io, "cmdstan_from_csv", lambda _: loaded_fit_obj
         )
@@ -230,7 +237,7 @@ class TestSaveLoadRoundTrip:
         assert (save_dir / "fit_metadata.json").exists()
         saved_metadata = next(iter(fit.fit_metadata.fit_saves))
         saved_folder = saved_metadata.save_folder
-        cache_file = _ConcreteFit._get_summary_cache_file("kc_a")
+        cache_file = get_summary_cache_file("kc_a")
 
         assert (save_dir / FIT_SAVE_FOLDER / str(saved_folder)).exists()
         assert (save_dir / FIT_SAVE_FOLDER / CACHE_SAVE_FOLDER / cache_file).exists()
@@ -268,7 +275,7 @@ class TestSaveLoadRoundTrip:
         os.makedirs(save_dir, exist_ok=True)
         fit_metadata_path = save_dir / METADATA_SAVE_FILE
         fit_metadata_path.write_text(
-            BaseFit.fit_metadata_to_json(
+            fit_metadata_to_json(
                 FitMetadata(fit_method=FitMethod.MCMC, fit_saves=set())
             ),
             encoding="utf-8",
@@ -303,15 +310,15 @@ class TestSanitizeKCName:
         ],
     )
     def test_sanitize(self, kc, expected):
-        assert BaseFit._sanitize_kc_name(kc) == expected
+        assert sanitize_kc_name(kc) == expected
 
     def test_collapses_multiple_underscores(self):
-        result = BaseFit._sanitize_kc_name("kc  name")  # 2 spaces → 2 underscores → 1
+        result = sanitize_kc_name("kc  name")  # 2 spaces → 2 underscores → 1
         assert "__" not in result
         assert result == "kc_name"
 
     def test_returns_string(self):
-        assert isinstance(BaseFit._sanitize_kc_name("test"), str)
+        assert isinstance(sanitize_kc_name("test"), str)
 
 
 # ---------------------------------------------------------------------------
@@ -321,27 +328,27 @@ class TestSanitizeKCName:
 
 class TestAddHashSuffix:
     def test_result_format(self):
-        result = BaseFit._add_hash_suffix("kc_a", "kc_a")
+        result = add_hash_suffix("kc_a", "kc_a")
         assert result == f"kc_a_{hashlib.sha256('kc_a'.encode()).hexdigest()[:8]}"
 
     def test_suffix_is_8_hex_chars(self):
-        result = BaseFit._add_hash_suffix("some kc", "some_kc")
+        result = add_hash_suffix("some kc", "some_kc")
         suffix = result.split("_")[-1]
         assert len(suffix) == 8
         assert all(c in "0123456789abcdef" for c in suffix)
 
     def test_deterministic(self):
-        r1 = BaseFit._add_hash_suffix("kc_a", "kc_a")
-        r2 = BaseFit._add_hash_suffix("kc_a", "kc_a")
+        r1 = add_hash_suffix("kc_a", "kc_a")
+        r2 = add_hash_suffix("kc_a", "kc_a")
         assert r1 == r2
 
     def test_different_originals_produce_different_suffixes(self):
-        r1 = BaseFit._add_hash_suffix("kc_a", "kc")
-        r2 = BaseFit._add_hash_suffix("kc_b", "kc")
+        r1 = add_hash_suffix("kc_a", "kc")
+        r2 = add_hash_suffix("kc_b", "kc")
         assert r1 != r2
 
     def test_sanitized_prefix_used(self):
-        result = BaseFit._add_hash_suffix("kc_a", "my_sanitized_name")
+        result = add_hash_suffix("kc_a", "my_sanitized_name")
         assert result.startswith("my_sanitized_name_")
 
 
@@ -352,25 +359,25 @@ class TestAddHashSuffix:
 
 class TestGetFitSaveFolder:
     def test_result_is_string(self):
-        assert isinstance(BaseFit._get_fit_save_folder("kc_a"), str)
+        assert isinstance(get_fit_save_folder("kc_a"), str)
 
     def test_folder_is_non_empty(self):
-        assert BaseFit._get_fit_save_folder("kc_a") != ""
+        assert get_fit_save_folder("kc_a") != ""
 
     def test_deterministic(self):
-        r1 = BaseFit._get_fit_save_folder("kc_a")
-        r2 = BaseFit._get_fit_save_folder("kc_a")
+        r1 = get_fit_save_folder("kc_a")
+        r2 = get_fit_save_folder("kc_a")
         assert r1 == r2
 
     def test_different_kcs_produce_different_folders(self):
-        r1 = BaseFit._get_fit_save_folder("kc_a")
-        r2 = BaseFit._get_fit_save_folder("kc_b")
+        r1 = get_fit_save_folder("kc_a")
+        r2 = get_fit_save_folder("kc_b")
         assert r1 != r2
 
     def test_combines_sanitized_name_and_hash(self):
-        result = BaseFit._get_fit_save_folder("algebra")
-        sanitized = BaseFit._sanitize_kc_name("algebra")
-        expected = BaseFit._add_hash_suffix("algebra", sanitized)
+        result = get_fit_save_folder("algebra")
+        sanitized = sanitize_kc_name("algebra")
+        expected = add_hash_suffix("algebra", sanitized)
         assert result == expected
 
 
@@ -391,12 +398,12 @@ class TestFitMetadataToJson:
                 )
             },
         )
-        raw = BaseFit.fit_metadata_to_json(metadata)
+        raw = fit_metadata_to_json(metadata)
         parsed = json.loads(raw)
         assert isinstance(parsed, dict)
 
     def test_contains_fit_method(self):
-        raw = BaseFit.fit_metadata_to_json(FitMetadata(fit_method=FitMethod.MCMC))
+        raw = fit_metadata_to_json(FitMetadata(fit_method=FitMethod.MCMC))
         parsed = json.loads(raw)
         assert parsed["fit_method"] == "mcmc"
 
@@ -411,7 +418,7 @@ class TestFitMetadataToJson:
                 )
             },
         )
-        raw = BaseFit.fit_metadata_to_json(metadata)
+        raw = fit_metadata_to_json(metadata)
         parsed = json.loads(raw)
         assert "fit_saves" in parsed
         assert any(
@@ -422,7 +429,7 @@ class TestFitMetadataToJson:
         )
 
     def test_returns_string(self):
-        raw = BaseFit.fit_metadata_to_json(FitMetadata(fit_method=FitMethod.VB))
+        raw = fit_metadata_to_json(FitMetadata(fit_method=FitMethod.VB))
         assert isinstance(raw, str)
 
 
@@ -446,8 +453,8 @@ class TestFitMetadataFromJson:
                 FitSaveFolder(kc="kc_b", save_folder="kc_b_def67890"),
             },
         )
-        raw = BaseFit.fit_metadata_to_json(metadata)
-        loaded_metadata = BaseFit.fit_metadata_from_json(raw)
+        raw = fit_metadata_to_json(metadata)
+        loaded_metadata = fit_metadata_from_json(raw)
         assert loaded_metadata.fit_method == FitMethod.MCMC
         assert loaded_metadata.fit_saves == metadata.fit_saves
 
@@ -456,42 +463,42 @@ class TestFitMetadataFromJson:
     )
     def test_accepts_all_valid_fit_methods(self, method):
         raw = self._make_json(fit_method=method)
-        loaded_metadata = BaseFit.fit_metadata_from_json(raw)
+        loaded_metadata = fit_metadata_from_json(raw)
         assert loaded_metadata.fit_method == method
 
     def test_raises_for_invalid_fit_method(self):
         raw = self._make_json(fit_method="sampling")
         with pytest.raises(ValueError, match="fit_method"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_for_missing_fit_method(self):
         raw = json.dumps({"fit_saves": []})
         with pytest.raises(ValueError, match="fit_method"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_for_non_dict_top_level(self):
         with pytest.raises(ValueError, match="top-level JSON must be an object"):
-            BaseFit.fit_metadata_from_json(json.dumps([1, 2, 3]))
+            fit_metadata_from_json(json.dumps([1, 2, 3]))
 
     def test_raises_when_fit_saves_is_not_list(self):
         raw = json.dumps({"fit_method": "mcmc", "fit_saves": "not_a_list"})
         with pytest.raises(ValueError, match="'fit_saves' must be an array"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_fit_saves_is_missing(self):
         raw = json.dumps({"fit_method": "mcmc"})
         with pytest.raises(ValueError, match="'fit_saves' must be an array"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_entry_is_not_dict(self):
         raw = json.dumps({"fit_method": "mcmc", "fit_saves": ["bad_entry"]})
         with pytest.raises(ValueError, match="must be an object"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_save_folder_missing(self):
         raw = json.dumps({"fit_method": "mcmc", "fit_saves": [{"kc": "kc_a"}]})
         with pytest.raises(ValueError, match="save_folder"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_save_folder_is_not_string(self):
         raw = json.dumps(
@@ -507,7 +514,7 @@ class TestFitMetadataFromJson:
             }
         )
         with pytest.raises(ValueError, match="save_folder"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_kc_is_missing(self):
         raw = json.dumps(
@@ -517,7 +524,7 @@ class TestFitMetadataFromJson:
             }
         )
         with pytest.raises(ValueError, match="field 'kc'"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_raises_when_summary_cache_available_is_not_bool(self):
         raw = json.dumps(
@@ -533,10 +540,10 @@ class TestFitMetadataFromJson:
             }
         )
         with pytest.raises(ValueError, match="summary_cache_available"):
-            BaseFit.fit_metadata_from_json(raw)
+            fit_metadata_from_json(raw)
 
     def test_empty_fit_saves(self):
         raw = self._make_json(fit_saves=[])
-        loaded_metadata = BaseFit.fit_metadata_from_json(raw)
+        loaded_metadata = fit_metadata_from_json(raw)
         assert loaded_metadata.fit_method == FitMethod.MCMC
         assert loaded_metadata.fit_saves == set()

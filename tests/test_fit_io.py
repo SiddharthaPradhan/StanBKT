@@ -92,7 +92,7 @@ class TestLoadFitArtifacts:
             summary_cache={},
         )
 
-        monkeypatch.setattr(fit_io, "BaseCmdStanFit", _DummyLoadedFit)
+        monkeypatch.setattr(fit_io, "CmdStanFit", (_DummyLoadedFit,))
         monkeypatch.setattr(fit_io, "cmdstan_from_csv", lambda _: _DummyLoadedFit())
 
         loaded_metadata, fits, summary_cache = fit_io.load_fit_artifacts(
@@ -138,7 +138,7 @@ class TestLoadFitArtifacts:
         # Write invalid bytes to force parser failure.
         cache_path.write_bytes(b"\x00\x81\x82")
 
-        monkeypatch.setattr(fit_io, "BaseCmdStanFit", _DummyLoadedFit)
+        monkeypatch.setattr(fit_io, "CmdStanFit", (_DummyLoadedFit,))
         monkeypatch.setattr(fit_io, "cmdstan_from_csv", lambda _: _DummyLoadedFit())
 
         with pytest.warns(UserWarning, match="Failed to load summary cache"):

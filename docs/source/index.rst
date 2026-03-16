@@ -3,16 +3,17 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-StanBKT documentation
+StanBKT Documentation
 =====================
 
-User documentation
-------------------
+StanBKT is a Python package for Bayesian Knowledge Tracing using Stan.
 
+Getting Started
+---------------
 
 .. toctree::
    :maxdepth: 2
-   :caption: Getting Started
+   :caption: User Guide
 
    quickstart
 
@@ -20,10 +21,10 @@ User documentation
 API Reference
 -------------
 
-
 .. toctree::
-   :maxdepth: 4
-   :caption: API Reference
-   
-   api/modules
+   :maxdepth: 2
+   :caption: API Documentation
+
+   public_api
+   internal_api
 

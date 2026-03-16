@@ -7,19 +7,21 @@ from typing import Union
 import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
 
-from stanbkt.fits.fit_types import BaseCmdStanFit, FitMetadata, FitMethod, FitSaveFolder
-from stanbkt.fits.persistence import (
+from stanbkt.fits.fit_types import CmdStanFit, FitMetadata, FitMethod, FitSaveFolder
+from stanbkt.fits.persistence.fit_io import (
     CACHE_SAVE_FOLDER,
     FIT_SAVE_FOLDER,
     METADATA_SAVE_FILE,
     add_hash_suffix,
-    fit_metadata_from_json,
-    fit_metadata_to_json,
     get_fit_save_folder,
     get_summary_cache_file,
     load_fit_artifacts,
     sanitize_kc_name,
     save_fit_artifacts,
+)
+from stanbkt.fits.persistence.metadata import (
+    fit_metadata_from_json,
+    fit_metadata_to_json,
 )
 
 
@@ -48,14 +50,12 @@ class BaseFit(VerboseMixin, ABC):
     def __init__(
         self,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
-        fits: dict[str, BaseCmdStanFit] | None = None,
+        fits: dict[str, CmdStanFit] | None = None,
         fit_metadata: FitMetadata | None = None,
         summary_cache: dict[str, pd.DataFrame] | None = None,
     ):
         super().__init__(verbose=verbose)
-        self.kc_fits: dict[str, BaseCmdStanFit] = (
-            fits.copy() if fits is not None else {}
-        )
+        self.kc_fits: dict[str, CmdStanFit] = fits.copy() if fits is not None else {}
         self.num_fitted_kcs = len(self.kc_fits)
         self.fit_metadata: FitMetadata = (
             fit_metadata
@@ -66,9 +66,36 @@ class BaseFit(VerboseMixin, ABC):
             summary_cache.copy() if summary_cache is not None else {}
         )
 
-    def add_fit(
-        self, kc: str, fit: BaseCmdStanFit, overwrite_kcs: bool = False
-    ) -> None:
+    def __str__(self) -> str:
+        """Return a user-friendly string representation of the fit."""
+        class_name = self.__class__.__name__
+        lines = [
+            f"{class_name}(",
+            f"  fit_method={self._fit_method.value}",
+            f"  num_kcs={self.num_fitted_kcs}",
+        ]
+
+        if self.num_fitted_kcs > 0:
+            kc_list = list(self.kc_fits.keys())
+            if len(kc_list) <= 5:
+                lines.append(f"  kcs={kc_list}")
+            else:
+                lines.append(f"  kcs={kc_list[:5]} ... ({len(kc_list) - 5} more)")
+
+        lines.append(")")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Return a detailed string representation of the fit."""
+        class_name = self.__class__.__name__
+        return (
+            f"{class_name}("
+            f"num_fitted_kcs={self.num_fitted_kcs}, "
+            f"fit_method={self._fit_method!r}, "
+            f"verbose={self.verbose!r})"
+        )
+
+    def add_fit(self, kc: str, fit: CmdStanFit, overwrite_kcs: bool = False) -> None:
         """Add a fit for a knowledge component to the model's fit state.
 
         Parameters
@@ -88,7 +115,7 @@ class BaseFit(VerboseMixin, ABC):
 
         """
         # check if the fit method matches the class's fit method
-        kc_fit_method = FitMethod.get_method_from_fit(fit)
+        kc_fit_method = FitMethod.infer_fit_method_from_stan_fit(fit)
         if kc_fit_method != self._fit_method:
             raise ValueError(
                 (
@@ -120,10 +147,32 @@ class BaseFit(VerboseMixin, ABC):
         }
         metadata_entry = FitSaveFolder(
             kc=kc,
-            save_folder=BaseFit._get_fit_save_folder(kc),
+            save_folder=get_fit_save_folder(kc),
             summary_cache_available=False,
         )
         self.fit_metadata.fit_saves.add(metadata_entry)
+
+    def get_fit(self, kc: str) -> CmdStanFit:
+        """Get the fit for a knowledge component.
+
+        Parameters
+        ----------
+        kc : str
+            Knowledge component identifier.
+
+        Returns
+        -------
+        CmdStanFit
+            CmdStan fit object for the specified KC.
+
+        Raises
+        ------
+        KeyError
+            If no fit exists for the specified KC.
+        """
+        if kc not in self.kc_fits:
+            raise KeyError(f"No fit found for KC '{kc}'.")
+        return self.kc_fits[kc]
 
     def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
         if kc in self.summary_cache:
@@ -215,106 +264,6 @@ class BaseFit(VerboseMixin, ABC):
     def _fit_method(self) -> FitMethod:
         raise NotImplementedError("Subclasses must implement the _fit_method property.")
 
-    @staticmethod
-    def _get_fit_save_folder(kc: str) -> str:
-        """Compatibility wrapper for fit save folder naming helper.
-
-        Parameters
-        ----------
-        kc : str
-            Knowledge component identifier.
-
-        Returns
-        -------
-        str
-            Deterministic fit save folder name.
-        """
-        return get_fit_save_folder(kc)
-
-    @staticmethod
-    def _sanitize_kc_name(kc: str) -> str:
-        """Compatibility wrapper for KC sanitization helper.
-
-        Parameters
-        ----------
-        kc : str
-            Knowledge component identifier.
-
-        Returns
-        -------
-        str
-            Filesystem-safe KC token.
-        """
-        return sanitize_kc_name(kc)
-
-    @staticmethod
-    def _add_hash_suffix(unsanitized_kc: str, sanitized_kc: str) -> str:
-        """Compatibility wrapper for KC hash-suffix helper.
-
-        Parameters
-        ----------
-        unsanitized_kc : str
-            Original KC identifier.
-        sanitized_kc : str
-            Sanitized KC identifier.
-
-        Returns
-        -------
-        str
-            Hash-suffixed KC folder token.
-        """
-        return add_hash_suffix(unsanitized_kc, sanitized_kc)
-
-    @staticmethod
-    def _get_summary_cache_file(kc: str) -> str:
-        """Compatibility wrapper for summary cache filename helper.
-
-        Parameters
-        ----------
-        kc : str
-            Knowledge component identifier.
-
-        Returns
-        -------
-        str
-            Summary cache CSV filename for the KC.
-        """
-        return get_summary_cache_file(kc)
-
-    @staticmethod
-    def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
-        """Compatibility wrapper for metadata serialization helper.
-
-        Parameters
-        ----------
-        fit_metadata : FitMetadata
-            Fit metadata object.
-        indent : int, default=2
-            JSON indentation level.
-
-        Returns
-        -------
-        str
-            Serialized metadata JSON string.
-        """
-        return fit_metadata_to_json(fit_metadata, indent=indent)
-
-    @staticmethod
-    def fit_metadata_from_json(raw_text: str) -> FitMetadata:
-        """Compatibility wrapper for metadata deserialization helper.
-
-        Parameters
-        ----------
-        raw_text : str
-            Serialized metadata JSON string.
-
-        Returns
-        -------
-        FitMetadata
-            Parsed metadata object.
-        """
-        return fit_metadata_from_json(raw_text)
-
     # TODO: check if all fit types support create_inits
     # if so I can move create_inits to the base class and implement it here.
     @abstractmethod
@@ -322,5 +271,5 @@ class BaseFit(VerboseMixin, ABC):
         raise NotImplementedError("Subclasses must implement the _create_inits method.")
 
     @abstractmethod
-    def summary(self, kc: Union[list[str], str]) -> pd.DataFrame:
+    def summary(self, kcs: Union[list[str], str, None] = None) -> pd.DataFrame:
         raise NotImplementedError("Subclasses must implement the summary method.")

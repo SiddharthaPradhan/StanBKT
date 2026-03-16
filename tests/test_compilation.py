@@ -147,6 +147,7 @@ def test_compile_stan_model_caches_only_executable_and_reuses_it(
     assert not Path(stan_file).with_suffix(".exe" if os.name == "nt" else "").exists()
 
 
+@pytest.mark.slow
 def test_compile_stan_model_end_to_end_recompiles_on_source_change(
     tmp_path: Path,
 ) -> None:
@@ -200,3 +201,116 @@ def test_compile_stan_model_end_to_end_recompiles_on_source_change(
     assert third_model.exe_file == str(second_cached_exe)
     assert second_cached_exe.exists()
     assert not Path(stan_file).with_suffix(".exe" if os.name == "nt" else "").exists()
+
+
+def test_get_cache_root(tmp_path: Path, monkeypatch) -> None:
+    """Test that get_cache_root returns the correct directory."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    result = compilation.get_cache_root()
+    assert result == cache_root / "compiled_stan"
+
+
+def test_list_cached_models_empty(tmp_path: Path, monkeypatch) -> None:
+    """Test listing cached models when cache is empty."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    cached_models = compilation.list_cached_models()
+    assert cached_models == []
+
+
+def test_list_cached_models_with_models(tmp_path: Path, monkeypatch) -> None:
+    """Test listing cached models when cache has models."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    # Create fake cache directories
+    cache_dir = compilation.get_cache_root()
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "model1-abc123").mkdir()
+    (cache_dir / "model2-def456").mkdir()
+
+    cached_models = compilation.list_cached_models()
+    assert len(cached_models) == 2
+    assert any("model1-abc123" in str(m) for m in cached_models)
+    assert any("model2-def456" in str(m) for m in cached_models)
+
+
+def test_clear_stan_cache_entire_cache(tmp_path: Path, monkeypatch) -> None:
+    """Test clearing the entire Stan cache."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    # Create fake cache directories
+    cache_dir = compilation.get_cache_root()
+    cache_dir.mkdir(parents=True)
+    model1_dir = cache_dir / "model1-abc123"
+    model2_dir = cache_dir / "model2-def456"
+    model1_dir.mkdir()
+    model2_dir.mkdir()
+    (model1_dir / "executable").write_text("fake exe", encoding="utf-8")
+    (model2_dir / "executable").write_text("fake exe", encoding="utf-8")
+
+    # Clear entire cache
+    count = compilation.clear_stan_cache()
+    assert count == 2
+    assert not cache_dir.exists()
+
+
+def test_clear_stan_cache_specific_model(tmp_path: Path, monkeypatch) -> None:
+    """Test clearing cache for a specific model."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    # Create a simple Stan file
+    stan_file = tmp_path / "model.stan"
+    stan_file.write_text(
+        "parameters { real y; } model { y ~ normal(0, 1); }",
+        encoding="utf-8",
+    )
+
+    # Create fake cache for this model
+    cache_dir = compilation.get_stan_model_cache_dir(stan_file)
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "executable").write_text("fake exe", encoding="utf-8")
+
+    # Clear specific model cache
+    count = compilation.clear_stan_cache(stan_file)
+    assert count == 1
+    assert not cache_dir.exists()
+
+
+def test_clear_stan_cache_nonexistent(tmp_path: Path, monkeypatch) -> None:
+    """Test clearing cache when it doesn't exist."""
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        compilation,
+        "PlatformDirs",
+        lambda appname, appauthor=False: _FakePlatformDirs(cache_root),
+    )
+
+    # Clear cache that doesn't exist
+    count = compilation.clear_stan_cache()
+    assert count == 0

@@ -18,7 +18,11 @@ class TestVerbosityLevel:
         assert names == {"INFO", "WARN", "DEBUG"}
 
     def test_ordering(self):
-        assert VerbosityLevel.INFO.value < VerbosityLevel.WARN.value < VerbosityLevel.DEBUG.value
+        assert (
+            VerbosityLevel.INFO.value
+            < VerbosityLevel.WARN.value
+            < VerbosityLevel.DEBUG.value
+        )
 
 
 class TestVerboseMixinInit:
@@ -98,6 +102,44 @@ class TestVerboseMixinPrint:
         out = capsys.readouterr().out
         assert out.startswith("DEBUG: ")
         assert "debug msg" in out
+
+
+class TestSetVerbosity:
+    def test_set_verbosity_to_info(self):
+        m = VerboseMixin()
+        m.set_verbosity(VerbosityLevel.INFO)
+        assert m.verbose == VerbosityLevel.INFO
+
+    def test_set_verbosity_to_warn(self):
+        m = VerboseMixin(verbose=VerbosityLevel.INFO)
+        m.set_verbosity(VerbosityLevel.WARN)
+        assert m.verbose == VerbosityLevel.WARN
+
+    def test_set_verbosity_to_debug(self):
+        m = VerboseMixin()
+        m.set_verbosity(VerbosityLevel.DEBUG)
+        assert m.verbose == VerbosityLevel.DEBUG
+
+    def test_set_verbosity_raises_on_invalid_level(self):
+        m = VerboseMixin()
+        with pytest.raises(ValueError, match="Invalid verbosity level"):
+            m.set_verbosity(999)  # type: ignore
+
+    def test_set_verbosity_raises_on_invalid_string(self):
+        m = VerboseMixin()
+        with pytest.raises(ValueError, match="Invalid verbosity level"):
+            m.set_verbosity("invalid")  # type: ignore
+
+    def test_set_verbosity_changes_print_behavior(self, capsys):
+        m = VerboseMixin(verbose=VerbosityLevel.INFO)
+        m._print("test", level=VerbosityLevel.DEBUG)
+        out = capsys.readouterr().out
+        assert out == ""  # Should not print DEBUG at INFO level
+
+        m.set_verbosity(VerbosityLevel.DEBUG)
+        m._print("test", level=VerbosityLevel.DEBUG)
+        out = capsys.readouterr().out
+        assert "test" in out  # Should print DEBUG at DEBUG level
 
     def test_info_message_has_no_prefix(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
