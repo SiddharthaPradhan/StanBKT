@@ -20,10 +20,6 @@ class ColumnNames(StrEnum):
         return {col: col for col in ColumnNames}
 
 
-# the maximum number of dims allowed in generated quantities for variables of interest
-# the dims are usually (student, problem)
-MAX_GQ_DIMENSION = 3
-
 # the basic columns required for any BKT model fitting.
 BASE_REQUIRED_COLS: set[ColumnNames] = {
     ColumnNames.STUDENT_ID,
@@ -40,6 +36,18 @@ class KCData:
     groups: Optional[np.ndarray] = None
     # optional mapping from group id to index in groups array
     group_2_index: Optional[dict[str, int]] = None
+
+
+def setup_cmdstanpy() -> None:
+    """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary."""
+    from cmdstanpy import cmdstan_path, install_cmdstan
+
+    # TODO: fix this later
+    try:
+        _ = cmdstan_path()
+    except ValueError:
+        print("CmdStan not found. Installing CmdStan...")
+        install_cmdstan(cores=3)
 
 
 def validate_data(
@@ -250,94 +258,12 @@ def rename_summary_var_columns(
     return summary_df.rename(columns=rename_mapping)
 
 
-def summarize_state_predictions(
-    gq_df: pd.DataFrame,
-    quantiles=(0.025, 0.975),
-    array_index_names: Optional[list[str]] = None,
-) -> pd.DataFrame:
-    """
-    Summarize generated-quantities draws for Hidden State Predictions.
+def dict_has_types(
+    x: object, key_type: type = str, value_type: type = pd.DataFrame
+) -> bool:
+    if not isinstance(x, dict):
+        return False
 
-    Parameters
-    ----------
-    gq_df : pd.DataFrame
-        DataFrame of draws, typically ``gq_fit.draws_pd().T``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Summary with columns: mean, std, median, 2.5%, 97.5%.
-    """
-    if len(gq_df) < 1:
-        raise ValueError("Input DataFrame is empty.")
-    if array_index_names and len(array_index_names) > MAX_GQ_DIMENSION:
-        raise ValueError("array_index_names cannot have more than 3 elements.")
-
-    mask: pd.Series = ~gq_df.index.to_series().str.startswith(
-        ("chain__", "iter__", "draw__")
+    return all(
+        isinstance(k, key_type) and isinstance(v, value_type) for k, v in x.items()
     )
-    gq_df_clean: pd.DataFrame = gq_df[mask]
-
-    # check the range of quantiles
-    if not all(0 <= q <= 1 for q in quantiles):
-        raise ValueError("Quantiles must be between 0 and 1.")
-
-    if gq_df_clean.empty:
-        summary_cols = ["mean", "std", "median"] + [
-            f"{round(q*100, 2)}%" for q in quantiles
-        ]
-        return pd.DataFrame(columns=summary_cols, index=pd.Index([], dtype="object"))
-
-    gq_summary = pd.DataFrame(
-        {
-            "mean": gq_df_clean.mean(axis=1),
-            "std": gq_df_clean.std(axis=1),
-            "median": gq_df_clean.median(axis=1),
-        }
-    )
-    for q in quantiles:
-        gq_summary[f"{round(q*100, 2)}%"] = gq_df_clean.quantile(q, axis=1)
-
-    extracted = gq_summary.index.to_series().str.extract(
-        r"^(?P<variable_name>[^\[]+)\[(?P<indices>\d+(?:,\d+)*)\]$"
-    )
-    matched_rows = extracted["indices"].notna()
-
-    if matched_rows.any():
-        index_lengths = extracted.loc[matched_rows, "indices"].str.count(",") + 1
-        variable_dim = int(index_lengths.iloc[0])
-
-        if variable_dim > MAX_GQ_DIMENSION:
-            raise ValueError(
-                f"Generated quantity indices cannot have more than {MAX_GQ_DIMENSION} elements."
-            )
-
-        if array_index_names and variable_dim != len(array_index_names):
-            raise ValueError(
-                "Length of array_index_names must match the number of dimensions "
-                f"in the variable indices. Expected {variable_dim}, got {len(array_index_names)}."
-            )
-
-        sort_df = pd.DataFrame(index=gq_summary.index)
-        sort_df["_unmatched"] = (~matched_rows).astype(int)
-        sort_df["_variable_name"] = extracted["variable_name"].fillna("")
-        split_indices = extracted.loc[matched_rows, "indices"].str.split(
-            ",", expand=True
-        )
-        for column_idx in range(variable_dim):
-            column_name = f"_dim_{column_idx}"
-            sort_df[column_name] = pd.Series(np.inf, index=gq_summary.index)
-            sort_df.loc[matched_rows, column_name] = split_indices[column_idx].astype(
-                int
-            )
-        sort_df["_position"] = np.arange(len(sort_df))
-
-        sort_columns = (
-            ["_unmatched", "_variable_name"]
-            + [f"_dim_{column_idx}" for column_idx in range(variable_dim)]
-            + ["_position"]
-        )
-        ordered_index = sort_df.sort_values(sort_columns).index
-        gq_summary = gq_summary.loc[ordered_index]
-
-    return gq_summary

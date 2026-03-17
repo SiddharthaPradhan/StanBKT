@@ -7,7 +7,6 @@ from stanbkt.utils.data_utils import (
     format_data,
     iter_kc_data,
     rename_summary_var_columns,
-    summarize_state_predictions,
     validate_data,
 )
 from stanbkt.utils.verbose import VerbosityLevel
@@ -123,21 +122,6 @@ def test_format_data_returns_same_kc_structure() -> None:
     assert formatted["kc_a"].correctness.shape == (2, 2)
 
 
-def test_summarize_state_predictions_filters_metadata_and_sorts() -> None:
-    gq_df = pd.DataFrame(
-        {
-            "draw_1": [0.2, 0.8, 99.0],
-            "draw_2": [0.3, 0.7, 99.0],
-        },
-        index=pd.Index(["pred[2,1]", "pred[1,2]", "chain__"], dtype="object"),
-    )
-
-    out = summarize_state_predictions(gq_df)
-
-    assert list(out.columns) == ["mean", "std", "median", "2.5%", "97.5%"]
-    assert list(out.index) == ["pred[1,2]", "pred[2,1]"]
-
-
 def test_rename_summary_var_columns_renames_columns() -> None:
     df = pd.DataFrame({"a": [1], "b": [2]})
     out = rename_summary_var_columns(df, ["mean", "std"])
@@ -149,18 +133,6 @@ def test_rename_summary_var_columns_raises_on_length_mismatch() -> None:
     df = pd.DataFrame({"a": [1], "b": [2]})
     with pytest.raises(ValueError, match="Length of expected_var_cols"):
         rename_summary_var_columns(df, ["mean"])
-
-
-def test_summarize_state_predictions_input_validation() -> None:
-    with pytest.raises(ValueError, match="Input DataFrame is empty"):
-        summarize_state_predictions(pd.DataFrame())
-
-    gq_df = pd.DataFrame(
-        {"d1": [0.5]},
-        index=pd.Index(["pred[1,1]"], dtype="object"),
-    )
-    with pytest.raises(ValueError, match="Quantiles must be between 0 and 1"):
-        summarize_state_predictions(gq_df, quantiles=(-0.1, 0.5))
 
 
 # ---------------------------------------------------------------------------
@@ -237,43 +209,3 @@ def test_format_data_with_return_groups_correct_mapping() -> None:
     kc_data = formatted["kc_a"]
     assert kc_data.group_2_index is not None
     assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}
-
-
-# ---------------------------------------------------------------------------
-# Additional summarize_state_predictions coverage
-# ---------------------------------------------------------------------------
-
-
-def test_summarize_state_predictions_returns_empty_for_only_metadata_rows() -> None:
-    """All rows filtered out (only chain__/iter__/draw__ rows) → empty output."""
-    gq_df = pd.DataFrame(
-        {"draw_1": [99.0, 99.0], "draw_2": [99.0, 99.0]},
-        index=pd.Index(["chain__", "iter__"], dtype="object"),
-    )
-    out = summarize_state_predictions(gq_df)
-    assert len(out) == 0
-
-
-def test_summarize_state_predictions_rows_without_index_pattern_appended_last() -> None:
-    """Rows whose index doesn't match pred[i,j] pattern are appended after sorted rows."""
-    gq_df = pd.DataFrame(
-        {"draw_1": [0.1, 0.2, 0.3], "draw_2": [0.1, 0.2, 0.3]},
-        index=pd.Index(["pred[2,1]", "pred[1,1]", "no_pattern"], dtype="object"),
-    )
-    out = summarize_state_predictions(gq_df)
-    # Sorted rows first, then unmatched
-    assert list(out.index) == ["pred[1,1]", "pred[2,1]", "no_pattern"]
-
-
-# ---------------------------------------------------------------------------
-# summarize_state_predictions — additional validation paths
-# ---------------------------------------------------------------------------
-
-
-def test_summarize_state_predictions_raises_for_too_many_index_names() -> None:
-    gq_df = pd.DataFrame(
-        {"d1": [0.5]},
-        index=pd.Index(["pred[1,1]"], dtype="object"),
-    )
-    with pytest.raises(ValueError, match="array_index_names cannot have more than 3"):
-        summarize_state_predictions(gq_df, array_index_names=["a", "b", "c", "d"])

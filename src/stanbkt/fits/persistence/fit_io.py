@@ -6,6 +6,7 @@ from IPython.utils.decorators import F
 import hashlib
 import os
 import re
+import shutil
 import warnings
 from dataclasses import replace
 import pandas as pd
@@ -101,6 +102,28 @@ def get_summary_cache_file(kc: str) -> str:
         Cache CSV filename.
     """
     return f"{get_fit_save_folder(kc)}_summary.csv"
+
+
+def _copy_fit_csvfiles_if_available(fit: CmdStanFit, target_dir: str) -> bool:
+    """Copy CmdStan CSV files into ``target_dir`` without mutating the fit object."""
+    runset = getattr(fit, "runset", None)
+    csv_files = None
+    if runset is not None:
+        csv_files = getattr(runset, "csv_files", None)
+
+    if not isinstance(csv_files, (list, tuple)):
+        return False
+
+    normalized_csv_files = [os.fspath(csv_file) for csv_file in csv_files]
+    if not normalized_csv_files or not all(
+        os.path.exists(csv_file) for csv_file in normalized_csv_files
+    ):
+        return False
+
+    os.makedirs(target_dir, exist_ok=True)
+    for csv_file in normalized_csv_files:
+        shutil.copy2(csv_file, os.path.join(target_dir, os.path.basename(csv_file)))
+    return True
 
 
 def load_fit_artifacts(
@@ -283,7 +306,8 @@ def save_fit_artifacts(
 
         fit = fits[kc_name]
         kc_fit_save_folder = os.path.join(fits_base_location, str(fit_save.save_folder))
-        fit.save_csvfiles(kc_fit_save_folder)
+        if not _copy_fit_csvfiles_if_available(fit, kc_fit_save_folder):
+            fit.save_csvfiles(kc_fit_save_folder)
 
         cache_file_name = get_summary_cache_file(kc_name)
         cache_file_path = os.path.join(cache_base_location, cache_file_name)

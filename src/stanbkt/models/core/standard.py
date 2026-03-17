@@ -1,22 +1,14 @@
 from __future__ import annotations
 from stanbkt.fits.fit_options import StanFitOptions
 from stanbkt.fits.fit_factory import FitFactory
-from stanbkt.fits.core.base import BaseFit
-
 from importlib.resources import files
-from typing import Any, Optional, Union
-
-import cmdstanpy as csp
+from typing import Any, Optional, Union, Literal
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-
 from stanbkt.models.core.base import BKTModelBase, FitMethod
-from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
-    ColumnNames,
     iter_kc_data,
-    summarize_state_predictions,
 )
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -51,8 +43,6 @@ class StandardBKT(BKTModelBase):
     ----------
     model_ : CmdStanModel
         The compiled Stan model.
-    fits_ : dict[str, McmcFit | VbFit | MleFit]
-        The fitted models after training. Each KC will have its own fitted model.
     """
 
     def __init__(
@@ -68,8 +58,6 @@ class StandardBKT(BKTModelBase):
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
         )
-        self._hidden_states_model: Optional[csp.CmdStanModel] = None
-        self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
 
     @property
     def _stan_model_filename(self) -> str:
@@ -133,7 +121,8 @@ class StandardBKT(BKTModelBase):
         # this helps with: (1) type checking and  (2) catches any missed compilation failures
         if self._stan_model is None:
             raise RuntimeError(
-                "Failed to compile and load the Stan model. Cannot fit the model."
+                "Stan model compilation failed. The model object is None after compilation. "
+                "Ensure the Stan source file is valid and that CmdStanPy is correctly installed."
             )
 
         # check stan_fit_options
@@ -160,16 +149,7 @@ class StandardBKT(BKTModelBase):
         ):
             self._print(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
 
-            correctness = kc_data.correctness
-            n_students, n_problems = correctness.shape
-            # TODO move this to data helper
-            data_dict = {
-                "nStudents": int(n_students),
-                "nProblems": int(n_problems),
-                "correctness": correctness,
-                "nGroups": 1,  # standard BKT does not use groups
-                "groups": np.ones(n_students, dtype=np.int32),
-            }
+            data_dict = self._build_stan_data_dict(kc_data.correctness)
             fit_result = self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
@@ -201,119 +181,32 @@ class StandardBKT(BKTModelBase):
             "groups": np.ones(n_students, dtype=np.int32),
         }
 
-    def _predict_generated_quantities(
+    def _extract_bkt_params_from_fit(
         self,
-        data: pd.DataFrame,
-        gq_model: csp.CmdStanModel,
-        column_mapping: Optional[dict[str, str]] = None,
-    ) -> pd.DataFrame:
-
-        kc_column_name = ColumnNames.KC_ID
-        if column_mapping and ColumnNames.KC_ID in column_mapping:
-            kc_column_name = column_mapping[ColumnNames.KC_ID]
-
-        self.check_data_contains_fitted_kcs(set(data[kc_column_name].unique()))
-        overlapping_kcs = self.get_kc_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data = data.copy()  # avoid modifying original data
-        data = data.loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if self.fits is None:
-            raise RuntimeError(
-                "Fits object is not initialized. Cannot call generated quantities for prediction."
-            )
-
-        result_frames: list[pd.DataFrame] = []
-        for kc_id, kc_data in iter_kc_data(
-            data=data,
-            col_mapping=column_mapping,
-            return_groups=False,
-            print_fn=self._print,
-        ):
-            fit_result = self.fits.get_fit(kc_id)
-            if fit_result is None:
-                continue
-
-            data_dict = self._build_stan_data_dict(kc_data.correctness)
-            gq_fit = gq_model.generate_quantities(
-                data=data_dict,
-                previous_fit=fit_result,
-            )
-
-            # make pretty and store in dict
-
-            # return the dict
-
-            # TODO: we do not want to summarize this directly in the predict method
-            # instead we should create a base class for generated quantity predictions
-            # and have it support summarize_state_predictions as a method that can
-            # be called on the object.
-            # Currently working on summarize_state_predictions_test version. Complete that!!
-
-            summary_df = summarize_state_predictions(gq_fit.draws_pd().T).reset_index()
-            summary_df = summary_df.rename(columns={"index": "variable"})
-            summary_df[kc_column_name] = kc_id
-            result_frames.append(summary_df)
-
-        return pd.concat(result_frames, ignore_index=True)
-
-    # TODO: add numba implementation here
-    def predict():
-        pass
-
-    # TODO: add numba implementation here
-    def predict_smoothed_states():
-        pass
-
-    # TODO for posterior functions, check that the fit method was MCMC, VB or Pathfinder
-
-    def predict_posterior(
-        self,
-        data: pd.DataFrame,
-        posterior=True,
-        column_mapping: Optional[dict[str, str]] = None,
-    ) -> pd.DataFrame:
-        """
-        Predict probability of hidden-states (:math:`p(hidden_{t} \\mid correct_{1:t})`) and .
-
-
-        """
-        self._fit_check()
-
-        if self._hidden_states_model is None:
-            self._hidden_states_model = compile_stan_model(
-                self._stan_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self._print,
-            )
-
-        return self._predict_generated_quantities(
-            data=data,
-            gq_model=self._hidden_states_model,
-            column_mapping=column_mapping,
+        fit,
+        n_students: int,
+        point_estimate: Literal["mean", "median"] = "mean",
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        prior = StandardBKT._extract_param_point_estimate(
+            fit, "pi_know", point_estimate
         )
+        learn = StandardBKT._extract_param_point_estimate(fit, "learn", point_estimate)
+        forget = StandardBKT._extract_param_point_estimate(
+            fit, "forget", point_estimate
+        )
+        guess = StandardBKT._extract_param_point_estimate(fit, "guess", point_estimate)
+        slip = StandardBKT._extract_param_point_estimate(fit, "slip", point_estimate)
 
-    def predict_smoothed_states_posterior(
-        self,
-        data: pd.DataFrame,
-        column_mapping: Optional[dict[str, str]] = None,
-    ) -> pd.DataFrame:
-        """Generate the posterior of the smoothed probability of hidden-states."""
-        self._fit_check()
-
-        if self._smoothed_hidden_states_model is None:
-            self._smoothed_hidden_states_model = compile_stan_model(
-                self._stan_smoothed_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self._print,
-            )
-
-        return self._predict_generated_quantities(
-            data=data,
-            gq_model=self._smoothed_hidden_states_model,
-            column_mapping=column_mapping,
+        return (
+            np.full(n_students, prior, dtype=np.float64),
+            np.full(n_students, learn, dtype=np.float64),
+            np.full(n_students, forget, dtype=np.float64),
+            np.full(n_students, guess, dtype=np.float64),
+            np.full(n_students, slip, dtype=np.float64),
         )
 
     def evaluate(self, **kwargs) -> dict[str, Any]:
-        raise NotImplementedError("evaluate is not implemented for StandardBKT yet")
+        raise NotImplementedError(
+            "'evaluate' is not yet implemented for StandardBKT. "
+            "This method will be available in a future release."
+        )

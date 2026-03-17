@@ -9,6 +9,7 @@ SOURCEDIR     = source
 BUILDDIR      = build
 SPHINXAPIDOC  ?= uv run python -m sphinx.ext.apidoc
 APIOUTDIR     = $(SOURCEDIR)/api
+GENERATEDOUTDIR     = $(SOURCEDIR)/generated
 PACKAGEDIR    = ../src/stanbkt
 
 # Put it first so that "make" without argument is like "make help".
@@ -29,6 +30,11 @@ apidoc:
 
 html: apidoc
 	@$(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+source-clean:
+	@rm -rf "$(APIOUTDIR)"/*
+	@rm -rf "$(GENERATEDOUTDIR)"/*
+	@echo "Cleaned up generated source files in $(APIOUTDIR) and $(GENERATEDOUTDIR)"
 
 # Catch-all target: route all unknown targets to Sphinx using the new
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).

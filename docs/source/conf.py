@@ -45,12 +45,12 @@ exclude_patterns = []
 autodoc_typehints = "description"  # Put type hints in description, not signature
 autodoc_member_order = "bysource"  # Document members in source order
 autodoc_default_options = {
+    "module": True,
     "members": True,
     "undoc-members": True,
     "show-inheritance": True,
-    # Only show members inherited from stanbkt base classes; skip object, abc, etc.
-    "inherited-members": "BKTModelBase,VerboseMixin,BaseFit",
 }
+
 
 # Configure Napoleon to handle dataclasses better
 napoleon_use_ivar = True

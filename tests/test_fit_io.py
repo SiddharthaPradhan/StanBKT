@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -16,6 +17,16 @@ class _DummySavedFit:
 
 class _DummyLoadedFit:
     pass
+
+
+class _CopyOnlySavedFit:
+    def __init__(self, csv_file: str):
+        self.runset = SimpleNamespace(csv_files=[csv_file])
+
+    def save_csvfiles(self, folder: str) -> None:
+        raise AssertionError(
+            "save_csvfiles should not be called when CSV files are accessible"
+        )
 
 
 class TestSaveFitArtifacts:
@@ -64,6 +75,41 @@ class TestSaveFitArtifacts:
         )
 
         assert not cache_file.exists()
+
+    def test_save_fit_artifacts_copies_existing_csvfiles_without_mutating_fit(
+        self, tmp_path
+    ):
+        save_dir = tmp_path / "fit_saves"
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        source_csv = source_dir / "chain.csv"
+        source_csv.write_text("lp__\n0\n", encoding="utf-8")
+
+        kc = "kc_a"
+        metadata = FitMetadata(
+            fit_method=FitMethod.MCMC,
+            fit_saves={
+                FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
+            },
+        )
+
+        fit_io.save_fit_artifacts(
+            base_save_location=str(save_dir),
+            fits={
+                kc: _CopyOnlySavedFit(str(source_csv))
+            },  # ty:ignore[invalid-argument-type]
+            fit_metadata=metadata,
+            summary_cache={},
+        )
+
+        copied_csv = (
+            save_dir
+            / fit_io.FIT_SAVE_FOLDER
+            / fit_io.get_fit_save_folder(kc)
+            / "chain.csv"
+        )
+        assert copied_csv.exists()
+        assert source_csv.exists()
 
 
 class TestLoadFitArtifacts:

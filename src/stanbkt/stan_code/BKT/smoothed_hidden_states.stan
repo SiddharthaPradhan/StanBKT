@@ -3,7 +3,7 @@
 
 // Run forward-backward to compute the smoothed probability of knowing/mastery for each student and problem.
 generated quantities {    
-    array[nStudents] row_vector[nProblems] know_probs; // P(know/mastery | all previous responses) for each student and problem
+    array[nStudents] row_vector[nProblems] pKnow; // P(know/mastery | all previous responses) for each student and problem
     // create local scope to avoid saving intermediate variables
     {
         array[nGroups] vector[2] pi;
@@ -32,7 +32,7 @@ generated quantities {
                     logOmegaStudent[state, t] = bernoulli_lpmf(correctness[studentIdx, t] | B_matrix_group[studentGroupIdx, state, 2]);
                 }
             }
-            know_probs[studentIdx] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
+            pKnow[studentIdx] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
         }
     }
 }
