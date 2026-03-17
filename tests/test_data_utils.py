@@ -90,30 +90,6 @@ def test_iter_kc_data_group_equals_student() -> None:
     assert dict(iter_kc_data(df, col_mapping=col_mapping, return_groups=True))
 
 
-def test_iter_kc_data_warns_and_drops_cols_with_null_pivot_values() -> None:
-    df = pd.DataFrame(
-        {
-            "student_id": ["s1", "s1", "s2"],
-            "problem_id": ["p1", "p2", "p1"],
-            "correct": [1, 0, 1],
-            "kc_id": ["kc_a", "kc_a", "kc_a"],
-            "group_id": ["g1", "g1", "g2"],
-        }
-    )
-    calls: list[tuple[str, VerbosityLevel]] = []
-
-    def recorder(message: str, level: VerbosityLevel) -> None:
-        calls.append((message, level))
-
-    result = dict(iter_kc_data(df, return_groups=False, print_fn=recorder))
-    kc_data = result["kc_a"]
-
-    assert calls
-    assert "null values detected" in calls[0][0]
-    assert calls[0][1] == VerbosityLevel.INFO
-    assert kc_data.correctness.shape == (2, 1)
-
-
 def test_format_data_returns_same_kc_structure() -> None:
     df = _base_df()
     formatted = format_data(df)
@@ -188,6 +164,47 @@ def test_iter_kc_data_kc_keys_are_strings() -> None:
     key, _ = result[0]
     assert isinstance(key, str)
     assert key == "42"
+
+
+def test_iter_kc_data_compacts_nas_and_tracks_original_problem_ids() -> None:
+    df = pd.DataFrame(
+        {
+            "student_id": ["s1", "s1", "s2"],
+            "problem_id": ["p1", "p3", "p2"],
+            "correct": [1, 0, 1],
+            "kc_id": ["kc_a", "kc_a", "kc_a"],
+        }
+    )
+
+    result = dict(iter_kc_data(df))
+    kc_data = result["kc_a"]
+
+    assert kc_data.correctness.dtype == np.int8
+    assert kc_data.correctness.tolist() == [[1, 0, -1], [1, -1, -1]]
+    assert kc_data.student_inter_dict["s1"].problem_ids == ["p1", "p3"]
+    assert kc_data.student_inter_dict["s1"].length == 2
+    assert kc_data.student_inter_dict["s2"].problem_ids == ["p2"]
+    assert kc_data.student_inter_dict["s2"].length == 1
+
+
+def test_iter_kc_data_keeps_student_interactions_isolated_per_kc() -> None:
+    df = pd.DataFrame(
+        {
+            "student_id": ["s1", "s1", "s2", "s2"],
+            "problem_id": ["p1", "p2", "p1", "p2"],
+            "correct": [1, 0, 1, 1],
+            "kc_id": ["kc_a", "kc_b", "kc_a", "kc_b"],
+        }
+    )
+
+    result = dict(iter_kc_data(df))
+    kc_a = result["kc_a"]
+    kc_b = result["kc_b"]
+
+    assert kc_a.student_inter_dict["s1"].problem_ids == ["p1"]
+    assert kc_a.student_inter_dict["s2"].problem_ids == ["p1"]
+    assert kc_b.student_inter_dict["s1"].problem_ids == ["p2"]
+    assert kc_b.student_inter_dict["s2"].problem_ids == ["p2"]
 
 
 # ---------------------------------------------------------------------------

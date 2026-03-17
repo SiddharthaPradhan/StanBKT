@@ -248,10 +248,13 @@ class TestCheckDataContainsFittedKCs:
         with pytest.raises(ValueError, match="kc_z"):
             m.check_data_contains_fitted_kcs({"kc_z"})
 
-    def test_raises_even_for_partially_overlapping_set(self):
+    def test_warns_for_partially_overlapping_set(self, capsys):
         m = _make_fitted_model(kcs=("kc_a", "kc_b"))
-        with pytest.raises(ValueError, match="kc_z"):
-            m.check_data_contains_fitted_kcs({"kc_a", "kc_z"})
+        m.check_data_contains_fitted_kcs({"kc_a", "kc_z"})
+
+        out = capsys.readouterr().out
+        assert "WARNING: Data contains 1 KCs that were not fitted." in out
+        assert "kc_z" in out
 
     def test_raises_fit_check_when_not_fitted(self):
         m = _ConcreteModel()

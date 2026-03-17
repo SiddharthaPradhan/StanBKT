@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import shutil
 import tempfile
 from typing import Any
 
@@ -113,12 +112,13 @@ def load_model(
         If resolved model class is not a ``BKTModelBase`` subclass.
     """
     archive_path = os.fspath(load_base_location)
+    extracted_artifacts = tempfile.TemporaryDirectory(prefix="stanbkt_load_")
+    extracted_path = extracted_artifacts.name
 
-    temp_dir = tempfile.mkdtemp(prefix="stanbkt_load_")
     try:
-        unpack_model_archive(archive_path, temp_dir)
+        unpack_model_archive(archive_path, extracted_path)
 
-        metadata_path = os.path.join(temp_dir, METADATA_SAVE_FILE)
+        metadata_path = os.path.join(extracted_path, METADATA_SAVE_FILE)
         if not os.path.exists(metadata_path):
             raise FileNotFoundError(
                 f"Fit metadata file '{metadata_path}' does not exist."
@@ -127,7 +127,7 @@ def load_model(
         with open(metadata_path, "r", encoding="utf-8") as metadata_file:
             fit_metadata = fit_metadata_from_json(metadata_file.read())
 
-        resolved_model_class, init_kwargs = _resolve_model_class(temp_dir)
+        resolved_model_class, init_kwargs = _resolve_model_class(extracted_path)
         parsed_init_kwargs = _parse_model_init_kwargs(init_kwargs)
         saved_fit_method = parsed_init_kwargs.get("fit_method")
         if saved_fit_method != fit_metadata.fit_method:
@@ -137,10 +137,13 @@ def load_model(
             )
 
         model = resolved_model_class(**parsed_init_kwargs)
-        model.fits = model.fit_class._load(temp_dir)
+        model.fits = model.fit_class._load(extracted_path)
         model._is_fitted = model.fits.num_fitted_kcs > 0
-        model._loaded_artifact_dir = temp_dir
+
+        # Keep extracted files alive because CmdStan fit objects store CSV paths and
+        # some operations (e.g., generate_quantities with previous_fit) read them lazily.
+        setattr(model, "_loaded_artifact_dir", extracted_artifacts)
         return model
     except Exception:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        extracted_artifacts.cleanup()
         raise

@@ -1,3 +1,4 @@
+from jedi.inference.gradual.typing import TypedDict
 import pandas as pd
 from typing import Optional, Callable
 import numpy.typing as npt
@@ -6,6 +7,8 @@ from dataclasses import dataclass
 from collections.abc import Iterator
 from stanbkt.utils.verbose import VerbosityLevel
 from enum import StrEnum
+
+_NA_FILL_VALUE = -1
 
 
 class ColumnNames(StrEnum):
@@ -28,11 +31,24 @@ BASE_REQUIRED_COLS: set[ColumnNames] = {
 }
 
 
+@dataclass(slots=True, frozen=True)
+class StudentInteraction:
+    "DataClass to store the attempted problem ids and the number of non-na interactions"
+
+    problem_ids: list[str]
+    length: int
+
+
 @dataclass(slots=True)
 class KCData:
     # correctness matrix of shape (num_students, num_problems)
     correctness: np.ndarray
-    # list of student ids corresponding to rows in correctness matrix
+    # student interaction data containing StudentInteraction
+    #    - this is used to keep track of the original problem ids
+    #    - and the lengths, to ignore entries in the correctness matrix that correspond to null
+    student_inter_dict: dict[str, StudentInteraction]  # TODO: consider trimming this
+    lengths: npt.NDArray[np.int32]  # lens of each student's interaction sequence
+    problem_ids: list[str]  # problem ids in sequence
     groups: Optional[np.ndarray] = None
     # optional mapping from group id to index in groups array
     group_2_index: Optional[dict[str, int]] = None
@@ -159,6 +175,26 @@ def iter_kc_data(
     tuple[str, KCData]
         ``(kc_id, KCData)`` pairs for each KC in the input.
     """
+
+    def process_student_interactions(row: pd.Series, student_inter_dict: dict):
+        """Returns interaction data for a student with NA values inserted at the end.
+        Also updates the student_inter_dict with the attempted problem ids and length of interactions for the student.
+        """
+        student_id = row.name
+        # student_dict[student_idx] = row.isna().sum()
+        na_mask = row.isna()
+        left_aligned_row = pd.concat(
+            [row[~na_mask], pd.Series([_NA_FILL_VALUE] * na_mask.sum())]
+        ).reset_index(drop=True)
+        student_entry = StudentInteraction(
+            problem_ids=row[~na_mask].index.to_list(),
+            length=(~na_mask).sum(),
+        )
+        # add student interaction the the student_inter_dict
+        student_inter_dict[student_id] = student_entry
+        # return row with non.nas placed on the left with nas filled with zeros (these will be ignored in the model and outputs)
+        return left_aligned_row
+
     if col_mapping is None:
         col_mapping = ColumnNames.get_default_mapping().copy()
     else:
@@ -192,22 +228,28 @@ def iter_kc_data(
         col_mapping[ColumnNames.GROUP] = group_col
 
     for kc, subset in working_data.groupby(kc_column, sort=False, observed=True):
+        student_inter_dict: dict[str, StudentInteraction] = {}
         correctness_wide = pd.pivot(
             subset,
             index=student_col,
             columns=problem_col,
             values=correctness_col,
         )
-        null_count = correctness_wide.isna().sum().sum()
-        if null_count > 0 and print_fn:
-            print_fn(
-                f"Warning: {null_count} null values detected. These problems will be dropped.",
-                VerbosityLevel.INFO,
-            )
-        # drop along problem axis rather than the student axis.
-        correctness_wide.dropna(axis=1, inplace=True)
+        problem_ids: list[str] = correctness_wide.columns.astype(str).tolist()
+
+        correctness_wide = correctness_wide.apply(
+            lambda row: process_student_interactions(row, student_inter_dict), axis=1
+        )
+        lengths: npt.NDArray[np.int32] = np.fromiter(
+            (s.length for s in student_inter_dict.values()),
+            dtype=np.int32,
+            count=len(student_inter_dict),
+        )
         kc_data = KCData(
-            correctness=correctness_wide.values.astype(np.int8, copy=False)
+            correctness=correctness_wide.values.astype(np.int8, copy=False),
+            student_inter_dict=student_inter_dict,
+            lengths=lengths,
+            problem_ids=problem_ids,
         )
 
         if return_groups:
@@ -217,10 +259,12 @@ def iter_kc_data(
                 .drop_duplicates()
                 .set_index(student_col)
             )
-            student_group_df = student_group_df.loc[correctness_wide.index]
+            student_group_df: pd.DataFrame = student_group_df.loc[
+                correctness_wide.index
+            ]
             group_indices, unique_groups = pd.factorize(student_group_df[group_col])
-            group_indices = group_indices.astype(np.int32, copy=False) + 1
-            group_2_index = {
+            group_indices: npt.NDArray = group_indices.astype(np.int32, copy=False) + 1
+            group_2_index: dict[str, int] = {
                 group: index for index, group in enumerate(unique_groups, start=1)
             }
             kc_data.groups = group_indices

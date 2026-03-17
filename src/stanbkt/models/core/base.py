@@ -33,7 +33,7 @@ from stanbkt.models.model_types import (
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import BayesianPriors
 from stanbkt.utils.compilation import compile_stan_model
-from stanbkt.utils.data_utils import iter_kc_data, dict_has_types, ColumnNames
+from stanbkt.utils.data_utils import iter_kc_data, dict_has_types, ColumnNames, KCData
 from stanbkt.utils.model_archive import pack_model_directory
 
 
@@ -80,7 +80,6 @@ class BKTModelBase(VerboseMixin, ABC):
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
         self.fits: Optional[BaseFit] = None
         self._is_fitted: bool = False
-        self._loaded_artifact_dir: Optional[str] = None
 
     def __str__(self) -> str:
         """Return a user-friendly string representation of the model."""
@@ -265,7 +264,7 @@ class BKTModelBase(VerboseMixin, ABC):
         """
         self._fit_check()
         fitted_kcs: set[str] = set(self.fits.kc_fits.keys()) if self.fits else set()
-        if not kcs.issubset(fitted_kcs):
+        if not len(kcs.intersection(fitted_kcs)) > 0:
             raise ValueError(
                 f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
             )
@@ -273,11 +272,11 @@ class BKTModelBase(VerboseMixin, ABC):
         if kcs_not_fitted:
             self._print(
                 f"Data contains {len(kcs_not_fitted)} KCs that were not fitted.",
-                level=VerbosityLevel.INFO,
+                level=VerbosityLevel.WARN,
             )
             self._print(
                 f"{list(kcs_not_fitted)} do not have fits.",
-                level=VerbosityLevel.WARN,
+                level=VerbosityLevel.INFO,
             )
 
     def get_kcs_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
@@ -333,6 +332,7 @@ class BKTModelBase(VerboseMixin, ABC):
             return_groups=False,
             print_fn=self._print,
         ):
+            # assume kc_data contains lengths and idx --> to problem_id
             kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
                 kc_fit,
@@ -350,6 +350,7 @@ class BKTModelBase(VerboseMixin, ABC):
             kc_predictions = self._state_arrays_to_long_df(
                 p_know=p_know,
                 p_correctness=p_correctness,
+                kc_data=kc_data,
             )
             kc_predictions.insert(0, "kc_id", str(kc_id))
             predictions.append(kc_predictions)
@@ -425,6 +426,7 @@ class BKTModelBase(VerboseMixin, ABC):
             kc_predictions = self._single_state_array_to_long_df(
                 p_state=p_smooth,
                 parameter_name="pKnow",
+                kc_data=kc_data,
             )
             kc_predictions.insert(0, "kc_id", str(kc_id))
             predictions.append(kc_predictions)
@@ -589,12 +591,31 @@ class BKTModelBase(VerboseMixin, ABC):
     def _state_arrays_to_long_df(
         p_know: np.ndarray,
         p_correctness: np.ndarray,
+        kc_data: KCData,
     ) -> pd.DataFrame:
         """Convert dense state arrays to long-form prediction output."""
-        n_students, n_problems = p_know.shape
-        student_ids = np.repeat(np.arange(1, n_students + 1), n_problems)
-        problem_ids = np.tile(np.arange(1, n_problems + 1), n_students)
-        rows_per_parameter = n_students * n_problems
+        _, n_problems = p_know.shape
+        index_df = BKTModelBase._build_prediction_index_frame(
+            kc_data=kc_data,
+            n_problems=n_problems,
+        )
+        valid_mask = index_df["is_valid"].to_numpy(dtype=bool, copy=False)
+
+        p_know_values = p_know.ravel(order="C").astype(np.float64, copy=True)
+        p_know_values[~valid_mask] = -1.0
+
+        p_correctness_values = p_correctness.ravel(order="C").astype(
+            np.float64, copy=True
+        )
+        p_correctness_values[~valid_mask] = -1.0
+
+        observed_correctness_values = index_df["correctness"].to_numpy(
+            dtype=np.float64, copy=False
+        )
+
+        rows_per_parameter = len(index_df)
+        student_ids = index_df["student_id"].to_numpy(dtype=object, copy=False)
+        problem_ids = index_df["problem_id"].to_numpy(dtype=object, copy=False)
 
         return pd.DataFrame(
             {
@@ -602,12 +623,17 @@ class BKTModelBase(VerboseMixin, ABC):
                     [
                         np.repeat("pKnow", rows_per_parameter),
                         np.repeat("pCorrectness", rows_per_parameter),
+                        np.repeat("true_correctness", rows_per_parameter),
                     ]
                 ),
-                "student_id": np.concatenate([student_ids, student_ids]),
-                "problem_id": np.concatenate([problem_ids, problem_ids]),
+                "student_id": np.concatenate([student_ids, student_ids, student_ids]),
+                "problem_id": np.concatenate([problem_ids, problem_ids, problem_ids]),
                 "value": np.concatenate(
-                    [p_know.ravel(order="C"), p_correctness.ravel(order="C")]
+                    [
+                        p_know_values,
+                        p_correctness_values,
+                        observed_correctness_values,
+                    ]
                 ),
             }
         )
@@ -616,15 +642,104 @@ class BKTModelBase(VerboseMixin, ABC):
     def _single_state_array_to_long_df(
         p_state: np.ndarray,
         parameter_name: str,
+        kc_data: KCData,
     ) -> pd.DataFrame:
         """Convert one state matrix to long-form prediction output."""
-        n_students, n_problems = p_state.shape
+        _, n_problems = p_state.shape
+        index_df = BKTModelBase._build_prediction_index_frame(
+            kc_data=kc_data,
+            n_problems=n_problems,
+        )
+        valid_mask = index_df["is_valid"].to_numpy(dtype=bool, copy=False)
+        values = p_state.ravel(order="C").astype(np.float64, copy=True)
+        values[~valid_mask] = -1.0
+
         return pd.DataFrame(
             {
-                "parameter": np.repeat(parameter_name, n_students * n_problems),
-                "student_id": np.repeat(np.arange(1, n_students + 1), n_problems),
-                "problem_id": np.tile(np.arange(1, n_problems + 1), n_students),
-                "value": p_state.ravel(order="C"),
+                "parameter": np.concatenate(
+                    [
+                        np.repeat(parameter_name, len(index_df)),
+                        np.repeat("true_correctness", len(index_df)),
+                    ]
+                ),
+                "student_id": np.concatenate(
+                    [
+                        index_df["student_id"].to_numpy(dtype=object),
+                        index_df["student_id"].to_numpy(dtype=object),
+                    ]
+                ),
+                "problem_id": np.concatenate(
+                    [
+                        index_df["problem_id"].to_numpy(dtype=object),
+                        index_df["problem_id"].to_numpy(dtype=object),
+                    ]
+                ),
+                "value": np.concatenate(
+                    [
+                        values,
+                        index_df["correctness"].to_numpy(dtype=np.float64, copy=False),
+                    ]
+                ),
+            }
+        )
+
+    @staticmethod
+    def _build_prediction_index_frame(kc_data: KCData, n_problems: int) -> pd.DataFrame:
+        """Build flattened prediction indices with original IDs and validity masks."""
+        n_students = kc_data.correctness.shape[0]
+
+        student_ids = list(kc_data.student_inter_dict.keys())
+        if len(student_ids) != n_students:
+            student_ids = [str(idx + 1) for idx in range(n_students)]
+
+        lengths = np.asarray(kc_data.lengths, dtype=np.int32)
+        if lengths.shape[0] != n_students:
+            lengths = np.full(n_students, n_problems, dtype=np.int32)
+        lengths = np.clip(lengths, 0, n_problems)
+
+        flat_student_idx = np.repeat(np.arange(1, n_students + 1, dtype=np.int64), n_problems)
+        flat_problem_idx = np.tile(np.arange(1, n_problems + 1, dtype=np.int64), n_students)
+        flat_student_ids = np.empty(n_students * n_problems, dtype=object)
+        flat_problem_ids = np.empty(n_students * n_problems, dtype=object)
+        flat_is_valid = np.zeros(n_students * n_problems, dtype=bool)
+        flat_correctness = kc_data.correctness.ravel(order="C").astype(np.float64, copy=True)
+        flat_correctness[flat_correctness < 0] = -1.0
+
+        fallback_problem_ids = [str(problem_id) for problem_id in kc_data.problem_ids]
+        for student_index, student_id in enumerate(student_ids):
+            row_start = student_index * n_problems
+            row_end = row_start + n_problems
+            flat_student_ids[row_start:row_end] = student_id
+
+            interaction_length = int(lengths[student_index])
+            if interaction_length > 0:
+                flat_is_valid[row_start : row_start + interaction_length] = True
+
+            interaction = kc_data.student_inter_dict.get(student_id)
+            student_problem_ids = interaction.problem_ids if interaction is not None else []
+
+            for problem_index in range(n_problems):
+                flat_index = row_start + problem_index
+                if problem_index < interaction_length:
+                    if problem_index < len(student_problem_ids):
+                        flat_problem_ids[flat_index] = str(
+                            student_problem_ids[problem_index]
+                        )
+                    elif problem_index < len(fallback_problem_ids):
+                        flat_problem_ids[flat_index] = fallback_problem_ids[problem_index]
+                    else:
+                        flat_problem_ids[flat_index] = "-1"
+                else:
+                    flat_problem_ids[flat_index] = "-1"
+
+        return pd.DataFrame(
+            {
+                "student_idx": flat_student_idx,
+                "problem_idx": flat_problem_idx,
+                "student_id": flat_student_ids,
+                "problem_id": flat_problem_ids,
+                "is_valid": flat_is_valid,
+                "correctness": flat_correctness,
             }
         )
 
@@ -638,6 +753,7 @@ class BKTModelBase(VerboseMixin, ABC):
         """Extract student-indexed BKT parameter arrays from fit artifacts."""
         raise NotImplementedError
 
+    # TODO fix this monstrous function
     @staticmethod
     def _extract_param_point_estimate(
         fit: CmdStanFit,
@@ -771,7 +887,6 @@ class BKTModelBase(VerboseMixin, ABC):
 
         if data is not None:
             self._fit_check()
-
             if self._hidden_states_model is None:
                 self._hidden_states_model = compile_stan_model(
                     self._stan_hidden_filename,
@@ -780,7 +895,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     print_fn=self._print,
                 )
 
-            posterior_draws_stan = self._predict_generated_quantities(
+            posterior_draws_stan, kc_data_by_kc = self._predict_generated_quantities(
                 data=data,
                 gq_model=self._hidden_states_model,
                 column_mapping=column_mapping,
@@ -790,6 +905,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 return posterior_draws_stan
 
             posterior_draws = type(self)._process_predict_gq(posterior_draws_stan)
+            posterior_draws = type(self)._apply_kc_data_to_posterior_draws(
+                posterior_draws=posterior_draws,
+                kc_data_by_kc=kc_data_by_kc,
+                drop_index_cols=output != "summary",
+            )
 
         if posterior_draws is not None:
             if output == "summary":
@@ -828,7 +948,6 @@ class BKTModelBase(VerboseMixin, ABC):
 
         if data is not None:
             self._fit_check()
-
             if self._smoothed_hidden_states_model is None:
                 self._smoothed_hidden_states_model = compile_stan_model(
                     self._stan_smoothed_hidden_filename,
@@ -837,7 +956,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     print_fn=self._print,
                 )
 
-            posterior_draws_stan = self._predict_generated_quantities(
+            posterior_draws_stan, kc_data_by_kc = self._predict_generated_quantities(
                 data=data,
                 gq_model=self._smoothed_hidden_states_model,
                 column_mapping=column_mapping,
@@ -847,6 +966,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 return posterior_draws_stan
 
             posterior_draws = type(self)._process_predict_gq(posterior_draws_stan)
+            posterior_draws = type(self)._apply_kc_data_to_posterior_draws(
+                posterior_draws=posterior_draws,
+                kc_data_by_kc=kc_data_by_kc,
+                drop_index_cols=output != "summary",
+            )
 
         if posterior_draws is not None:
             if output == "summary":
@@ -866,7 +990,7 @@ class BKTModelBase(VerboseMixin, ABC):
         data: pd.DataFrame,
         gq_model: csp.CmdStanModel,
         column_mapping: Optional[dict[str, str]] = None,
-    ) -> dict[str, csp.CmdStanGQ]:
+    ) -> tuple[dict[str, csp.CmdStanGQ], dict[str, KCData]]:
         kc_column_name = ColumnNames.KC_ID
         if column_mapping and ColumnNames.KC_ID in column_mapping:
             kc_column_name = column_mapping[ColumnNames.KC_ID]
@@ -885,25 +1009,29 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
         gq_kc_fit: dict[str, csp.CmdStanGQ] = {}
+        kc_data_by_kc: dict[str, KCData] = {}
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
             return_groups=False,
             print_fn=self._print,
         ):
+            kc_id_str = str(kc_id)
+            kc_data_by_kc[kc_id_str] = kc_data
+
             kc_fit_result = self.fits.get_fit(kc_id)
             if kc_fit_result is None:
                 continue
 
-            data_dict = self._build_stan_data_dict(kc_data.correctness)
+            data_dict = self._build_stan_data_dict(kc_data)
             gq_fit = gq_model.generate_quantities(
                 data=data_dict,
                 previous_fit=kc_fit_result,
             )
 
-            gq_kc_fit[str(kc_id)] = gq_fit
+            gq_kc_fit[kc_id_str] = gq_fit
 
-        return gq_kc_fit
+        return gq_kc_fit, kc_data_by_kc
 
     @staticmethod
     def _process_predict_gq(
@@ -954,6 +1082,125 @@ class BKTModelBase(VerboseMixin, ABC):
         return posterior_draws
 
     @staticmethod
+    def _apply_kc_data_to_posterior_draws(
+        posterior_draws: dict[str, pd.DataFrame],
+        kc_data_by_kc: dict[str, KCData],
+        drop_index_cols: bool = True,
+    ) -> dict[str, pd.DataFrame]:
+        """Map posterior index coordinates back to original IDs and invalidate padded cells."""
+        remapped_draws: dict[str, pd.DataFrame] = {}
+
+        for kc_id, kc_draws in posterior_draws.items():
+            kc_data = kc_data_by_kc.get(kc_id)
+            if kc_data is None or kc_draws.empty:
+                remapped_draws[kc_id] = kc_draws
+                continue
+
+            lookup_df = BKTModelBase._build_prediction_index_frame(
+                kc_data=kc_data,
+                n_problems=kc_data.correctness.shape[1],
+            )
+            lookup_df = lookup_df.rename(
+                columns={
+                    "student_id": "student_id_mapped",
+                    "problem_id": "problem_id_mapped",
+                    "is_valid": "is_valid_mapped",
+                }
+            )
+
+            remapped = kc_draws.merge(
+                lookup_df[
+                    [
+                        "student_idx",
+                        "problem_idx",
+                        "student_id_mapped",
+                        "problem_id_mapped",
+                        "is_valid_mapped",
+                    ]
+                ],
+                left_on=["student_id", "problem_id"],
+                right_on=["student_idx", "problem_idx"],
+                how="left",
+            )
+
+            remapped["student_id"] = remapped["student_id"].astype(object)
+            remapped["problem_id"] = remapped["problem_id"].astype(object)
+
+            has_mapping = remapped["student_id_mapped"].notna()
+            remapped.loc[has_mapping, "student_id"] = remapped.loc[
+                has_mapping, "student_id_mapped"
+            ]
+            remapped.loc[has_mapping, "problem_id"] = remapped.loc[
+                has_mapping, "problem_id_mapped"
+            ]
+
+            invalid_mask = remapped["is_valid_mapped"] == False
+            remapped.loc[invalid_mask, "value"] = -1.0
+
+            remapped = BKTModelBase._append_true_correctness_rows(
+                prediction_df=remapped,
+                kc_data=kc_data,
+            )
+            if drop_index_cols:
+                remapped = remapped.drop(
+                    columns=[
+                        "student_idx",
+                        "problem_idx",
+                        "student_id_mapped",
+                        "problem_id_mapped",
+                        "is_valid_mapped",
+                    ],
+                    errors="ignore",
+                )
+            else:
+                remapped = remapped.drop(
+                    columns=[
+                        "student_id_mapped",
+                        "problem_id_mapped",
+                        "is_valid_mapped",
+                    ],
+                    errors="ignore",
+                )
+            remapped_draws[kc_id] = remapped
+
+        return remapped_draws
+
+    @staticmethod
+    def _append_true_correctness_rows(
+        prediction_df: pd.DataFrame,
+        kc_data: KCData,
+    ) -> pd.DataFrame:
+        """Append observed correctness values using the same long-form schema."""
+        index_df = BKTModelBase._build_prediction_index_frame(
+            kc_data=kc_data,
+            n_problems=kc_data.correctness.shape[1],
+        )
+        id_cols = [col for col in prediction_df.columns if col.endswith("__")]
+
+        if id_cols:
+            draw_ids = prediction_df[id_cols].drop_duplicates(ignore_index=True)
+            correctness_rows = draw_ids.merge(index_df, how="cross")
+        else:
+            correctness_rows = index_df.copy()
+
+        correctness_rows["parameter"] = "true_correctness"
+        correctness_rows["value"] = correctness_rows["correctness"].astype(
+            np.float64
+        )
+
+        for base_col in ("student_id", "problem_id"):
+            if base_col not in correctness_rows.columns:
+                correctness_rows[base_col] = pd.Series(dtype="object")
+
+        result_cols = list(prediction_df.columns)
+        for col in result_cols:
+            if col not in correctness_rows.columns:
+                correctness_rows[col] = pd.NA
+
+        correctness_rows = correctness_rows[result_cols]
+        return pd.concat([prediction_df, correctness_rows], ignore_index=True)
+
+    @staticmethod
     def _summarize_state_predictions(
         gq_dict: dict[str, pd.DataFrame],
         quantiles=(0.025, 0.975),
@@ -968,14 +1215,19 @@ class BKTModelBase(VerboseMixin, ABC):
             f"{q * 100:.2f}%" for q in quantiles
         ]
         param_id_cols = ["parameter", "student_id", "problem_id"]
+        internal_id_cols = ["student_idx", "problem_idx"]
 
         result_frames: list[pd.DataFrame] = []
         for kc, gq_kc_df in gq_dict.items():
             if gq_kc_df.empty:
                 continue
 
+            group_cols = param_id_cols
+            if all(col in gq_kc_df.columns for col in internal_id_cols):
+                group_cols = param_id_cols + internal_id_cols
+
             gq_kc_summary: pd.DataFrame = (
-                gq_kc_df.groupby(param_id_cols, sort=False)["value"]
+                gq_kc_df.groupby(group_cols, sort=False)["value"]
                 .agg(
                     mean="mean",
                     std="std",
@@ -987,6 +1239,8 @@ class BKTModelBase(VerboseMixin, ABC):
                 )
                 .reset_index()
             )
+
+            gq_kc_summary = gq_kc_summary.drop(columns=internal_id_cols, errors="ignore")
 
             gq_kc_summary.insert(0, "kc_id", str(kc))
             result_frames.append(gq_kc_summary)
@@ -1066,7 +1320,7 @@ class BKTModelBase(VerboseMixin, ABC):
         pass
 
     @abstractmethod
-    def _build_stan_data_dict(self, correctness: np.ndarray) -> dict[str, Any]:
+    def _build_stan_data_dict(self, kc_data: KCData) -> dict[str, Any]:
         raise NotImplementedError(
             "Subclasses must implement _build_stan_data_dict to support posterior predictions."
         )

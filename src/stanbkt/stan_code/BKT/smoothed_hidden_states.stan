@@ -24,15 +24,19 @@ generated quantities {
         }
 
         for (studentIdx in 1:nStudents) {
-            matrix[2, nProblems] logOmegaStudent;
+            // TOOD: the nProblems will vary by student, we need to pass in a lens array for nProblems
+            // Python will keep track of the id to problem_id mapping
+            matrix[2, interaction_lengths[studentIdx]] logOmegaStudent;
             int studentGroupIdx = groups[studentIdx];
-            for(t in 1:nProblems) {
+            for(t in 1:interaction_lengths[studentIdx]) {
                 for (state in 1:2) {
                     // log P(correctness | hidden_state)
                     logOmegaStudent[state, t] = bernoulli_lpmf(correctness[studentIdx, t] | B_matrix_group[studentGroupIdx, state, 2]);
                 }
             }
-            pKnow[studentIdx] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
+            int paddingNALength = nProblems - interaction_lengths[studentIdx];
+            pKnow[studentIdx, 1:interaction_lengths[studentIdx]] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
+            pKnow[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
         }
     }
 }

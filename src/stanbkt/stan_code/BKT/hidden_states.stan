@@ -20,7 +20,8 @@ generated quantities {
             real oneMinusStudentForget = 1.0 - forget[studentGroupIdx];
             pKnow[studentIdx, 1] = studentInit; // P(know/mastery) for the first problem is just the prior
             pCorrectness[studentIdx, 1] = studentInit * oneMinusStudentSlip + (1 - studentInit) * studentGuess; 
-            for (t in 1:(nProblems - 1)) {    
+
+            for (t in 1:(interaction_lengths[studentIdx] - 1)) {    
                 real currentProbKnow = pKnow[studentIdx, t];
                 // update the probability of knowing/mastering based on the current response 
                 // P(know/mastery | response) = P(response | know/mastery) * P(know/mastery) / P(response)
@@ -40,6 +41,11 @@ generated quantities {
 
 
             }
+            int paddingNALength = nProblems - interaction_lengths[studentIdx];
+            pKnow[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+            pCorrectness[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+
+
         }
     }
 }

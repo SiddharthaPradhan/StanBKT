@@ -5,10 +5,10 @@ from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 
 class TestVerbosityLevel:
     def test_info_value(self):
-        assert VerbosityLevel.INFO.value == 1
+        assert VerbosityLevel.INFO.value == 2
 
     def test_warn_value(self):
-        assert VerbosityLevel.WARN.value == 2
+        assert VerbosityLevel.WARN.value == 1
 
     def test_debug_value(self):
         assert VerbosityLevel.DEBUG.value == 3
@@ -19,8 +19,8 @@ class TestVerbosityLevel:
 
     def test_ordering(self):
         assert (
-            VerbosityLevel.INFO.value
-            < VerbosityLevel.WARN.value
+            VerbosityLevel.WARN.value
+            < VerbosityLevel.INFO.value
             < VerbosityLevel.DEBUG.value
         )
 
@@ -78,11 +78,12 @@ class TestVerboseMixinPrint:
         m._print("secret debug", level=VerbosityLevel.DEBUG)
         assert capsys.readouterr().out == ""
 
-    def test_warn_message_suppressed_at_info_level(self, capsys):
-        # verbose=INFO means value 1; WARN has value 2; 1 < 2 so suppress
+    def test_warn_message_printed_at_info_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
         m._print("a warning", level=VerbosityLevel.WARN)
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        assert out.startswith("WARNING: ")
+        assert "a warning" in out
 
     def test_warn_message_printed_at_warn_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.WARN)

@@ -7,7 +7,7 @@ functions{
   */
   real partial_sum(array[,] int correctness, // sliced correctness matrix (nStudentsInSlice, nProblems) 
                    int start, int end, // slice indexes
-                   int nProblems, 
+                   array[] int interaction_lengths, // lengths of each student's interaction sequence
                    array[] matrix A_matrix_group, // Transition matrices (nGroups, 2, 2)
                    array[] matrix B_matrix_group, // Emission matrices (nGroups, 2, 2)
                    array[]vector pi, // Initial state distributions (nGroups, 2)
@@ -18,9 +18,11 @@ functions{
     // Compute log emission probabilities log P(correctness | hidden_state)
     int localStudentIdx = 1; // local index within the slice; studentIdx refers to global index (non-sliced)
     for(studentIdx in start:end){
-        matrix[2, nProblems] logOmegaStudent;
+        // TODO: the nProblems will vary by student, we need to pass in a lens array for nProblems
+        // Python will keep track of the id to problem_id mapping
+        matrix[2, interaction_lengths[studentIdx]] logOmegaStudent;
         int studentGroupIdx = groups[studentIdx];
-        for(t in 1:nProblems) {
+        for(t in 1:interaction_lengths[studentIdx]) {
             for (state in 1:2) {
                 // log P(correctness | hidden_state)
                 // TODO left off here, test if lupmf is correct here. Previously was lpmf
@@ -42,7 +44,9 @@ data {
     int<lower=1> nStudents;    // number of students
     int<lower=1> nGroups;      // number of groups
     array[nStudents] int<lower=1, upper=nGroups> groups; // group assignment for each student (1-based indexing)
-    array[nStudents, nProblems] int<lower=0, upper=1> correctness; // correctness matrix
+    // Note on correctness matrix: -1 = NA, 0 = incorrect, 1 = correct.
+    array[nStudents, nProblems] int<lower=-1, upper=1> correctness; // correctness matrix
+    array[nStudents] int<lower=1> interaction_lengths; // lengths of each student's interaction sequence
 }
 
 parameters {
@@ -101,7 +105,7 @@ model {
     int grainsize = 1; // default is 1, that uses an internal scheduler
     target += reduce_sum(partial_sum, correctness,
                         grainsize,
-                        nProblems,
+                        interaction_lengths,
                         A_matrix_group, B_matrix_group, 
                         pi, groups);
 

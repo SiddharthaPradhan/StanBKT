@@ -27,7 +27,6 @@ functions{
             for (state in 1:2) {
                 // log P(correctness | hidden_state)
                 int studentGroupIdx = groups[studentIdx];
-                // TODO left off here, test if lupmf is correct here. Previously was lpmf
                 int problemKcIdx = kcSequence[t];
                 // AND select B_matrix by problemKcIdx
                 logOmegaSlice[state, t] = bernoulli_lpmf(correctness[studentIdx, t] | B_matrix_group[studentGroupIdx, state, 2]);

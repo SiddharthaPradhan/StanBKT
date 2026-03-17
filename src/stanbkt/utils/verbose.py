@@ -2,8 +2,8 @@ from enum import IntEnum
 
 
 class VerbosityLevel(IntEnum):
-    INFO = 1
-    WARN = 2
+    WARN = 1
+    INFO = 2
     DEBUG = 3
 
 

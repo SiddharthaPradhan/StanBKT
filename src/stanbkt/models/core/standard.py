@@ -9,6 +9,7 @@ import pandas as pd
 from stanbkt.models.core.base import BKTModelBase, FitMethod
 from stanbkt.utils.data_utils import (
     iter_kc_data,
+    KCData,
 )
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -149,7 +150,7 @@ class StandardBKT(BKTModelBase):
         ):
             self._print(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
 
-            data_dict = self._build_stan_data_dict(kc_data.correctness)
+            data_dict = self._build_stan_data_dict(kc_data)
             fit_result = self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
@@ -158,25 +159,27 @@ class StandardBKT(BKTModelBase):
         self._is_fitted = True
         return self
 
-    def _build_stan_data_dict(self, correctness: np.ndarray) -> dict[str, Any]:
+    def _build_stan_data_dict(self, kc_data: KCData) -> dict[str, Any]:
         """Build data dictionary for the stan models.
 
         Parameters
         ----------
-        correctness : np.ndarray
-            Array of correctness values with shape
-            ``(n_students, n_problems)``.
+        kc_data : KCData
+            KCData object containing the correctness matrix and student interaction information for a single knowledge component.
 
         Returns
         -------
         dict[str, Any]
             Dictionary containing data for the Stan model.
         """
+        correctness = kc_data.correctness
         n_students, n_problems = correctness.shape
+
         return {
             "nStudents": int(n_students),
             "nProblems": int(n_problems),
             "correctness": correctness,
+            "interaction_lengths": kc_data.lengths,
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
         }
