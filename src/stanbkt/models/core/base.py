@@ -340,7 +340,7 @@ class BKTModelBase(VerboseMixin, ABC):
         # compile and cache the numba function
         njit_predict_numba: Callable = njit(
             fastmath=fast_math, parallel=parallel, cache=True
-        )(BKTModelBase._predict_hidden_states_numba)
+        )(type(self)._predict_hidden_states_numba)
         # TODO: need to adjust this based on the model (grouped vs not)
         predictions: list[pd.DataFrame] = []
         for kc_id, kc_data in iter_kc_data(
@@ -424,7 +424,7 @@ class BKTModelBase(VerboseMixin, ABC):
         # compile and cache the numba function
         njit_predict_smoothed_numba: Callable = njit(
             fastmath=fast_math, parallel=parallel, cache=True
-        )(BKTModelBase._predict_hidden_states_smoothed_numba)
+        )(type(self)._predict_hidden_states_smoothed_numba)
 
         predictions: list[pd.DataFrame] = []
         for kc_id, kc_data in iter_kc_data(

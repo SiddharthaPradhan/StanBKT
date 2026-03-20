@@ -383,7 +383,13 @@ class TestPredict:
         out = model.predict(data=sparse_df)
 
         # Only valid observations are returned — no padded sentinel rows
-        assert set(out.columns) >= {"student_id", "problem_id", "pKnow", "pCorrectness", "correct"}
+        assert set(out.columns) >= {
+            "student_id",
+            "problem_id",
+            "pKnow",
+            "pCorrectness",
+            "correct",
+        }
         s1_rows = out[out["student_id"] == "s1"].reset_index(drop=True)
         s2_rows = out[out["student_id"] == "s2"].reset_index(drop=True)
 
