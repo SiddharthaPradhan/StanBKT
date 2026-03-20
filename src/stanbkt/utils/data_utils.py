@@ -1,3 +1,4 @@
+from pyparsing import col
 from jedi.inference.gradual.typing import TypedDict
 import pandas as pd
 from typing import Optional, Callable
@@ -9,6 +10,7 @@ from stanbkt.utils.verbose import VerbosityLevel
 from enum import StrEnum
 
 _NA_FILL_VALUE = -1
+_DEFAULT_KC_ID = "default_kc"
 
 
 class ColumnNames(StrEnum):
@@ -21,6 +23,16 @@ class ColumnNames(StrEnum):
     @staticmethod
     def get_default_mapping() -> dict[str, str]:
         return {col: col for col in ColumnNames}
+
+    @staticmethod
+    def apply_default_mapping(col_mapping: Optional[dict[str, str]]) -> dict[str, str]:
+        if not col_mapping:
+            col_mapping = {}
+        col_mapping = col_mapping.copy()
+        default_mapping = ColumnNames.get_default_mapping()
+        for key in default_mapping.keys():
+            col_mapping.setdefault(key, default_mapping[key])
+        return col_mapping
 
 
 # the basic columns required for any BKT model fitting.
@@ -195,24 +207,23 @@ def iter_kc_data(
         # return row with non.nas placed on the left with nas filled with zeros (these will be ignored in the model and outputs)
         return left_aligned_row
 
-    if col_mapping is None:
-        col_mapping = ColumnNames.get_default_mapping().copy()
-    else:
-        col_mapping = col_mapping.copy()
-        default_mapping = ColumnNames.get_default_mapping()
-        for key in default_mapping.keys():
-            col_mapping.setdefault(key, default_mapping[key])
-    validate_data(data, col_mapping, return_groups)
+    col_mapping = ColumnNames.apply_default_mapping(col_mapping)
 
+    validate_data(
+        data=data,
+        col_mapping=col_mapping,
+        check_groups=return_groups,
+    )
     student_col = col_mapping.get(ColumnNames.STUDENT_ID)
     problem_col = col_mapping.get(ColumnNames.PROBLEM_ID)
     correctness_col = col_mapping.get(ColumnNames.CORRECTNESS)
     kc_column = col_mapping.get(ColumnNames.KC_ID)
 
+    # if no kc column in data, add a default kc column
     working_data = data
     if data.get(kc_column) is None:
         working_data = data.copy()
-        working_data[kc_column] = "default_kc"
+        working_data[kc_column] = _DEFAULT_KC_ID
 
     working_data[student_col] = working_data[student_col].astype(str)
     working_data[kc_column] = working_data[kc_column].astype(str)

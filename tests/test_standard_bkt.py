@@ -231,13 +231,13 @@ class TestPredict:
 
     def test_predict_rejects_invalid_point_estimate(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'point_estimate' must be either"):
             model.predict(data=_minimal_df(), point_estimate="mode")
 
     def test_predict_returns_default_output(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
@@ -260,17 +260,13 @@ class TestPredict:
         assert isinstance(out, pd.DataFrame)
         assert set(out.columns) == {
             "kc_id",
-            "parameter",
             "student_id",
             "problem_id",
-            "value",
-        }
-        assert set(out["kc_id"]) == {"default_kc"}
-        assert set(out["parameter"]) == {
             "pKnow",
             "pCorrectness",
-            "true_correctness",
+            "correct",
         }
+        assert set(out["kc_id"]) == {"default_kc"}
 
     def test_predict_smoothed_states_raises_when_not_fitted(self):
         model = StandardBKT()
@@ -279,19 +275,19 @@ class TestPredict:
 
     def test_predict_smoothed_states_requires_data(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'data' must be provided"):
             model.predict_smoothed_states()
 
     def test_predict_smoothed_states_rejects_invalid_point_estimate(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'point_estimate' must be either"):
             model.predict_smoothed_states(data=_minimal_df(), point_estimate="mode")
 
     def test_predict_smoothed_states_returns_dataframe(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
@@ -324,7 +320,7 @@ class TestPredict:
 
     def test_predict_smoothed_states_concatenates_multiple_kcs(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
@@ -357,7 +353,7 @@ class TestPredict:
 
     def test_predict_uses_original_ids_and_masks_padded_positions(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
@@ -385,17 +381,110 @@ class TestPredict:
         )
 
         out = model.predict(data=sparse_df)
-        p_know = out[out["parameter"] == "pKnow"].reset_index(drop=True)
-        true_correctness = out[
-            out["parameter"] == "true_correctness"
-        ].reset_index(drop=True)
 
-        assert p_know["student_id"].tolist() == ["s1", "s1", "s1", "s2", "s2", "s2"]
-        assert p_know["problem_id"].tolist() == ["p10", "p30", "-1", "p20", "-1", "-1"]
-        assert p_know["value"].tolist()[2] == -1.0
-        assert p_know["value"].tolist()[4] == -1.0
-        assert p_know["value"].tolist()[5] == -1.0
-        assert true_correctness["value"].tolist() == [1.0, 0.0, -1.0, 1.0, -1.0, -1.0]
+        # Only valid observations are returned — no padded sentinel rows
+        assert set(out.columns) >= {"student_id", "problem_id", "pKnow", "pCorrectness", "correct"}
+        s1_rows = out[out["student_id"] == "s1"].reset_index(drop=True)
+        s2_rows = out[out["student_id"] == "s2"].reset_index(drop=True)
+
+        assert s1_rows["problem_id"].tolist() == ["p10", "p30"]
+        assert s2_rows["problem_id"].tolist() == ["p20"]
+        assert (s1_rows["pKnow"] != -1.0).all()
+        assert (s2_rows["pKnow"] != -1.0).all()
+        assert s1_rows["correct"].tolist() == [1.0, 0.0]
+        assert s2_rows["correct"].tolist() == [1.0]
+
+
+# ---------------------------------------------------------------------------
+# predict / predict_smoothed_states — parallel and fast_math options
+# ---------------------------------------------------------------------------
+
+_MOCK_PARAMS = lambda fit, n_students, point_estimate="mean": (  # noqa: E731
+    np.full(n_students, 0.2),
+    np.full(n_students, 0.3),
+    np.full(n_students, 0.1),
+    np.full(n_students, 0.2),
+    np.full(n_students, 0.1),
+)
+
+_SPARSE_DF = pd.DataFrame(
+    {
+        "student_id": ["s1", "s1", "s2"],
+        "problem_id": ["p10", "p30", "p20"],
+        "correct": [1, 0, 1],
+    }
+)
+
+
+def _make_predict_model(monkeypatch):
+    model = StandardBKT()
+    monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+    monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+    monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+    model.fits = MagicMock()
+    model.fits.get_fit.return_value = object()
+    monkeypatch.setattr(model, "_extract_bkt_params_from_fit", _MOCK_PARAMS)
+    return model
+
+
+class TestPredictNumbaOptions:
+    @pytest.mark.parametrize("parallel", [True, False])
+    @pytest.mark.parametrize("fast_math", [True, False])
+    def test_predict_all_combinations_return_dataframe(
+        self, monkeypatch, parallel, fast_math
+    ):
+        model = _make_predict_model(monkeypatch)
+        out = model.predict(data=_SPARSE_DF, parallel=parallel, fast_math=fast_math)
+        assert isinstance(out, pd.DataFrame)
+        assert set(out.columns) >= {"student_id", "problem_id", "pKnow", "pCorrectness"}
+
+    @pytest.mark.parametrize("parallel", [True, False])
+    @pytest.mark.parametrize("fast_math", [True, False])
+    def test_predict_smoothed_all_combinations_return_dataframe(
+        self, monkeypatch, parallel, fast_math
+    ):
+        model = _make_predict_model(monkeypatch)
+        out = model.predict_smoothed_states(
+            data=_SPARSE_DF, parallel=parallel, fast_math=fast_math
+        )
+        assert isinstance(out, pd.DataFrame)
+
+    def test_predict_parallel_false_matches_parallel_true(self, monkeypatch):
+        model = _make_predict_model(monkeypatch)
+        out_parallel = model.predict(data=_SPARSE_DF, parallel=True, fast_math=False)
+        out_serial = model.predict(data=_SPARSE_DF, parallel=False, fast_math=False)
+        pd.testing.assert_frame_equal(
+            out_parallel.reset_index(drop=True),
+            out_serial.reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-6,
+        )
+
+    def test_predict_smoothed_parallel_false_matches_parallel_true(self, monkeypatch):
+        model = _make_predict_model(monkeypatch)
+        out_parallel = model.predict_smoothed_states(
+            data=_SPARSE_DF, parallel=True, fast_math=False
+        )
+        out_serial = model.predict_smoothed_states(
+            data=_SPARSE_DF, parallel=False, fast_math=False
+        )
+        pd.testing.assert_frame_equal(
+            out_parallel.reset_index(drop=True),
+            out_serial.reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-6,
+        )
+
+    def test_predict_fast_math_false_matches_fast_math_true(self, monkeypatch):
+        model = _make_predict_model(monkeypatch)
+        out_fast = model.predict(data=_SPARSE_DF, parallel=False, fast_math=True)
+        out_safe = model.predict(data=_SPARSE_DF, parallel=False, fast_math=False)
+        pd.testing.assert_frame_equal(
+            out_fast.reset_index(drop=True),
+            out_safe.reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-5,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +527,7 @@ class TestPredictSmoothedStatesPosteriorApi:
             return expected_summary
 
         monkeypatch.setattr(
-            StandardBKT, "_summarize_state_predictions", _fake_summarize
+            StandardBKT, "_summarize_gq_state_predictions", _fake_summarize
         )
 
         out = model.predict_smoothed_states_posterior(
@@ -474,7 +563,7 @@ class TestPredictPosteriorDataPath:
         self, monkeypatch
     ):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._hidden_states_model = object()
 
         fake_stan = {"kc_1": MagicMock()}
@@ -506,7 +595,7 @@ class TestPredictPosteriorDataPath:
 
     def test_predict_posterior_uses_summary_helper(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._hidden_states_model = object()
 
         fake_stan = {"kc_1": MagicMock()}
@@ -539,7 +628,9 @@ class TestPredictPosteriorDataPath:
             assert quantiles == [0.1, 0.9]
             return expected_summary
 
-        monkeypatch.setattr(StandardBKT, "_summarize_state_predictions", _fake_summary)
+        monkeypatch.setattr(
+            StandardBKT, "_summarize_gq_state_predictions", _fake_summary
+        )
 
         out = model.predict_posterior(
             data=_minimal_df(),
@@ -552,7 +643,7 @@ class TestPredictPosteriorDataPath:
         self, monkeypatch
     ):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._hidden_states_model = object()
 
         class _FakeGQ:
@@ -609,7 +700,7 @@ class TestPredictPosteriorDataPath:
 
     def test_predict_posterior_summary_includes_true_correctness(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._hidden_states_model = object()
 
         class _FakeGQ:
@@ -650,9 +741,9 @@ class TestPredictPosteriorDataPath:
         )
 
         out = model.predict_posterior(data=sparse_df, output="summary")
-        true_correctness = out[
-            out["parameter"] == "true_correctness"
-        ].reset_index(drop=True)
+        true_correctness = out[out["parameter"] == "true_correctness"].reset_index(
+            drop=True
+        )
 
         assert set(true_correctness["kc_id"]) == {"default_kc"}
         assert true_correctness["student_id"].tolist() == [
@@ -677,7 +768,7 @@ class TestPredictPosteriorDataPath:
 class TestPredictSmoothedPosteriorDataPath:
     def test_predict_smoothed_uses_process_helper_for_default_output(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._smoothed_hidden_states_model = object()
 
         fake_stan = {"kc_1": MagicMock()}
@@ -711,7 +802,7 @@ class TestPredictSmoothedPosteriorDataPath:
 
     def test_predict_smoothed_uses_summary_helper(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._smoothed_hidden_states_model = object()
 
         fake_stan = {"kc_1": MagicMock()}
@@ -744,7 +835,9 @@ class TestPredictSmoothedPosteriorDataPath:
             assert quantiles == [0.2, 0.8]
             return expected_summary
 
-        monkeypatch.setattr(StandardBKT, "_summarize_state_predictions", _fake_summary)
+        monkeypatch.setattr(
+            StandardBKT, "_summarize_gq_state_predictions", _fake_summary
+        )
 
         out = model.predict_smoothed_states_posterior(
             data=_minimal_df(),
@@ -755,7 +848,7 @@ class TestPredictSmoothedPosteriorDataPath:
 
     def test_predict_smoothed_summary_includes_true_correctness(self, monkeypatch):
         model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda: None)
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         model._smoothed_hidden_states_model = object()
 
         class _FakeGQ:
@@ -799,9 +892,9 @@ class TestPredictSmoothedPosteriorDataPath:
             data=sparse_df,
             output="summary",
         )
-        true_correctness = out[
-            out["parameter"] == "true_correctness"
-        ].reset_index(drop=True)
+        true_correctness = out[out["parameter"] == "true_correctness"].reset_index(
+            drop=True
+        )
 
         assert set(true_correctness["kc_id"]) == {"default_kc"}
         assert true_correctness["student_id"].tolist() == [
@@ -824,7 +917,7 @@ class TestPredictSmoothedPosteriorDataPath:
 
 
 class TestSummarizeStatePredictionsHelper:
-    def test_summarize_state_predictions_includes_all_kcs(self):
+    def test_summarize_gq_state_predictions_includes_all_kcs(self):
         posterior_draws = {
             "kc_1": pd.DataFrame(
                 {
@@ -844,7 +937,7 @@ class TestSummarizeStatePredictionsHelper:
             ),
         }
 
-        out = StandardBKT._summarize_state_predictions(
+        out = StandardBKT._summarize_gq_state_predictions(
             posterior_draws,
             quantiles=[0.025, 0.975],
         )
