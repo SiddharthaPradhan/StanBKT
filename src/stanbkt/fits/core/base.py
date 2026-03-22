@@ -174,6 +174,21 @@ class BaseFit(VerboseMixin, ABC):
             raise KeyError(f"No fit found for KC '{kc}'.")
         return self.kc_fits[kc]
 
+    def has_kc(self, kc: str) -> bool:
+        """Check if a fit exists for a knowledge component.
+
+        Parameters
+        ----------
+        kc : str
+            Knowledge component identifier.
+
+        Returns
+        -------
+        bool
+            True if a fit exists for the specified KC, False otherwise.
+        """
+        return kc in self.kc_fits
+
     def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
         if kc in self.summary_cache:
             self._print(

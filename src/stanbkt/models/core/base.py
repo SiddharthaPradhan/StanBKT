@@ -7,6 +7,7 @@ should inherit from.
 """
 
 from __future__ import annotations
+from natsort import natsort_keygen
 import re
 import stanbkt
 from stanbkt.fits.fit_factory import FitFactory
@@ -41,6 +42,8 @@ from stanbkt.utils.data_utils import (
     KCData,
     _DEFAULT_KC_ID,
     _NA_FILL_VALUE,
+    _PKNOW,
+    _PCORRECT,
 )
 from stanbkt.utils.model_archive import pack_model_directory
 
@@ -341,6 +344,7 @@ class BKTModelBase(VerboseMixin, ABC):
         njit_predict_numba: Callable = njit(
             fastmath=fast_math, parallel=parallel, cache=True
         )(type(self)._predict_hidden_states_numba)
+
         # TODO: need to adjust this based on the model (grouped vs not)
         predictions: list[pd.DataFrame] = []
         for kc_id, kc_data in iter_kc_data(
@@ -368,13 +372,23 @@ class BKTModelBase(VerboseMixin, ABC):
                 p_know=p_know,
                 kc_data=kc_data,
                 p_correctness=p_correctness,
+                correctness_col_name=column_mapping.get(
+                    ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS
+                ),
             )
-            kc_predictions.insert(0, "kc_id", str(kc_id))
+            kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
             predictions.append(kc_predictions)
 
         if not predictions:
             return pd.DataFrame(
-                columns=["kc_id", "parameter", "student_id", "problem_id", "value"]
+                columns=[
+                    ColumnNames.KC_ID,
+                    ColumnNames.STUDENT_ID,
+                    ColumnNames.PROBLEM_ID,
+                    "pKnow",
+                    "pCorrectness",
+                    ColumnNames.CORRECTNESS,
+                ]
             )
 
         return pd.concat(predictions, ignore_index=True)
@@ -396,9 +410,8 @@ class BKTModelBase(VerboseMixin, ABC):
         if point_estimate not in ("mean", "median"):
             raise ValueError("'point_estimate' must be either 'mean' or 'median'.")
 
-        kc_column_name = ColumnNames.KC_ID
-        if column_mapping and ColumnNames.KC_ID in column_mapping:
-            kc_column_name = column_mapping[ColumnNames.KC_ID]
+        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        kc_column_name = column_mapping[ColumnNames.KC_ID]
 
         working_data = data
         if kc_column_name not in working_data.columns:
@@ -448,17 +461,27 @@ class BKTModelBase(VerboseMixin, ABC):
                 slip=slip,
                 lengths=kc_data.lengths,
             )
-            kc_predictions = self._single_state_array_to_long_df(
-                p_state=p_smooth,
-                parameter_name="pKnow",
-                kc_data=kc_data,
+            kc_predictions = self._state_arrays_to_long_df(
+                p_smooth,
+                kc_data,
+                correctness_col_name=column_mapping.get(
+                    ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS
+                ),
             )
-            kc_predictions.insert(0, "kc_id", str(kc_id))
+
+            kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
             predictions.append(kc_predictions)
 
         if not predictions:
             return pd.DataFrame(
-                columns=["kc_id", "parameter", "student_id", "problem_id", "value"]
+                columns=[
+                    ColumnNames.KC_ID,
+                    ColumnNames.STUDENT_ID,
+                    ColumnNames.PROBLEM_ID,
+                    "pKnow",
+                    "pCorrectness",
+                    ColumnNames.CORRECTNESS,
+                ]
             )
 
         return pd.concat(predictions, ignore_index=True)
@@ -632,7 +655,7 @@ class BKTModelBase(VerboseMixin, ABC):
         problem_id_segs: list[npt.NDArray] = []
         p_know_segs: list[npt.NDArray[np.float64]] = []
         p_correctness_segs: list[npt.NDArray[np.float64]] = []
-        correctness_segs: list[npt.NDArray[np.float64]] = []
+        correctness_segs: list[npt.NDArray[np.int8]] = []
 
         for student_idx, (student_id, interaction) in enumerate(
             kc_data.student_inter_dict.items()
@@ -646,7 +669,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     p_correctness[student_idx, :length].astype(np.float64)
                 )
             correctness_segs.append(
-                kc_data.correctness[student_idx, :length].astype(np.float64)
+                kc_data.correctness[student_idx, :length].astype(np.int8)
             )
 
         student_ids = (
@@ -664,85 +687,26 @@ class BKTModelBase(VerboseMixin, ABC):
             if p_know_segs
             else np.empty(0, dtype=np.float64)
         )
-        correctness_vals: npt.NDArray[np.float64] = (
+        correctness_vals: npt.NDArray[np.int8] = (
             np.concatenate(correctness_segs)
             if correctness_segs
-            else np.empty(0, dtype=np.float64)
+            else np.empty(0, dtype=np.int8)
         )
 
-        data: dict[str, Any] = {
+        long_data_df: dict[str, Any] = {
             "student_id": student_ids,
             "problem_id": problem_ids,
             "pKnow": p_know_vals,
         }
         if p_correctness is not None:
-            data["pCorrectness"] = (
+            long_data_df["pCorrectness"] = (
                 np.concatenate(p_correctness_segs)
                 if p_correctness_segs
                 else np.empty(0, dtype=np.float64)
             )
-        data[correctness_col_name] = correctness_vals
+        long_data_df[correctness_col_name] = correctness_vals
 
-        return pd.DataFrame(data)
-
-    @staticmethod
-    def _single_state_array_to_long_df(
-        p_state: np.ndarray,
-        parameter_name: str,
-        kc_data: KCData,
-    ) -> pd.DataFrame:
-        """Convert a single state matrix to long-form prediction output using only valid entries."""
-        student_id_segs: list[np.ndarray] = []
-        problem_id_segs: list[np.ndarray] = []
-        p_state_segs: list[np.ndarray] = []
-        correctness_segs: list[np.ndarray] = []
-
-        for student_idx, (student_id, interaction) in enumerate(
-            kc_data.student_inter_dict.items()
-        ):
-            length = interaction.length
-            student_id_segs.append(np.full(length, str(student_id), dtype=object))
-            problem_id_segs.append(np.asarray(interaction.problem_ids, dtype=object))
-            p_state_segs.append(p_state[student_idx, :length].astype(np.float64))
-            correctness_segs.append(
-                kc_data.correctness[student_idx, :length].astype(np.float64)
-            )
-
-        student_ids = (
-            np.concatenate(student_id_segs)
-            if student_id_segs
-            else np.empty(0, dtype=object)
-        )
-        problem_ids = (
-            np.concatenate(problem_id_segs)
-            if problem_id_segs
-            else np.empty(0, dtype=object)
-        )
-        p_state_vals = (
-            np.concatenate(p_state_segs)
-            if p_state_segs
-            else np.empty(0, dtype=np.float64)
-        )
-        correctness_vals = (
-            np.concatenate(correctness_segs)
-            if correctness_segs
-            else np.empty(0, dtype=np.float64)
-        )
-        n = len(student_ids)
-
-        return pd.DataFrame(
-            {
-                "parameter": np.concatenate(
-                    [
-                        np.repeat(parameter_name, n),
-                        np.repeat("true_correctness", n),
-                    ]
-                ),
-                "student_id": np.concatenate([student_ids, student_ids]),
-                "problem_id": np.concatenate([problem_ids, problem_ids]),
-                "value": np.concatenate([p_state_vals, correctness_vals]),
-            }
-        )
+        return pd.DataFrame(long_data_df)
 
     @staticmethod
     def _build_prediction_index_frame(kc_data: KCData, n_problems: int) -> pd.DataFrame:
@@ -933,6 +897,7 @@ class BKTModelBase(VerboseMixin, ABC):
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
+        seed: Optional[int] = None,
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
         self._check_predict_posterior_args(
             data=data,
@@ -948,8 +913,22 @@ class BKTModelBase(VerboseMixin, ABC):
             )
             data = None
 
+        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+
         if data is not None:
             self._fit_check()
+            # ensure data contains fitted KCs and filter to just those with fits
+            kc_column_name = ColumnNames.KC_ID
+            self.check_data_contains_fitted_kcs(
+                set(data[kc_column_name].astype(str).unique())
+            )
+            overlapping_kcs = self.get_kcs_in_fitted_kcs(
+                set(data[kc_column_name].unique())
+            )
+            data = data.copy()
+            data: pd.DataFrame = data.loc[data[kc_column_name].isin(overlapping_kcs)]
+
+            # compile model if not already cached
             if self._hidden_states_model is None:
                 self._hidden_states_model = compile_stan_model(
                     self._stan_hidden_filename,
@@ -958,26 +937,26 @@ class BKTModelBase(VerboseMixin, ABC):
                     print_fn=self._print,
                 )
 
-            posterior_draws_stan, kc_data_by_kc = self._predict_generated_quantities(
+            posterior_draws_stan = self._predict_generated_quantities(
                 data=data,
                 gq_model=self._hidden_states_model,
                 column_mapping=column_mapping,
+                seed=seed,
             )
 
             if output == "stan":
                 return posterior_draws_stan
 
-            posterior_draws = type(self)._process_predict_gq(posterior_draws_stan)
-            posterior_draws = type(self)._apply_kc_data_to_posterior_draws(
-                posterior_draws=posterior_draws,
-                kc_data_by_kc=kc_data_by_kc,
-                drop_index_cols=output != "summary",
+            posterior_draws = self._process_predict_gq(
+                posterior_draws_stan, data, column_mapping
             )
 
         if posterior_draws is not None:
             if output == "summary":
-                return type(self)._summarize_gq_state_predictions(
-                    posterior_draws, quantiles=summary_quantiles
+                return self._summarize_gq_state_predictions(
+                    posterior_draws,
+                    column_mapping,
+                    quantiles=summary_quantiles,
                 )
             return posterior_draws
 
@@ -994,6 +973,7 @@ class BKTModelBase(VerboseMixin, ABC):
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
+        seed: Optional[int] = None,
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
         self._check_predict_posterior_args(
             data=data,
@@ -1009,8 +989,25 @@ class BKTModelBase(VerboseMixin, ABC):
             )
             data = None
 
+        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+
         if data is not None:
             self._fit_check()
+            # ensure data contains fitted KCs and filter to just those with fits
+            kc_column_name = ColumnNames.KC_ID
+            if column_mapping and ColumnNames.KC_ID in column_mapping:
+                kc_column_name = column_mapping[ColumnNames.KC_ID]
+
+            self.check_data_contains_fitted_kcs(
+                set(data[kc_column_name].astype(str).unique())
+            )
+            overlapping_kcs = self.get_kcs_in_fitted_kcs(
+                set(data[kc_column_name].unique())
+            )
+            data = data.copy()
+            data: pd.DataFrame = data.loc[data[kc_column_name].isin(overlapping_kcs)]
+
+            # compile model if not already cached
             if self._smoothed_hidden_states_model is None:
                 self._smoothed_hidden_states_model = compile_stan_model(
                     self._stan_smoothed_hidden_filename,
@@ -1019,26 +1016,27 @@ class BKTModelBase(VerboseMixin, ABC):
                     print_fn=self._print,
                 )
 
-            posterior_draws_stan, kc_data_by_kc = self._predict_generated_quantities(
+            posterior_draws_stan = self._predict_generated_quantities(
                 data=data,
                 gq_model=self._smoothed_hidden_states_model,
                 column_mapping=column_mapping,
+                seed=seed,
             )
 
             if output == "stan":
                 return posterior_draws_stan
 
-            posterior_draws = type(self)._process_predict_gq(posterior_draws_stan)
-            posterior_draws = type(self)._apply_kc_data_to_posterior_draws(
-                posterior_draws=posterior_draws,
-                kc_data_by_kc=kc_data_by_kc,
-                drop_index_cols=output != "summary",
+            posterior_draws = self._process_predict_gq(
+                posterior_draws_stan, data, column_mapping
             )
 
         if posterior_draws is not None:
             if output == "summary":
-                return type(self)._summarize_gq_state_predictions(
-                    posterior_draws, quantiles=summary_quantiles
+                return self._summarize_gq_state_predictions(
+                    posterior_draws,
+                    column_mapping,
+                    quantiles=summary_quantiles,
+                    pCorrectness=False,
                 )
             return posterior_draws
 
@@ -1053,17 +1051,8 @@ class BKTModelBase(VerboseMixin, ABC):
         data: pd.DataFrame,
         gq_model: csp.CmdStanModel,
         column_mapping: Optional[dict[str, str]] = None,
-    ) -> tuple[dict[str, csp.CmdStanGQ], dict[str, KCData]]:
-        kc_column_name = ColumnNames.KC_ID
-        if column_mapping and ColumnNames.KC_ID in column_mapping:
-            kc_column_name = column_mapping[ColumnNames.KC_ID]
-
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
-        )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data = data.copy()
-        data = data.loc[data[kc_column_name].isin(overlapping_kcs)]
+        seed: Optional[int] = None,
+    ) -> dict[str, csp.CmdStanGQ]:
 
         if self.fits is None:
             raise RuntimeError(
@@ -1072,7 +1061,6 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
         gq_kc_fit: dict[str, csp.CmdStanGQ] = {}
-        kc_data_by_kc: dict[str, KCData] = {}
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
@@ -1080,7 +1068,6 @@ class BKTModelBase(VerboseMixin, ABC):
             print_fn=self._print,
         ):
             kc_id_str = str(kc_id)
-            kc_data_by_kc[kc_id_str] = kc_data
 
             kc_fit_result = self.fits.get_fit(kc_id)
             if kc_fit_result is None:
@@ -1090,181 +1077,120 @@ class BKTModelBase(VerboseMixin, ABC):
             gq_fit = gq_model.generate_quantities(
                 data=data_dict,
                 previous_fit=kc_fit_result,
+                seed=seed,
             )
 
             gq_kc_fit[kc_id_str] = gq_fit
 
-        return gq_kc_fit, kc_data_by_kc
+        return gq_kc_fit
 
-    @staticmethod
     def _process_predict_gq(
+        self,
         posterior_draws_raw: dict[str, csp.CmdStanGQ],
+        data: pd.DataFrame,
+        col_mapping: dict[str, str],
     ) -> dict[str, pd.DataFrame]:
-        expanded_param_names = ["parameter", "student_id", "problem_id"]
+        """Post-process raw CmdStanGQ outputs into long-form DataFrames with remapped IDs."""
+        student_col = col_mapping[ColumnNames.STUDENT_ID]
+        problem_col = col_mapping[ColumnNames.PROBLEM_ID]
+        correctness_col = col_mapping[ColumnNames.CORRECTNESS]
+        id_cols: list[str] | None = None
+        col_pat = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
+
         posterior_draws: dict[str, pd.DataFrame] = {}
-        for kc_id, gq_kc in posterior_draws_raw.items():
-            gq_kc_df = gq_kc.draws_pd()
-            id_cols: list[str] = [
-                c for c in gq_kc_df.columns.astype(str) if c.endswith("__")
-            ]
-            long_df = gq_kc_df.melt(
-                id_vars=id_cols,
-                var_name="parameter_base",
-                value_name="value",
-            )
-            parameter_lookup = pd.DataFrame(
-                {
-                    "parameter_base": pd.Index(
-                        long_df["parameter_base"].unique(), dtype="string"
-                    )
-                }
-            )
-            parameter_lookup[expanded_param_names] = parameter_lookup[
-                "parameter_base"
-            ].str.extract(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
-            parameter_lookup["parameter"] = parameter_lookup["parameter"].fillna(
-                parameter_lookup["parameter_base"]
-            )
-            parameter_lookup[expanded_param_names[1]] = pd.to_numeric(
-                parameter_lookup[expanded_param_names[1]], errors="coerce"
-            ).astype("Int64")
-            parameter_lookup[expanded_param_names[2]] = pd.to_numeric(
-                parameter_lookup[expanded_param_names[2]], errors="coerce"
-            ).astype("Int64")
-
-            long_df = long_df.join(
-                parameter_lookup.set_index("parameter_base"), on="parameter_base"
-            )
-            long_df = long_df.drop(columns=["parameter_base"], errors="ignore")
-            long_df = long_df[
-                expanded_param_names
-                + ["value"]
-                + [col for col in long_df.columns if col.endswith("__")]
-            ]
-            posterior_draws[kc_id] = long_df
-        return posterior_draws
-
-    @staticmethod
-    def _apply_kc_data_to_posterior_draws(
-        posterior_draws: dict[str, pd.DataFrame],
-        kc_data_by_kc: dict[str, KCData],
-        drop_index_cols: bool = True,
-    ) -> dict[str, pd.DataFrame]:
-        """Map posterior index coordinates back to original IDs and invalidate padded cells."""
-        remapped_draws: dict[str, pd.DataFrame] = {}
-
-        for kc_id, kc_draws in posterior_draws.items():
-            kc_data = kc_data_by_kc.get(kc_id)
-            if kc_data is None or kc_draws.empty:
-                remapped_draws[kc_id] = kc_draws
+        for kc_id, kc_data in iter_kc_data(
+            data=data,
+            col_mapping=col_mapping,
+            return_groups=False,
+            print_fn=self._print,
+        ):
+            kc_id_str = str(kc_id)
+            gq_kc = posterior_draws_raw.get(kc_id_str)
+            # this if should not happen since we only generate GQ for KCs in the data.
+            if gq_kc is None:
+                self._print(
+                    f"No generated quantities found for KC '{kc_id_str}' when post processing predictions.",
+                    level=VerbosityLevel.WARN,
+                )
                 continue
 
-            lookup_df = BKTModelBase._build_prediction_index_frame(
-                kc_data=kc_data,
-                n_problems=kc_data.correctness.shape[1],
+            draws_df = gq_kc.draws_pd()
+            if id_cols is None:
+                # we may be able to hard code these, but it may change based on the method.
+                id_cols = [c for c in draws_df.columns.astype(str) if c.endswith("__")]
+
+            # Parse column names once to bucket pKnow / pCorrectness by (student_idx, problem_idx).
+            # Sorting lexicographically matches Stan's column output order: [1,1], [1,2], ..., [2,1], ...
+            pknow_cols: dict[tuple[int, int], str] = {}
+            pcorr_cols: dict[tuple[int, int], str] = {}
+            for col in draws_df.columns:
+                m = col_pat.match(str(col))
+                if m:
+                    param, s, p = m.group(1), int(m.group(2)), int(m.group(3))
+                    if param == _PKNOW:
+                        pknow_cols[(s, p)] = col
+                    elif param == _PCORRECT:
+                        pcorr_cols[(s, p)] = col
+
+            n_draws = len(draws_df)
+
+            # Build per-observation metadata — filter to real (non-padded) observations only.
+            student_idx_to_id = list(kc_data.student_inter_dict.keys())
+            idx_to_problem_id: dict[tuple[int, int], str] = {
+                (i + 1, j + 1): pid
+                for i, (_, inter) in enumerate(kc_data.student_inter_dict.items())
+                for j, pid in enumerate(inter.problem_ids)
+            }
+            # obs_keys: only (s_idx, p_idx) pairs that correspond to real attempts,
+            # i.e. present in idx_to_problem_id (padding indices are absent).
+            obs_keys = sorted(k for k in pknow_cols if k in idx_to_problem_id)
+            n_obs = len(obs_keys)
+
+            obs_student_ids = np.fromiter(
+                (student_idx_to_id[s - 1] for s, _ in obs_keys),
+                dtype=object,
+                count=n_obs,
             )
-            lookup_df = lookup_df.rename(
-                columns={
-                    "student_id": "student_id_mapped",
-                    "problem_id": "problem_id_mapped",
-                    "is_valid": "is_valid_mapped",
-                }
+            obs_problem_ids = np.fromiter(
+                (idx_to_problem_id[(s, p)] for s, p in obs_keys),
+                dtype=object,
+                count=n_obs,
+            )
+            obs_correctness = np.fromiter(
+                (kc_data.correctness[s - 1, p - 1] for s, p in obs_keys),
+                dtype=np.int8,
+                count=n_obs,
             )
 
-            remapped = kc_draws.merge(
-                lookup_df[
-                    [
-                        "student_idx",
-                        "problem_idx",
-                        "student_id_mapped",
-                        "problem_id_mapped",
-                        "is_valid_mapped",
-                    ]
-                ],
-                left_on=["student_id", "problem_id"],
-                right_on=["student_idx", "problem_idx"],
-                how="left",
+            # Extract (n_draws, n_obs) value arrays and ravel row-major →
+            # output row order: (draw_0, obs_0), (draw_0, obs_1), ..., (draw_1, obs_0), ...
+            pknow_values = (
+                draws_df[[pknow_cols[k] for k in obs_keys]].to_numpy().ravel()
             )
 
-            remapped["student_id"] = remapped["student_id"].astype(object)
-            remapped["problem_id"] = remapped["problem_id"].astype(object)
-
-            has_mapping = remapped["student_id_mapped"].notna()
-            remapped.loc[has_mapping, "student_id"] = remapped.loc[
-                has_mapping, "student_id_mapped"
-            ]
-            remapped.loc[has_mapping, "problem_id"] = remapped.loc[
-                has_mapping, "problem_id_mapped"
-            ]
-
-            invalid_mask = remapped["is_valid_mapped"] == False
-            remapped.loc[invalid_mask, "value"] = -1.0
-
-            remapped = BKTModelBase._append_true_correctness_rows(
-                prediction_df=remapped,
-                kc_data=kc_data,
-            )
-            if drop_index_cols:
-                remapped = remapped.drop(
-                    columns=[
-                        "student_idx",
-                        "problem_idx",
-                        "student_id_mapped",
-                        "problem_id_mapped",
-                        "is_valid_mapped",
-                    ],
-                    errors="ignore",
+            # np.repeat broadcasts each draw's id fields across all n_obs observations;
+            # np.tile repeats the per-obs metadata for each of the n_draws draws.
+            result: dict[str, Any] = {
+                col: np.repeat(draws_df[col].to_numpy(), n_obs) for col in id_cols
+            }
+            result[student_col] = np.tile(obs_student_ids, n_draws)
+            result[problem_col] = np.tile(obs_problem_ids, n_draws)
+            result[correctness_col] = np.tile(obs_correctness, n_draws)
+            result[_PKNOW] = pknow_values
+            if pcorr_cols:
+                result[_PCORRECT] = (
+                    draws_df[[pcorr_cols[k] for k in obs_keys]].to_numpy().ravel()
                 )
-            else:
-                remapped = remapped.drop(
-                    columns=[
-                        "student_id_mapped",
-                        "problem_id_mapped",
-                        "is_valid_mapped",
-                    ],
-                    errors="ignore",
-                )
-            remapped_draws[kc_id] = remapped
 
-        return remapped_draws
+            posterior_draws[kc_id] = pd.DataFrame(result)
+        return posterior_draws
 
-    @staticmethod
-    def _append_true_correctness_rows(
-        prediction_df: pd.DataFrame,
-        kc_data: KCData,
-    ) -> pd.DataFrame:
-        """Append observed correctness values using the same long-form schema."""
-        index_df = BKTModelBase._build_prediction_index_frame(
-            kc_data=kc_data,
-            n_problems=kc_data.correctness.shape[1],
-        )
-        id_cols = [col for col in prediction_df.columns if col.endswith("__")]
-
-        if id_cols:
-            draw_ids = prediction_df[id_cols].drop_duplicates(ignore_index=True)
-            correctness_rows = draw_ids.merge(index_df, how="cross")
-        else:
-            correctness_rows = index_df.copy()
-
-        correctness_rows["parameter"] = "true_correctness"
-        correctness_rows["value"] = correctness_rows["correctness"].astype(np.float64)
-
-        for base_col in ("student_id", "problem_id"):
-            if base_col not in correctness_rows.columns:
-                correctness_rows[base_col] = pd.Series(dtype="object")
-
-        result_cols = list(prediction_df.columns)
-        for col in result_cols:
-            if col not in correctness_rows.columns:
-                correctness_rows[col] = pd.NA
-
-        correctness_rows = correctness_rows[result_cols]
-        return pd.concat([prediction_df, correctness_rows], ignore_index=True)
-
-    @staticmethod
     def _summarize_gq_state_predictions(
+        self,
         gq_dict: dict[str, pd.DataFrame],
+        col_mapping: dict[str, str],
         quantiles=(0.025, 0.975),
+        pCorrectness=True,
     ) -> pd.DataFrame:
         if not gq_dict:
             raise ValueError("Input Dict is empty.")
@@ -1272,39 +1198,44 @@ class BKTModelBase(VerboseMixin, ABC):
         if not all(0 <= q <= 1 for q in quantiles):
             raise ValueError("Quantiles must be between 0 and 1.")
 
-        summary_cols = ["mean", "std", "median"] + [
-            f"{q * 100:.2f}%" for q in quantiles
+        stat_labels = ["mean", "std", "median"] + [f"{q * 100:.2f}%" for q in quantiles]
+        summary_cols = [
+            f"{col}_{stat}" for col in [_PKNOW, _PCORRECT] for stat in stat_labels
         ]
-        param_id_cols = ["parameter", "student_id", "problem_id"]
-        internal_id_cols = ["student_idx", "problem_idx"]
-
+        param_id_cols = [
+            col_mapping.get(ColumnNames.STUDENT_ID),
+            col_mapping.get(ColumnNames.PROBLEM_ID),
+            col_mapping.get(ColumnNames.CORRECTNESS),
+        ]
+        q_vals = list(quantiles)
         result_frames: list[pd.DataFrame] = []
         for kc, gq_kc_df in gq_dict.items():
             if gq_kc_df.empty:
                 continue
 
-            group_cols = param_id_cols
-            if all(col in gq_kc_df.columns for col in internal_id_cols):
-                group_cols = param_id_cols + internal_id_cols
+            agg_cols = [c for c in [_PKNOW, _PCORRECT] if c in gq_kc_df.columns]
+            grouped = gq_kc_df.groupby(param_id_cols, sort=False)[agg_cols]
 
-            gq_kc_summary: pd.DataFrame = (
-                gq_kc_df.groupby(group_cols, sort=False)["value"]
-                .agg(
-                    mean="mean",
-                    std="std",
-                    median="median",
-                    **{
-                        f"{q * 100:.2f}%": (lambda s, q=q: s.quantile(q))
-                        for q in quantiles
-                    },
-                )
-                .reset_index()
+            # Base stats via single optimized Cython path
+            base = grouped.agg(["mean", "std", "median"])
+            base.columns = [f"{col}_{stat}" for col, stat in base.columns]
+
+            # Quantiles: one optimized Cython call per quantile, no per-group Python lambdas
+            if q_vals:
+                q_parts = []
+                for q in q_vals:
+                    qf = grouped.quantile(q).rename(
+                        columns={col: f"{col}_{q * 100:.2f}%" for col in agg_cols}
+                    )
+                    q_parts.append(qf)
+                gq_kc_summary = pd.concat([base] + q_parts, axis=1)
+            else:
+                gq_kc_summary = base
+
+            gq_kc_summary = gq_kc_summary.reset_index()
+            gq_kc_summary.sort_values(
+                by=param_id_cols, inplace=True, key=natsort_keygen()
             )
-
-            gq_kc_summary = gq_kc_summary.drop(
-                columns=internal_id_cols, errors="ignore"
-            )
-
             gq_kc_summary.insert(0, "kc_id", str(kc))
             result_frames.append(gq_kc_summary)
 

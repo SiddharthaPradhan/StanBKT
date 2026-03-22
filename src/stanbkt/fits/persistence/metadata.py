@@ -1,6 +1,7 @@
 """Metadata serialization helpers for fit persistence."""
 
 from __future__ import annotations
+import natsort
 import json
 from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveFolder, FitSaves
 
@@ -36,7 +37,7 @@ def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
                 "save_folder": str(fit_save.save_folder),
                 "summary_cache_available": fit_save.summary_cache_available,
             }
-            for fit_save in sorted(
+            for fit_save in natsort.natsorted(
                 fit_metadata.fit_saves,
                 key=lambda f: (f.kc, str(f.save_folder)),
             )

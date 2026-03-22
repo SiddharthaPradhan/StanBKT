@@ -59,7 +59,6 @@ class BaseFitOptions:
         """
         return_dict: dict[str, Any] = asdict(self)
         extras: dict[str, Any] = return_dict.pop("extra_kwargs", {}) or {}
-        return_dict = {k: v for k, v in return_dict.items() if v is not None}
         return_dict.update(extras)
         # Remove any keys with None values so CmdStanPy can apply its own defaults
         # also allows for more cache hits.

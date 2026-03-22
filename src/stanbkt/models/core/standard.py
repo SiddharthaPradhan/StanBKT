@@ -148,6 +148,11 @@ class StandardBKT(BKTModelBase):
             return_groups=False,
             print_fn=self._print,
         ):
+            if self.fits.has_kc(str(kc_id)):
+                raise ValueError(
+                    f"Fit for KC '{kc_id}' already exists. Set 'overwrite_kcs=True' to overwrite."
+                )
+
             self._print(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
 
             data_dict = self._build_stan_data_dict(kc_data)

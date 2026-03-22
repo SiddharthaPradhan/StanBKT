@@ -1,16 +1,17 @@
-from pyparsing import col
-from jedi.inference.gradual.typing import TypedDict
 import pandas as pd
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 import numpy.typing as npt
 import numpy as np
 from dataclasses import dataclass
 from collections.abc import Iterator
 from stanbkt.utils.verbose import VerbosityLevel
 from enum import StrEnum
+from natsort import natsort_keygen
 
 _NA_FILL_VALUE = -1
 _DEFAULT_KC_ID = "default_kc"
+_PKNOW = "pKnow"
+_PCORRECT = "pCorrectness"
 
 
 class ColumnNames(StrEnum):
@@ -51,7 +52,7 @@ class StudentInteraction:
     length: int
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class KCData:
     # correctness matrix of shape (num_students, num_problems)
     correctness: np.ndarray
@@ -60,6 +61,9 @@ class KCData:
     #    - and the lengths, to ignore entries in the correctness matrix that correspond to null
     student_inter_dict: dict[str, StudentInteraction]  # TODO: consider trimming this
     lengths: npt.NDArray[np.int32]  # lens of each student's interaction sequence
+    student_ids: list[
+        str
+    ]  # student ids that matches the true interaction sequence in the correctness matrix
     problem_ids: list[str]  # problem ids in sequence
     groups: Optional[np.ndarray] = None
     # optional mapping from group id to index in groups array
@@ -70,7 +74,7 @@ def setup_cmdstanpy() -> None:
     """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary."""
     from cmdstanpy import cmdstan_path, install_cmdstan
 
-    # TODO: fix this later
+    # TODO: fix this later for windows refer to notes, move this to another location
     try:
         _ = cmdstan_path()
     except ValueError:
@@ -188,11 +192,14 @@ def iter_kc_data(
         ``(kc_id, KCData)`` pairs for each KC in the input.
     """
 
-    def process_student_interactions(row: pd.Series, student_inter_dict: dict):
+    def process_student_interactions(
+        row: pd.Series, student_inter_dict: dict, student_ids: list
+    ):
         """Returns interaction data for a student with NA values inserted at the end.
         Also updates the student_inter_dict with the attempted problem ids and length of interactions for the student.
         """
         student_id = row.name
+        student_ids.append(student_id)
         # student_dict[student_idx] = row.isna().sum()
         na_mask = row.isna()
         left_aligned_row = pd.concat(
@@ -240,28 +247,41 @@ def iter_kc_data(
 
     for kc, subset in working_data.groupby(kc_column, sort=False, observed=True):
         student_inter_dict: dict[str, StudentInteraction] = {}
+        student_ids: list[str] = list()
         correctness_wide = pd.pivot(
             subset,
             index=student_col,
             columns=problem_col,
             values=correctness_col,
         )
-        problem_ids: list[str] = correctness_wide.columns.astype(str).tolist()
 
+        # pd.pivot sorts the problem and student id.
+        # resort in natural order
+        correctness_wide.sort_index(
+            axis="columns", key=natsort_keygen(), inplace=True
+        )  # ty:ignore[no-matching-overload]
+        correctness_wide.sort_index(
+            axis="index", key=natsort_keygen(), inplace=True
+        )  # ty:ignore[no-matching-overload]
+        problem_ids: list[str] = correctness_wide.columns.astype(str).tolist()
         correctness_wide = correctness_wide.apply(
-            lambda row: process_student_interactions(row, student_inter_dict), axis=1
+            lambda row: process_student_interactions(
+                row, student_inter_dict, student_ids
+            ),
+            axis=1,
         )
         lengths: npt.NDArray[np.int32] = np.fromiter(
             (s.length for s in student_inter_dict.values()),
             dtype=np.int32,
             count=len(student_inter_dict),
         )
-        kc_data = KCData(
-            correctness=correctness_wide.values.astype(np.int8, copy=False),
-            student_inter_dict=student_inter_dict,
-            lengths=lengths,
-            problem_ids=problem_ids,
-        )
+        kc_data_dict: dict[str, Any] = {
+            "correctness": correctness_wide.values.astype(np.int8, copy=False),
+            "student_inter_dict": student_inter_dict,
+            "lengths": lengths,
+            "student_ids": student_ids,
+            "problem_ids": problem_ids,
+        }
 
         if return_groups:
             group_col = col_mapping.get(ColumnNames.GROUP)
@@ -278,8 +298,10 @@ def iter_kc_data(
             group_2_index: dict[str, int] = {
                 group: index for index, group in enumerate(unique_groups, start=1)
             }
-            kc_data.groups = group_indices
-            kc_data.group_2_index = group_2_index
+            kc_data_dict["groups"] = group_indices
+            kc_data_dict["group_2_index"] = group_2_index
+
+        kc_data = KCData(**kc_data_dict)
 
         yield str(kc), kc_data
 
