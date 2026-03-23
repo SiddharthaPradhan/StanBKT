@@ -7,7 +7,7 @@ import pytest
 
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.core.standard import StandardBKT
-from stanbkt.utils.data_utils import KCData, format_data
+from stanbkt.utils.data_utils import KCData, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
 
 
@@ -507,19 +507,19 @@ class TestPredictPosteriorUnfitted:
     def test_predict_smoothed_states_posterior_raises_when_not_fitted(self):
         model = StandardBKT()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            model.predict_smoothed_states_posterior(pd.DataFrame())
+            model.predict_smoothed_posterior(pd.DataFrame())
 
 
 class TestPredictSmoothedStatesPosteriorApi:
     def test_raises_when_data_and_posterior_draws_missing(self):
         model = StandardBKT()
         with pytest.raises(ValueError, match="Either 'data' or 'posterior_draws'"):
-            model.predict_smoothed_states_posterior()
+            model.predict_smoothed_posterior()
 
     def test_returns_posterior_draws_for_default_output(self):
         model = StandardBKT()
         posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
-        out = model.predict_smoothed_states_posterior(posterior_draws=posterior_draws)
+        out = model.predict_smoothed_posterior(posterior_draws=posterior_draws)
         assert out == posterior_draws
 
     def test_returns_summary_when_output_summary(self, monkeypatch):
@@ -527,7 +527,9 @@ class TestPredictSmoothedStatesPosteriorApi:
         posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
         expected_summary = pd.DataFrame({"kc_id": ["kc_1"], "mean": [0.15]})
 
-        def _fake_summarize(self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True):
+        def _fake_summarize(
+            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
+        ):
             assert draws == posterior_draws
             assert quantiles == [0.05, 0.95]
             return expected_summary
@@ -536,7 +538,7 @@ class TestPredictSmoothedStatesPosteriorApi:
             StandardBKT, "_summarize_gq_state_predictions", _fake_summarize
         )
 
-        out = model.predict_smoothed_states_posterior(
+        out = model.predict_smoothed_posterior(
             posterior_draws=posterior_draws,
             output="summary",
             summary_quantiles=[0.05, 0.95],
@@ -547,7 +549,7 @@ class TestPredictSmoothedStatesPosteriorApi:
         model = StandardBKT()
         posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
         with pytest.raises(TypeError, match="cannot be used when 'output' is 'stan'"):
-            model.predict_smoothed_states_posterior(
+            model.predict_smoothed_posterior(
                 posterior_draws=posterior_draws,
                 output="stan",
             )
@@ -556,7 +558,7 @@ class TestPredictSmoothedStatesPosteriorApi:
         model = StandardBKT()
         posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
 
-        out = model.predict_smoothed_states_posterior(
+        out = model.predict_smoothed_posterior(
             data=_minimal_df(),
             posterior_draws=posterior_draws,
         )
@@ -649,7 +651,9 @@ class TestPredictPosteriorDataPath:
             lambda self_arg, gq_dict, data, col_mapping: processed,
         )
 
-        def _fake_summary(self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True):
+        def _fake_summary(
+            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
+        ):
             assert draws == processed
             assert quantiles == [0.1, 0.9]
             return expected_summary
@@ -707,7 +711,9 @@ class TestPredictPosteriorDataPath:
         monkeypatch.setattr(
             model,
             "_predict_generated_quantities",
-            lambda data, gq_model, column_mapping=None, **kwargs: {"default_kc": _FakeGQ(gq_draws)},
+            lambda data, gq_model, column_mapping=None, **kwargs: {
+                "default_kc": _FakeGQ(gq_draws)
+            },
         )
 
         out = model.predict_posterior(data=sparse_df, output="default")
@@ -765,14 +771,22 @@ class TestPredictPosteriorDataPath:
         monkeypatch.setattr(
             model,
             "_predict_generated_quantities",
-            lambda data, gq_model, column_mapping=None, **kwargs: {"default_kc": _FakeGQ(gq_draws)},
+            lambda data, gq_model, column_mapping=None, **kwargs: {
+                "default_kc": _FakeGQ(gq_draws)
+            },
         )
 
         out = model.predict_posterior(data=sparse_df, output="summary")
 
         # Summary has one row per (student_id, problem_id, correct) — only real obs
         assert set(out["kc_id"]) == {"default_kc"}
-        assert set(out.columns) >= {"kc_id", "student_id", "problem_id", "correct", "pKnow_mean"}
+        assert set(out.columns) >= {
+            "kc_id",
+            "student_id",
+            "problem_id",
+            "correct",
+            "pKnow_mean",
+        }
         assert len(out) == 3  # 3 real observations
         # Correctness values are preserved in the summary
         correct_vals = out.set_index(["student_id", "problem_id"])["correct"]
@@ -821,9 +835,7 @@ class TestPredictSmoothedPosteriorDataPath:
             lambda self_arg, gq_dict, data, col_mapping: expected,
         )
 
-        out = model.predict_smoothed_states_posterior(
-            data=data_with_kc, output="default"
-        )
+        out = model.predict_smoothed_posterior(data=data_with_kc, output="default")
         assert out == expected
 
     def test_predict_smoothed_uses_summary_helper(self, monkeypatch):
@@ -866,7 +878,9 @@ class TestPredictSmoothedPosteriorDataPath:
             lambda self_arg, gq_dict, data, col_mapping: processed,
         )
 
-        def _fake_summary(self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True):
+        def _fake_summary(
+            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
+        ):
             assert draws == processed
             assert quantiles == [0.2, 0.8]
             return expected_summary
@@ -875,7 +889,7 @@ class TestPredictSmoothedPosteriorDataPath:
             StandardBKT, "_summarize_gq_state_predictions", _fake_summary
         )
 
-        out = model.predict_smoothed_states_posterior(
+        out = model.predict_smoothed_posterior(
             data=data_with_kc,
             output="summary",
             summary_quantiles=[0.2, 0.8],
@@ -921,17 +935,25 @@ class TestPredictSmoothedPosteriorDataPath:
         monkeypatch.setattr(
             model,
             "_predict_generated_quantities",
-            lambda data, gq_model, column_mapping=None, **kwargs: {"default_kc": _FakeGQ(gq_draws)},
+            lambda data, gq_model, column_mapping=None, **kwargs: {
+                "default_kc": _FakeGQ(gq_draws)
+            },
         )
 
-        out = model.predict_smoothed_states_posterior(
+        out = model.predict_smoothed_posterior(
             data=sparse_df,
             output="summary",
         )
 
         # Summary has one row per (student_id, problem_id, correct) — only real obs
         assert set(out["kc_id"]) == {"default_kc"}
-        assert set(out.columns) >= {"kc_id", "student_id", "problem_id", "correct", "pKnow_mean"}
+        assert set(out.columns) >= {
+            "kc_id",
+            "student_id",
+            "problem_id",
+            "correct",
+            "pKnow_mean",
+        }
         assert len(out) == 3  # 3 real observations
         # Correctness values are preserved in the summary
         correct_vals = out.set_index(["student_id", "problem_id"])["correct"]

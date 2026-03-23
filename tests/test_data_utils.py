@@ -4,7 +4,7 @@ import pytest
 
 from stanbkt.utils.data_utils import (
     ColumnNames,
-    format_data,
+    format_kc_data,
     iter_kc_data,
     rename_summary_var_columns,
     validate_data,
@@ -92,7 +92,7 @@ def test_iter_kc_data_group_equals_student() -> None:
 
 def test_format_data_returns_same_kc_structure() -> None:
     df = _base_df()
-    formatted = format_data(df)
+    formatted = format_kc_data(df)
 
     assert list(formatted.keys()) == ["kc_a"]
     assert formatted["kc_a"].correctness.shape == (2, 2)
@@ -214,7 +214,7 @@ def test_iter_kc_data_keeps_student_interactions_isolated_per_kc() -> None:
 
 def test_format_data_with_return_groups_populates_groups() -> None:
     df = _base_df()
-    formatted = format_data(df, return_groups=True)
+    formatted = format_kc_data(df, return_groups=True)
     kc_data = formatted["kc_a"]
     assert kc_data.groups is not None
     assert kc_data.group_2_index is not None
@@ -222,7 +222,7 @@ def test_format_data_with_return_groups_populates_groups() -> None:
 
 def test_format_data_with_return_groups_correct_mapping() -> None:
     df = _base_df()
-    formatted = format_data(df, return_groups=True)
+    formatted = format_kc_data(df, return_groups=True)
     kc_data = formatted["kc_a"]
     assert kc_data.group_2_index is not None
     assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}

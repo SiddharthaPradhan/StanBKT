@@ -189,6 +189,7 @@ class BaseFit(VerboseMixin, ABC):
         """
         return kc in self.kc_fits
 
+    # TODO: care for the args
     def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
         if kc in self.summary_cache:
             self._print(

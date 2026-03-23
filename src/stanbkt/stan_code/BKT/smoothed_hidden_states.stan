@@ -3,7 +3,8 @@
 
 // Run forward-backward to compute the smoothed probability of knowing/mastery for each student and problem.
 generated quantities {    
-    array[nStudents] row_vector[nProblems] pKnow; // P(know/mastery | all previous responses) for each student and problem
+    array[nStudents] row_vector[nProblems] pKnow;        // P(know/mastery | all observations) for each student and problem
+    array[nStudents] row_vector[nProblems] pCorrectness; // P(correct at t | all observations) = f(pKnow[t+1])
     // create local scope to avoid saving intermediate variables
     {
         array[nGroups] vector[2] pi;
@@ -34,9 +35,17 @@ generated quantities {
                     logOmegaStudent[state, t] = bernoulli_lpmf(correctness[studentIdx, t] | B_matrix_group[studentGroupIdx, state, 2]);
                 }
             }
-            int paddingNALength = nProblems - interaction_lengths[studentIdx];
-            pKnow[studentIdx, 1:interaction_lengths[studentIdx]] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
-            pKnow[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+            int L = interaction_lengths[studentIdx];
+            int paddingNALength = nProblems - L;
+            pKnow[studentIdx, 1:L] = hmm_hidden_state_prob(logOmegaStudent, A_matrix_group[studentGroupIdx], pi[studentGroupIdx])[2];
+            pKnow[studentIdx, L+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+
+            // pCorrectness[t] = pKnow[t] * (1 - slip) + (1 - pKnow[t]) * guess
+            real oneMinusStudentSlip = 1.0 - slip[studentGroupIdx];
+            real studentGuess = guess[studentGroupIdx];
+            pCorrectness[studentIdx, 1:L] = pKnow[studentIdx, 1:L] * oneMinusStudentSlip
+                + (1 - pKnow[studentIdx, 1:L]) * studentGuess;
+            pCorrectness[studentIdx, L+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
         }
     }
 }

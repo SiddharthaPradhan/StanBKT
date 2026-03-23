@@ -70,18 +70,6 @@ class KCData:
     group_2_index: Optional[dict[str, int]] = None
 
 
-def setup_cmdstanpy() -> None:
-    """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary."""
-    from cmdstanpy import cmdstan_path, install_cmdstan
-
-    # TODO: fix this later for windows refer to notes, move this to another location
-    try:
-        _ = cmdstan_path()
-    except ValueError:
-        print("CmdStan not found. Installing CmdStan...")
-        install_cmdstan(cores=3)
-
-
 def validate_data(
     data: pd.DataFrame,
     col_mapping: dict[str, str],
@@ -131,7 +119,7 @@ def validate_data(
         )
 
 
-def format_data(
+def format_kc_data(
     data: pd.DataFrame,
     col_mapping: Optional[dict[str, str]] = None,
     return_groups: bool = False,
@@ -193,7 +181,9 @@ def iter_kc_data(
     """
 
     def process_student_interactions(
-        row: pd.Series, student_inter_dict: dict, student_ids: list
+        row: pd.Series,
+        student_inter_dict: dict,
+        student_ids: list,
     ):
         """Returns interaction data for a student with NA values inserted at the end.
         Also updates the student_inter_dict with the attempted problem ids and length of interactions for the student.
@@ -202,7 +192,7 @@ def iter_kc_data(
         student_ids.append(student_id)
         # student_dict[student_idx] = row.isna().sum()
         na_mask = row.isna()
-        left_aligned_row = pd.concat(
+        return_row = pd.concat(
             [row[~na_mask], pd.Series([_NA_FILL_VALUE] * na_mask.sum())]
         ).reset_index(drop=True)
         student_entry = StudentInteraction(
@@ -212,7 +202,7 @@ def iter_kc_data(
         # add student interaction the the student_inter_dict
         student_inter_dict[student_id] = student_entry
         # return row with non.nas placed on the left with nas filled with zeros (these will be ignored in the model and outputs)
-        return left_aligned_row
+        return return_row
 
     col_mapping = ColumnNames.apply_default_mapping(col_mapping)
 
@@ -254,9 +244,12 @@ def iter_kc_data(
             columns=problem_col,
             values=correctness_col,
         )
-
+        # TODO: this may be problematic if the problems are not in natural order
+        #       -> But we have to use pivot to get it in the right format.
+        #       -> We can ask the users to add a suffix or prefix to the problem ids
+        #               to ensure natural sorting.
         # pd.pivot sorts the problem and student id.
-        # resort in natural order
+        # re-sort problems (columns) and students natural order
         correctness_wide.sort_index(
             axis="columns", key=natsort_keygen(), inplace=True
         )  # ty:ignore[no-matching-overload]

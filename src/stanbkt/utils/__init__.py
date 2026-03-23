@@ -4,7 +4,17 @@ from stanbkt.utils.compilation import (
     clear_stan_cache,
     get_cache_root,
     list_cached_models,
+    is_sys_windows,
 )
+
+# add RTools to PATH
+if is_sys_windows():
+    from cmdstanpy.utils import cxx_toolchain_path
+
+    try:
+        cxx_toolchain_path()  # adds RTools to PATH if found
+    except ValueError as e:
+        pass
 
 __all__ = [
     "compile_stan_model",

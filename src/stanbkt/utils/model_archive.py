@@ -19,7 +19,7 @@ def normalize_model_archive_path(path: str | os.PathLike[str]) -> str:
 
 
 def pack_model_directory(source_dir: str, archive_path: str | os.PathLike[str]) -> str:
-    """Package a directory of model artifacts into a compressed archive."""
+    """Package a directory of model artifacts into a .stanbktmod archive."""
     normalized_archive_path = normalize_model_archive_path(archive_path)
     os.makedirs(os.path.dirname(normalized_archive_path) or ".", exist_ok=True)
 

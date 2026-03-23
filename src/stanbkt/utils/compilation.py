@@ -8,12 +8,57 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional, Callable
-
+import platform
 import cmdstanpy as csp
 from platformdirs import PlatformDirs
+from urllib.error import URLError
+from ssl import SSLCertVerificationError
 
 _INCLUDE_PATTERN = re.compile(r'^\s*#include\s+"(?P<path>[^"]+)"', re.MULTILINE)
 _CACHE_NAMESPACE = "compiled_stan"
+N_CORES = os.cpu_count()
+if N_CORES is None:
+    N_CORES = 1
+
+
+def is_sys_windows() -> bool:
+    """Check if the current system is Windows."""
+    return platform.system() == "Windows"
+
+
+def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
+    """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary."""
+
+    try:
+        _ = csp.cmdstan_path()
+    except ValueError:
+        print("CmdStan not found. Installing CmdStan...")
+        try:  # Test for SSL cert issues as CmdStanPy download relies on urllib req to github releases.
+            # see https://github.com/stan-dev/cmdstanpy/blob/a2da6369e111c58356300fc7c01323d7f835d191/cmdstanpy/install_cmdstan.py#L487
+            import urllib.request
+
+            urllib.request.urlopen("https://www.github.com")
+        except URLError as e:
+            if isinstance(e.reason, SSLCertVerificationError):
+                raise RuntimeError(
+                    "SSL certificate verification failed while trying to download CmdStan. \n"
+                    "This is usually caused by a missing or misconfigured certificate store in your system.\n"
+                    "Fix:\n"
+                    "  pip install pip-system-certs\n"
+                    "or install Python from https://www.python.org/"
+                    " which includes certificates needed for SSL verification. "
+                ) from e
+            else:
+                raise
+        # SSL certs are valid
+        if is_sys_windows():
+            print(
+                "Windows OS detected. Installing CmdStan and RTools (for g++ and Mingw)"
+            )
+            csp.install_cmdstan(cores=n_cores, compiler=True)
+
+        else:  # linux or macos
+            csp.install_cmdstan(cores=n_cores)
 
 
 def _as_path(stan_file: str | os.PathLike[str]) -> Path:

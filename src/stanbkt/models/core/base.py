@@ -184,7 +184,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def summary(
         self,
         params: Optional[list[str]] = None,
-        percentiles: Tuple[float, ...] = (5, 50, 95),
+        percentiles: Tuple[float, ...] = (0.025, 0.975),
         refresh_cache: bool = False,
     ) -> Any:
         """
@@ -194,7 +194,7 @@ class BKTModelBase(VerboseMixin, ABC):
         ----------
         params : list of str, optional
             List of parameters to summarize. If None, summarizes all.
-        percentiles : tuple of float, default=(5, 50, 95)
+        percentiles : tuple of float, default=(0.025, 0.975)
             Percentiles to include in summary.
         refresh_cache : bool, default=False
             Whether to refresh the cached summary.
@@ -469,13 +469,13 @@ class BKTModelBase(VerboseMixin, ABC):
                 ),
             )
 
-            kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
+            kc_predictions.insert(0, kc_column_name, str(kc_id))
             predictions.append(kc_predictions)
 
         if not predictions:
             return pd.DataFrame(
                 columns=[
-                    ColumnNames.KC_ID,
+                    kc_column_name,
                     ColumnNames.STUDENT_ID,
                     ColumnNames.PROBLEM_ID,
                     "pKnow",
@@ -708,60 +708,6 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return pd.DataFrame(long_data_df)
 
-    @staticmethod
-    def _build_prediction_index_frame(kc_data: KCData, n_problems: int) -> pd.DataFrame:
-        """Build a lookup frame mapping Stan 1-based (student_idx, problem_idx) to original IDs.
-
-        Used by the posterior prediction path to remap numeric Stan indices back to the
-        original student/problem ID strings.
-        """
-        n_students = len(kc_data.student_inter_dict)
-        lengths = np.clip(kc_data.lengths, 0, n_problems)
-
-        flat_student_idx = np.repeat(
-            np.arange(1, n_students + 1, dtype=np.int64), n_problems
-        )
-        flat_problem_idx = np.tile(
-            np.arange(1, n_problems + 1, dtype=np.int64), n_students
-        )
-
-        student_positions = np.repeat(np.arange(n_students, dtype=np.int64), n_problems)
-        problem_positions = flat_problem_idx - 1  # 0-based
-        flat_is_valid = problem_positions < lengths[student_positions]
-
-        flat_student_ids = np.repeat(
-            np.fromiter(
-                (str(sid) for sid in kc_data.student_inter_dict.keys()),
-                dtype=object,
-                count=n_students,
-            ),
-            n_problems,
-        )
-
-        flat_problem_ids = np.full(n_students * n_problems, "-1", dtype=object)
-        for student_index, interaction in enumerate(
-            kc_data.student_inter_dict.values()
-        ):
-            row_start = student_index * n_problems
-            for problem_index, pid in enumerate(interaction.problem_ids):
-                flat_problem_ids[row_start + problem_index] = str(pid)
-
-        flat_correctness = kc_data.correctness.ravel(order="C").astype(
-            np.float64, copy=True
-        )
-        flat_correctness[flat_correctness < 0] = -1.0
-
-        return pd.DataFrame(
-            {
-                "student_idx": flat_student_idx,
-                "problem_idx": flat_problem_idx,
-                "student_id": flat_student_ids,
-                "problem_id": flat_problem_ids,
-                "is_valid": flat_is_valid,
-                "correctness": flat_correctness,
-            }
-        )
-
     @abstractmethod
     def _extract_bkt_params_from_fit(
         self,
@@ -901,7 +847,6 @@ class BKTModelBase(VerboseMixin, ABC):
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
         self._check_predict_posterior_args(
             data=data,
-            calling_method="predict_posterior",
             posterior_draws=posterior_draws,
             output=output,
         )
@@ -966,7 +911,7 @@ class BKTModelBase(VerboseMixin, ABC):
             "Otherwise, provide the input data to generate new predictions."
         )
 
-    def predict_smoothed_states_posterior(
+    def predict_smoothed_posterior(
         self,
         data: Optional[pd.DataFrame] = None,
         column_mapping: Optional[dict[str, str]] = None,
@@ -977,7 +922,6 @@ class BKTModelBase(VerboseMixin, ABC):
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
         self._check_predict_posterior_args(
             data=data,
-            calling_method="predict_smoothed_states_posterior",
             posterior_draws=posterior_draws,
             output=output,
         )
@@ -1094,6 +1038,7 @@ class BKTModelBase(VerboseMixin, ABC):
         student_col = col_mapping[ColumnNames.STUDENT_ID]
         problem_col = col_mapping[ColumnNames.PROBLEM_ID]
         correctness_col = col_mapping[ColumnNames.CORRECTNESS]
+        kc_col = col_mapping[ColumnNames.KC_ID]
         id_cols: list[str] | None = None
         col_pat = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
 
@@ -1162,7 +1107,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 count=n_obs,
             )
 
-            # Extract (n_draws, n_obs) value arrays and ravel row-major →
+            # Extract (n_draws, n_obs) value arrays and ravel row-major
             # output row order: (draw_0, obs_0), (draw_0, obs_1), ..., (draw_1, obs_0), ...
             pknow_values = (
                 draws_df[[pknow_cols[k] for k in obs_keys]].to_numpy().ravel()
@@ -1173,6 +1118,7 @@ class BKTModelBase(VerboseMixin, ABC):
             result: dict[str, Any] = {
                 col: np.repeat(draws_df[col].to_numpy(), n_obs) for col in id_cols
             }
+            result[kc_col] = np.repeat(kc_id_str, n_draws * n_obs)
             result[student_col] = np.tile(obs_student_ids, n_draws)
             result[problem_col] = np.tile(obs_problem_ids, n_draws)
             result[correctness_col] = np.tile(obs_correctness, n_draws)
@@ -1247,9 +1193,6 @@ class BKTModelBase(VerboseMixin, ABC):
     @staticmethod
     def _check_predict_posterior_args(
         data: Optional[pd.DataFrame],
-        calling_method: Literal[
-            "predict_posterior", "predict_smoothed_states_posterior"
-        ],
         posterior_draws: Optional[dict[str, pd.DataFrame]],
         output: PosteriorPredictionOutput,
     ):
@@ -1273,15 +1216,6 @@ class BKTModelBase(VerboseMixin, ABC):
                 "'posterior_draws' must be a dict mapping knowledge component IDs to "
                 "pd.DataFrame or CmdStanGQ objects. Pass the return value of a previous "
                 "call as 'posterior_draws'."
-            )
-
-        if calling_method not in (
-            "predict_posterior",
-            "predict_smoothed_states_posterior",
-        ):
-            raise ValueError(
-                f"Invalid calling method: '{calling_method}'. "
-                "Expected 'predict_posterior' or 'predict_smoothed_states_posterior'."
             )
 
         if output == "stan":
