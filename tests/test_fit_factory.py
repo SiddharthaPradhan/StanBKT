@@ -218,13 +218,16 @@ class TestFitOptionClassMapping:
             FitMethod.MLE,
             FitMethod.PATHFINDER,
         }
-        assert set(FitFactory.FIT_OPTION_CLASS_MAPPING.keys()) == expected_methods
+        assert set(FitFactory.FIT_METHOD_TO_OPTION_MAPPING.keys()) == expected_methods
 
     def test_mapping_values_are_correct_types(self):
-        assert FitFactory.FIT_OPTION_CLASS_MAPPING[FitMethod.MCMC] is MCMCFitOptions
-        assert FitFactory.FIT_OPTION_CLASS_MAPPING[FitMethod.VB] is VBFitOptions
-        assert FitFactory.FIT_OPTION_CLASS_MAPPING[FitMethod.MLE] is MLEFitOptions
-        assert FitFactory.FIT_OPTION_CLASS_MAPPING[FitMethod.PATHFINDER] is PFFitOptions
+        assert FitFactory.FIT_METHOD_TO_OPTION_MAPPING[FitMethod.MCMC] is MCMCFitOptions
+        assert FitFactory.FIT_METHOD_TO_OPTION_MAPPING[FitMethod.VB] is VBFitOptions
+        assert FitFactory.FIT_METHOD_TO_OPTION_MAPPING[FitMethod.MLE] is MLEFitOptions
+        assert (
+            FitFactory.FIT_METHOD_TO_OPTION_MAPPING[FitMethod.PATHFINDER]
+            is PFFitOptions
+        )
 
 
 # ---------------------------------------------------------------------------

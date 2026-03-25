@@ -179,7 +179,7 @@ def load_fit_artifacts(
 
     fits_base_location = os.path.join(base_save_location, FIT_SAVE_FOLDER)
     cache_base_location = os.path.join(fits_base_location, CACHE_SAVE_FOLDER)
-    for fit_save in loaded_fit_metadata.fit_saves:
+    for fit_save in loaded_fit_metadata.fit_saves.values():
         kc_fit_save_folder = os.path.join(fits_base_location, str(fit_save.save_folder))
 
         if not os.path.exists(kc_fit_save_folder):
@@ -252,19 +252,12 @@ def load_fit_artifacts(
         for error_kc in error_kcs:
             summary_cache.pop(error_kc, None)
             fits.pop(error_kc, None)
-        loaded_fit_metadata.fit_saves = {
-            fit_save
-            for fit_save in loaded_fit_metadata.fit_saves
-            if fit_save.kc not in error_kcs
-        }
+            loaded_fit_metadata.fit_saves.pop(error_kc, None)
     if error_cache:
         for error_fit_save in error_cache:
-            loaded_fit_metadata.fit_saves.remove(error_fit_save)
-
             # set summary_cache_available to False, using replace as FitSaveFolder is frozen
-            fit_save = replace(error_fit_save, summary_cache_available=False)
-
-            loaded_fit_metadata.fit_saves.add(fit_save)
+            fixed = replace(error_fit_save, summary_cache_available=False)
+            loaded_fit_metadata.fit_saves[error_fit_save.kc] = fixed
 
     return loaded_fit_metadata, fits, summary_cache
 
@@ -298,8 +291,8 @@ def save_fit_artifacts(
     os.makedirs(fits_base_location, exist_ok=True)
     os.makedirs(cache_base_location, exist_ok=True)
 
-    updated_fit_saves: FitSaves = set()
-    for fit_save in fit_metadata.fit_saves:
+    updated_fit_saves: FitSaves = {}
+    for fit_save in fit_metadata.fit_saves.values():
         kc_name = fit_save.kc
         if kc_name not in fits:
             continue
@@ -319,12 +312,10 @@ def save_fit_artifacts(
                 os.remove(cache_file_path)
             cache_available = False
 
-        updated_fit_saves.add(
-            FitSaveFolder(
-                kc=kc_name,
-                save_folder=fit_save.save_folder,
-                summary_cache_available=cache_available,
-            )
+        updated_fit_saves[kc_name] = FitSaveFolder(
+            kc=kc_name,
+            save_folder=fit_save.save_folder,
+            summary_cache_available=cache_available,
         )
 
     fit_metadata.fit_saves = updated_fit_saves

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 
 from abc import ABC, abstractmethod
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
@@ -40,10 +41,12 @@ class BaseFit(VerboseMixin, ABC):
         Mapping of knowledge component IDs to CmdStan fit objects.
     num_fitted_kcs : int
         Number of knowledge components that have been fitted.
-    fit_metadata : FitMetadata
+    _fit_metadata : FitMetadata
         Metadata used to resolve persisted fit folders.
-    summary_cache : dict[str, pandas.DataFrame]
+    _summary_cache : dict[str, pandas.DataFrame]
         Cached summary DataFrames for each knowledge component.
+    _summary_percentiles : tuple[float, float], default (2.5, 97.5)
+        Percentiles used for generating summary statistics. Values should be in range [1, 99].
 
     """
 
@@ -52,19 +55,28 @@ class BaseFit(VerboseMixin, ABC):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         fits: dict[str, CmdStanFit] | None = None,
         fit_metadata: FitMetadata | None = None,
-        summary_cache: dict[str, pd.DataFrame] | None = None,
+        cache_summary: bool = True,
+        summary_percentiles: tuple[float, float] = (2.5, 97.5),
+        _summary_cache: dict[str, pd.DataFrame] | None = None,
     ):
         super().__init__(verbose=verbose)
-        self.kc_fits: dict[str, CmdStanFit] = fits.copy() if fits is not None else {}
-        self.num_fitted_kcs = len(self.kc_fits)
-        self.fit_metadata: FitMetadata = (
+        self.stan_fits: dict[str, CmdStanFit] = fits.copy() if fits is not None else {}
+        self.num_fitted_kcs = len(self.stan_fits)
+        self._fit_metadata: FitMetadata = (
             fit_metadata
             if fit_metadata is not None
-            else FitMetadata(fit_method=self._fit_method)
+            else FitMetadata(
+                fit_method=self._fit_method,
+                summary_percentiles=summary_percentiles,
+            )
         )
-        self.summary_cache: dict[str, pd.DataFrame] = (
-            summary_cache.copy() if summary_cache is not None else {}
+        self._summary_cache: dict[str, pd.DataFrame] = (
+            _summary_cache.copy() if _summary_cache is not None else {}
         )
+        self._summary_percentiles: tuple[float, float] = (
+            self._fit_metadata.summary_percentiles
+        )
+        self._should_cache_summary: bool = cache_summary
 
     def __str__(self) -> str:
         """Return a user-friendly string representation of the fit."""
@@ -76,7 +88,7 @@ class BaseFit(VerboseMixin, ABC):
         ]
 
         if self.num_fitted_kcs > 0:
-            kc_list = list(self.kc_fits.keys())
+            kc_list = list(self.stan_fits.keys())
             if len(kc_list) <= 5:
                 lines.append(f"  kcs={kc_list}")
             else:
@@ -120,12 +132,12 @@ class BaseFit(VerboseMixin, ABC):
             raise ValueError(
                 (
                     f"Cannot add fit with method '{kc_fit_method.value}' when already fitted with method "
-                    f"'{self.fit_metadata.fit_method.value}'."
+                    f"'{self._fit_metadata.fit_method.value}'."
                 )
             )
 
         # check if there is already a fit for this KC
-        if kc in self.kc_fits:
+        if kc in self.stan_fits:
             if not overwrite_kcs:
                 raise ValueError(
                     f"Fit for KC '{kc}' already exists. Set 'overwrite_kcs=True' to overwrite."
@@ -133,24 +145,22 @@ class BaseFit(VerboseMixin, ABC):
             self._print(
                 f"Overwriting existing fit for KC '{kc}'.", level=VerbosityLevel.WARN
             )
-            self.summary_cache.pop(
-                kc, None
-            )  # remove summary cache for this updated KC fit
-        self.kc_fits[kc] = fit
-        self.num_fitted_kcs = len(self.kc_fits)
+            if self._should_cache_summary:
+                self._summary_cache.pop(
+                    kc, None
+                )  # remove summary cache for this updated KC fit
+        self.stan_fits[kc] = fit
+        self.num_fitted_kcs = len(self.stan_fits)
         # Presume we can create the save folder based on the KC.
         # Sid thinks this is a reasonable assumption since the base folder will be forced to be
-        # unique, and the KCwill be sanitized to be filesystem safe.
+        # unique, and the KC will be sanitized to be filesystem safe.
         # Collisions will be handled by appending a hash suffix to the folder name.
-        self.fit_metadata.fit_saves = {
-            entry for entry in self.fit_metadata.fit_saves if entry.kc != kc
-        }
-        metadata_entry = FitSaveFolder(
+        self._fit_metadata.fit_saves.pop(kc, None)
+        self._fit_metadata.fit_saves[kc] = FitSaveFolder(
             kc=kc,
             save_folder=get_fit_save_folder(kc),
             summary_cache_available=False,
         )
-        self.fit_metadata.fit_saves.add(metadata_entry)
 
     def get_fit(self, kc: str) -> CmdStanFit:
         """Get the fit for a knowledge component.
@@ -170,9 +180,9 @@ class BaseFit(VerboseMixin, ABC):
         KeyError
             If no fit exists for the specified KC.
         """
-        if kc not in self.kc_fits:
+        if kc not in self.stan_fits:
             raise KeyError(f"No fit found for KC '{kc}'.")
-        return self.kc_fits[kc]
+        return self.stan_fits[kc]
 
     def has_kc(self, kc: str) -> bool:
         """Check if a fit exists for a knowledge component.
@@ -187,16 +197,43 @@ class BaseFit(VerboseMixin, ABC):
         bool
             True if a fit exists for the specified KC, False otherwise.
         """
-        return kc in self.kc_fits
+        return kc in self.stan_fits
 
-    # TODO: care for the args
-    def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame):
-        if kc in self.summary_cache:
+    def _clear_summary_cache_if_stale(
+        self, percentiles: tuple[float, float], force=False
+    ) -> None:
+        """Clear the summary cache if ``percentiles`` differ from the cached percentiles.
+
+        Should be called at the start of ``summary()`` before any cache reads.
+        """
+        if force or percentiles != self._summary_percentiles:
+            self._print(
+                f"Percentiles {percentiles} differ from cached summary percentiles "
+                f"{self._summary_percentiles}. Clearing summary cache.",
+                level=VerbosityLevel.DEBUG,
+            )
+            self._summary_percentiles = percentiles
+            self._fit_metadata.summary_percentiles = percentiles
+            self._summary_cache.clear()
+
+    def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame) -> None:
+        if kc in self._summary_cache:
             self._print(
                 f"Overwriting existing summary cache for KC '{kc}'.",
                 level=VerbosityLevel.DEBUG,
             )
-        self.summary_cache[kc] = kc_summary_df
+        if kc not in self._fit_metadata.fit_saves:
+            fit_save_entry = FitSaveFolder(
+                kc=kc,
+                save_folder=get_fit_save_folder(kc),
+                summary_cache_available=True,
+            )
+        else:
+            fit_save_entry = replace(
+                self._fit_metadata.fit_saves[kc], summary_cache_available=True
+            )
+        self._fit_metadata.fit_saves[kc] = fit_save_entry
+        self._summary_cache[kc] = kc_summary_df
 
     @classmethod
     def _load(cls, base_save_location: str) -> BaseFit:
@@ -228,7 +265,7 @@ class BaseFit(VerboseMixin, ABC):
         return cls(
             fits=fits,
             fit_metadata=loaded_fit_metadata,
-            summary_cache=summary_cache,
+            _summary_cache=summary_cache,
         )
 
     def _save(self, save_base_location: str) -> None:
@@ -244,7 +281,7 @@ class BaseFit(VerboseMixin, ABC):
         None
         """
         # save fits if not empty
-        if not self.kc_fits:
+        if not self.stan_fits:
             # users cannot remove fits once added, so empty means this model has never been fitted.
             self._print(
                 "Model has not been fitted. Skipping fit save.",
@@ -254,8 +291,8 @@ class BaseFit(VerboseMixin, ABC):
 
         stale_kcs = {
             fit_save.kc
-            for fit_save in self.fit_metadata.fit_saves
-            if fit_save.kc not in self.kc_fits
+            for fit_save in self._fit_metadata.fit_saves.values()
+            if fit_save.kc not in self.stan_fits
         }
         for stale_kc in stale_kcs:
             self._print(
@@ -263,29 +300,43 @@ class BaseFit(VerboseMixin, ABC):
                 level=VerbosityLevel.DEBUG,
             )
 
-        self.fit_metadata.fit_saves = {
-            fit_save
-            for fit_save in self.fit_metadata.fit_saves
-            if fit_save.kc in self.kc_fits
+        self._fit_metadata.fit_saves = {
+            fit_save.kc: fit_save
+            for fit_save in self._fit_metadata.fit_saves.values()
+            if fit_save.kc in self.stan_fits
         }
 
-        self.fit_metadata = save_fit_artifacts(
+        self._fit_metadata = save_fit_artifacts(
             base_save_location=save_base_location,
-            fits=self.kc_fits,
-            fit_metadata=self.fit_metadata,
-            summary_cache=self.summary_cache,
+            fits=self.stan_fits,
+            fit_metadata=self._fit_metadata,
+            summary_cache=self._summary_cache,
         )
+
+    def summary(
+        self,
+        kcs: Union[list[str], str, None] = None,
+        kc_col_name: str = "kc_id",
+        percentiles: tuple[float, float] = (2.5, 97.5),
+    ) -> pd.DataFrame:
+        """Public wrapper that delegates to the subclass :meth:`_summary` implementation."""
+        return self._summary(kcs=kcs, kc_col_name=kc_col_name, percentiles=percentiles)
 
     @property
     def _fit_method(self) -> FitMethod:
         raise NotImplementedError("Subclasses must implement the _fit_method property.")
+
+    @abstractmethod
+    def _summary(
+        self,
+        kcs: Union[list[str], str, None] = None,
+        kc_col_name: str = "kc_id",
+        percentiles: tuple[float, float] = (2.5, 97.5),
+    ) -> pd.DataFrame:
+        raise NotImplementedError("Subclasses must implement the _summary method.")
 
     # TODO: check if all fit types support create_inits
     # if so I can move create_inits to the base class and implement it here.
     @abstractmethod
     def _create_inits(self, kc: Union[list[str], str, None] = None) -> object:
         raise NotImplementedError("Subclasses must implement the _create_inits method.")
-
-    @abstractmethod
-    def summary(self, kcs: Union[list[str], str, None] = None) -> pd.DataFrame:
-        raise NotImplementedError("Subclasses must implement the summary method.")

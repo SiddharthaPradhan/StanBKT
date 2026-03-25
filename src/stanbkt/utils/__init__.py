@@ -13,6 +13,7 @@ if is_sys_windows():
 
     try:
         cxx_toolchain_path()  # adds RTools to PATH if found
+        print("RTools found and added to PATH.")
     except ValueError as e:
         pass
 

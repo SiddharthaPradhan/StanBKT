@@ -38,10 +38,11 @@ def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
                 "summary_cache_available": fit_save.summary_cache_available,
             }
             for fit_save in natsort.natsorted(
-                fit_metadata.fit_saves,
+                fit_metadata.fit_saves.values(),
                 key=lambda f: (f.kc, str(f.save_folder)),
             )
         ],
+        "summary_percentiles": list(fit_metadata.summary_percentiles),
     }
     return json.dumps(payload, indent=indent, sort_keys=True)
 
@@ -72,6 +73,7 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
 
     fit_method_raw = data.get("fit_method")
     fit_saves_data = data.get("fit_saves")
+    summary_percentiles_raw = data.get("summary_percentiles", [2.5, 97.5])
 
     try:
         fit_method = FitMethod(fit_method_raw)
@@ -86,7 +88,20 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
             "Error parsing fit metadata: top-level key 'fit_saves' must be an array."
         )
 
-    parsed_fit_saves: FitSaves = set()
+    if (
+        not isinstance(summary_percentiles_raw, list)
+        or len(summary_percentiles_raw) != 2
+        or not all(isinstance(v, (int, float)) for v in summary_percentiles_raw)
+    ):
+        raise ValueError(
+            "Error parsing fit metadata: 'summary_percentiles' must be a two-element array of numbers."
+        )
+    summary_percentiles = (
+        float(summary_percentiles_raw[0]),
+        float(summary_percentiles_raw[1]),
+    )
+
+    parsed_fit_saves: FitSaves = {}
     for entry in fit_saves_data:
         if not isinstance(entry, dict):
             raise ValueError(
@@ -111,12 +126,14 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
                 f"Error parsing fit metadata: metadata for KC '{kc}' must include boolean field 'summary_cache_available' when provided."
             )
 
-        parsed_fit_saves.add(
-            FitSaveFolder(
-                kc=kc,
-                save_folder=save_folder,
-                summary_cache_available=summary_cache_available,
-            )
+        parsed_fit_saves[kc] = FitSaveFolder(
+            kc=kc,
+            save_folder=save_folder,
+            summary_cache_available=summary_cache_available,
         )
 
-    return FitMetadata(fit_method=fit_method, fit_saves=parsed_fit_saves)
+    return FitMetadata(
+        fit_method=fit_method,
+        fit_saves=parsed_fit_saves,
+        summary_percentiles=summary_percentiles,
+    )

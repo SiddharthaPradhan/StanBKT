@@ -17,7 +17,11 @@ def plot_posterior_correctness(
     kc: str,
     type: Literal["probs", "preds"],
     point_estimate: Literal["mean", "median"] = "mean",
-    percentiles: tuple[float, float] = (0.025, 0.975),
+    *,
+    percentiles: tuple[float, float] = (2.5, 97.5),
+    problem_ids: Optional[list[str]] = None,
+    trajectory: bool = False,
+    frac=1.0,
     col_mapping: dict[str, str] = {},
     offset: float = 0,
 ) -> plt.Axes:
@@ -35,8 +39,14 @@ def plot_posterior_correctness(
         Whether the posterior predictions are probabilities ("probs") or binary predictions ("preds").
     point_estimate : Literal["mean", "median"], optional, default "mean"
         The point estimate to display for each problem. Can be either "mean" or "median".
-    percentiles : tuple[float, float], optional, Default is (0.025, 0.975) for a 95% credible interval.
-        The lower and upper percentiles to display as error bars. Values should be between 0 and 1.
+    problem_ids : list[str], optional
+        List of problem IDs to include in the plot. If None, all problems for the KC
+    trajectory: bool = False,
+        Whether to connect the data points with a line to show the trajectory across problems. Default is False.
+    percentiles : tuple[float, float], optional, Default is (2.5, 97.5) for a 95% credible interval.
+        The lower and upper percentiles to display as error bars. Values should be in range [1, 99].
+    frac : float, optional
+        Fraction of problems to use for plotting. The problems will be linearly spaced. Useful for large datasets to reduce overplotting.
     col_mapping : dict, optional
         Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
         If None, default column names are used.
@@ -57,8 +67,10 @@ def plot_posterior_correctness(
         raise ValueError("point_estimate must be either 'mean' or 'median'.")
     if type not in ["probs", "preds"]:
         raise ValueError(f"type must be either 'probs' or 'preds'. Got {type}.")
-    if len(percentiles) != 2 or not all(0 <= p <= 1 for p in percentiles):
-        raise ValueError("percentiles must be a tuple of two values between 0 and 1.")
+    if len(percentiles) != 2 or not all(1 <= p <= 99 for p in percentiles):
+        raise ValueError(
+            "percentiles must be a tuple of two integer values between 1 and 99."
+        )
     if percentiles[0] >= percentiles[1]:
         raise ValueError(
             f"First percentile must be less than second percentile. Got {percentiles}."
@@ -71,13 +83,15 @@ def plot_posterior_correctness(
 
     # subset data to the kc
     data_kc: pd.DataFrame = data[data[col_mapping[ColumnNames.KC_ID]] == kc]
+    # subset to requested problems if provided
+    if problem_ids is not None:
+        data_kc = data_kc[
+            data_kc[col_mapping[ColumnNames.PROBLEM_ID]].isin(problem_ids)
+        ]
     correctness_by_problem, problem_ids = _point_estimate_correctness_per_problem(
-        data_kc, col_mapping, point_estimate
+        data_kc, col_mapping, point_estimate, frac
     )
     posterior_kc = posterior_preds[kc]
-    posterior_kc: pd.DataFrame = posterior_kc.loc[
-        posterior_kc[col_mapping[ColumnNames.KC_ID]] == kc
-    ]
 
     if type == "preds":
         posterior_kc[_PCORRECT] = np.random.binomial(
@@ -90,8 +104,8 @@ def plot_posterior_correctness(
 
     posterior_kc: pd.DataFrame = posterior_kc.groupby("problem_id").agg(
         pe=point_estimate,
-        lower=lambda x: x.quantile(percentiles[0]),
-        upper=lambda x: x.quantile(percentiles[1]),
+        lower=lambda x: x.quantile(percentiles[0] / 100),
+        upper=lambda x: x.quantile(percentiles[1] / 100),
     )
     posterior_kc: pd.DataFrame = posterior_kc.reindex(problem_ids)
 
@@ -99,22 +113,42 @@ def plot_posterior_correctness(
 
     fig, ax = plt.subplots()
 
-    ax.scatter(
-        x_positions - offset,
-        correctness_by_problem,
-        marker="x",
-        color="black",
-        label="Proportion Correct (Data)",
-        zorder=3,
-    )
-
-    ax.scatter(
-        x_positions,
-        posterior_kc["pe"].values,
-        marker="o",
-        color="steelblue",
-        zorder=2,
-    )
+    if trajectory:
+        ax.plot(
+            x_positions - offset,
+            correctness_by_problem,
+            marker="x",
+            color="black",
+            label="Proportion Correct (Data)",
+            zorder=3,  # ensure data are higher than the predictions
+            linestyle=":",
+        )
+        ax.plot(
+            x_positions,
+            posterior_kc["pe"].values,
+            marker="o",
+            color="steelblue",
+            linestyle="--",
+            zorder=2,
+        )
+    else:
+        # true
+        ax.scatter(
+            x_positions - offset,
+            correctness_by_problem,
+            marker="x",
+            color="black",
+            label="Proportion Correct (Data)",
+            zorder=3,
+        )
+        # predictions
+        ax.scatter(
+            x_positions,
+            posterior_kc["pe"].values,
+            marker="o",
+            color="steelblue",
+            zorder=2,
+        )
 
     yerr = np.array(
         [
@@ -129,8 +163,7 @@ def plot_posterior_correctness(
         fmt="none",
         color="steelblue",
         capsize=3,
-        label=f"{round(percentiles[0] * 100, 2)}"
-        f"–{round(percentiles[1] * 100,2)}%"
+        label=f"{percentiles[0]}–{percentiles[1]}%"
         f" {('C.I.' if type == 'probs' else 'P.I.')}",
     )
 
@@ -139,7 +172,7 @@ def plot_posterior_correctness(
     ax.set_xlabel("Problem ID")
     ax.set_ylabel(y_axis_label)
     ax.set_title(f"Posterior Correctness — {kc}")
-    ax.legend()
+    ax.legend(loc="upper right")
     plt.tight_layout()
     return ax
 
@@ -148,6 +181,7 @@ def _point_estimate_correctness_per_problem(
     data: pd.DataFrame,
     col_mapping: dict[str, str],
     agg_func: Literal["mean", "median"] = "mean",
+    frac: float = 1.0,
 ) -> tuple[npt.NDArray[np.float64], list[str]]:
     """Helper function to compute average correctness per problem for a given data."""
     data = data.copy()
@@ -156,9 +190,20 @@ def _point_estimate_correctness_per_problem(
     data[col_mapping[ColumnNames.PROBLEM_ID]] = data[
         col_mapping[ColumnNames.PROBLEM_ID]
     ].astype(str)
+    if frac < 1.0:
+        problem_ids: pd.Series = (
+            data[col_mapping[ColumnNames.PROBLEM_ID]].unique().tolist()
+        )
+        problem_ids.sort(key=natsort.natsort_keygen())
+        num_problems_to_plot = max(2, int(len(problem_ids) * frac))
+        problems_to_plot = np.linspace(
+            0, len(problem_ids) - 1, num_problems_to_plot, dtype=int
+        )
+        problems_to_plot = [problem_ids[i] for i in problems_to_plot]
+        data = data[data[col_mapping[ColumnNames.PROBLEM_ID]].isin(problems_to_plot)]
     correctness_by_problem: pd.Series = (
         data[col_mapping[ColumnNames.CORRECTNESS]]
         .groupby(data[col_mapping[ColumnNames.PROBLEM_ID]])
         .agg(agg_func)
-    ).sort_index(key=natsort.natsort_keygen())
-    return correctness_by_problem.values, correctness_by_problem.index.to_list()
+    )[problems_to_plot]
+    return correctness_by_problem.values, problems_to_plot

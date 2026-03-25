@@ -14,8 +14,9 @@ from stanbkt.fits.core.mcmc import MCMCFit
 from stanbkt.fits.core.mle import MLEFit
 from stanbkt.fits.core.vb import VBFit
 from stanbkt.fits.core.pf import PathfinderFit
-from stanbkt.fits.fit_types import FitMethod
+from stanbkt.fits.fit_types import FitMethod, CmdStanFit
 from stanbkt.fits.core.base import BaseFit
+from cmdstanpy import CmdStanMCMC, CmdStanMLE, CmdStanPathfinder, CmdStanVB
 
 FitClassType: TypeAlias = type[BaseFit]
 """ Alias for fit class types, i.e. subclasses of BaseFit."""
@@ -24,7 +25,7 @@ FitClassType: TypeAlias = type[BaseFit]
 class FitFactory:
     """Factory for creating fit classes and options based on fit method."""
 
-    FIT_OPTION_CLASS_MAPPING: dict[FitMethod, type[StanFitOptions]] = {
+    FIT_METHOD_TO_OPTION_MAPPING: dict[FitMethod, type[StanFitOptions]] = {
         FitMethod.MCMC: MCMCFitOptions,
         FitMethod.VB: VBFitOptions,
         FitMethod.MLE: MLEFitOptions,
@@ -79,7 +80,7 @@ class FitFactory:
             If fit method is unsupported.
         """
         try:
-            fit_option_class = FitFactory.FIT_OPTION_CLASS_MAPPING[fit_method]
+            fit_option_class = FitFactory.FIT_METHOD_TO_OPTION_MAPPING[fit_method]
             return fit_option_class()
         except KeyError:
             raise ValueError(
@@ -110,7 +111,7 @@ class FitFactory:
             If fit method is unsupported.
         """
         try:
-            fit_option_class = FitFactory.FIT_OPTION_CLASS_MAPPING[fit_method]
+            fit_option_class = FitFactory.FIT_METHOD_TO_OPTION_MAPPING[fit_method]
             return fit_option_class.from_dict(fit_option_dict)
         except KeyError:
             raise ValueError(
@@ -138,7 +139,7 @@ class FitFactory:
             If fit method is unsupported.
         """
         try:
-            fit_option_class = FitFactory.FIT_OPTION_CLASS_MAPPING[fit_method]
+            fit_option_class = FitFactory.FIT_METHOD_TO_OPTION_MAPPING[fit_method]
             if not isinstance(fit_options, fit_option_class):
                 raise TypeError(
                     f"Incompatible fit options type {type(fit_options).__name__} for fit method '{fit_method}'. Expected {fit_option_class.__name__}."

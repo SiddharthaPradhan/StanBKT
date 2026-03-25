@@ -9,7 +9,6 @@ should inherit from.
 from __future__ import annotations
 from natsort import natsort_keygen
 import re
-import stanbkt
 from stanbkt.fits.fit_factory import FitFactory
 import json
 
@@ -179,13 +178,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 f"Invalid fitting method '{self._fit_method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', '{FitMethod.MLE}', and '{FitMethod.PATHFINDER}'."
             )
 
-    # TODO: implement this, but override if needed.
-    # This will really just call the summary method of the fit object.
     def summary(
         self,
-        params: Optional[list[str]] = None,
-        percentiles: Tuple[float, ...] = (0.025, 0.975),
-        refresh_cache: bool = False,
+        percentiles: Tuple[float, float] = (2.5, 97.5),
+        column_mapping: dict[str, str] = {},
+        clear_cache: bool = False,
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -194,8 +191,8 @@ class BKTModelBase(VerboseMixin, ABC):
         ----------
         params : list of str, optional
             List of parameters to summarize. If None, summarizes all.
-        percentiles : tuple of float, default=(0.025, 0.975)
-            Percentiles to include in summary.
+        percentiles : tuple of float, default=(2.5, 97.5)
+            Percentiles to include in summary. Values should be in range [1, 99].
         refresh_cache : bool, default=False
             Whether to refresh the cached summary.
 
@@ -209,13 +206,28 @@ class BKTModelBase(VerboseMixin, ABC):
         RuntimeError
             If model has not been fitted yet.
         """
-        if not self._is_fitted:
+        self._fit_check("summary")
+        if self.fits is None:
             raise RuntimeError("Model must be fitted before calling summary()")
+        if clear_cache:
+            self.fits._clear_summary_cache_if_stale(percentiles, force=True)
 
-        # if hasattr(self.fit, "summary"):
-        #     if params:
-        #         return self.fit.summary(var_names=params, percentiles=percentiles)
-        #     return self._fit.summary(percentiles=percentiles)
+        # validate percentiles
+        if not (
+            len(percentiles) == 2
+            and (1 <= percentiles[0] <= 99)
+            and (1 <= percentiles[1] <= 99)
+            and (percentiles[0] < percentiles[1])
+        ):
+            raise ValueError(
+                f"'percentiles' must be a tuple of two numeric values between 1 and 99 (inclusive), where the first value is less than the second. Got {percentiles}."
+            )
+        kc_col_name = column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)
+
+        return self.fits._summary(
+            percentiles=percentiles,
+            kc_col_name=kc_col_name,
+        )
 
         raise NotImplementedError("Summary not available for this fit method")
 
@@ -278,7 +290,7 @@ class BKTModelBase(VerboseMixin, ABC):
         Raises an error if data contains KCs that were not fitted.
         """
         self._fit_check()
-        fitted_kcs: set[str] = set(self.fits.kc_fits.keys()) if self.fits else set()
+        fitted_kcs: set[str] = set(self.fits.stan_fits.keys()) if self.fits else set()
         if not len(self.get_kcs_in_fitted_kcs(kcs)) > 0:
             raise ValueError(
                 f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
@@ -297,7 +309,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def get_kcs_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
         """Return the set of KCs in the data that were fitted previously."""
         self._fit_check()
-        fitted_kcs: set[str] = set(self.fits.kc_fits.keys()) if self.fits else set()
+        fitted_kcs: set[str] = set(self.fits.stan_fits.keys()) if self.fits else set()
         return kcs.intersection(fitted_kcs)
 
     def predict(
@@ -980,7 +992,6 @@ class BKTModelBase(VerboseMixin, ABC):
                     posterior_draws,
                     column_mapping,
                     quantiles=summary_quantiles,
-                    pCorrectness=False,
                 )
             return posterior_draws
 
@@ -1136,7 +1147,6 @@ class BKTModelBase(VerboseMixin, ABC):
         gq_dict: dict[str, pd.DataFrame],
         col_mapping: dict[str, str],
         quantiles=(0.025, 0.975),
-        pCorrectness=True,
     ) -> pd.DataFrame:
         if not gq_dict:
             raise ValueError("Input Dict is empty.")
@@ -1145,8 +1155,9 @@ class BKTModelBase(VerboseMixin, ABC):
             raise ValueError("Quantiles must be between 0 and 1.")
 
         stat_labels = ["mean", "std", "median"] + [f"{q * 100:.2f}%" for q in quantiles]
+        ordered_params = [_PKNOW, _PCORRECT]
         summary_cols = [
-            f"{col}_{stat}" for col in [_PKNOW, _PCORRECT] for stat in stat_labels
+            f"{col}_{stat}" for col in ordered_params for stat in stat_labels
         ]
         param_id_cols = [
             col_mapping.get(ColumnNames.STUDENT_ID),
@@ -1159,7 +1170,7 @@ class BKTModelBase(VerboseMixin, ABC):
             if gq_kc_df.empty:
                 continue
 
-            agg_cols = [c for c in [_PKNOW, _PCORRECT] if c in gq_kc_df.columns]
+            agg_cols = [c for c in ordered_params if c in gq_kc_df.columns]
             grouped = gq_kc_df.groupby(param_id_cols, sort=False)[agg_cols]
 
             # Base stats via single optimized Cython path
@@ -1178,7 +1189,10 @@ class BKTModelBase(VerboseMixin, ABC):
             else:
                 gq_kc_summary = base
 
-            gq_kc_summary = gq_kc_summary.reset_index()
+            ordered_value_cols = [
+                col for col in summary_cols if col in gq_kc_summary.columns
+            ]
+            gq_kc_summary = gq_kc_summary[ordered_value_cols].reset_index()
             gq_kc_summary.sort_values(
                 by=param_id_cols, inplace=True, key=natsort_keygen()
             )

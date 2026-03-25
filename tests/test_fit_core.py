@@ -19,7 +19,7 @@ class TestMCMCFit:
 
     def test_initialization_with_defaults(self):
         fit = MCMCFit()
-        assert fit.kc_fits == {}
+        assert fit.stan_fits == {}
         assert fit.verbose == VerbosityLevel.INFO
 
     def test_initialization_with_verbose(self):
@@ -54,7 +54,7 @@ class TestMLEFit:
 
     def test_initialization_with_defaults(self):
         fit = MLEFit()
-        assert fit.kc_fits == {}
+        assert fit.stan_fits == {}
         assert fit.verbose == VerbosityLevel.INFO
 
     def test_initialization_with_verbose(self):
@@ -88,7 +88,7 @@ class TestVBFit:
 
     def test_initialization_with_defaults(self):
         fit = VBFit()
-        assert fit.kc_fits == {}
+        assert fit.stan_fits == {}
         assert fit.verbose == VerbosityLevel.INFO
 
     def test_initialization_with_verbose(self):
@@ -122,7 +122,7 @@ class TestPathfinderFit:
 
     def test_initialization_with_defaults(self):
         fit = PathfinderFit()
-        assert fit.kc_fits == {}
+        assert fit.stan_fits == {}
         assert fit.verbose == VerbosityLevel.INFO
 
     def test_initialization_with_verbose(self):
@@ -165,7 +165,7 @@ class TestFitCoreInteraction:
             )
             fit.add_fit("kc_a", mock_stan_fit)
 
-        assert "kc_a" in fit.kc_fits
+        assert "kc_a" in fit.stan_fits
 
     def test_vb_fit_can_add_fits(self):
         fit = VBFit()
@@ -179,7 +179,7 @@ class TestFitCoreInteraction:
             )
             fit.add_fit("kc_a", mock_stan_fit)
 
-        assert "kc_a" in fit.kc_fits
+        assert "kc_a" in fit.stan_fits
 
     def test_mle_fit_can_add_fits(self):
         fit = MLEFit()
@@ -193,7 +193,7 @@ class TestFitCoreInteraction:
             )
             fit.add_fit("kc_a", mock_stan_fit)
 
-        assert "kc_a" in fit.kc_fits
+        assert "kc_a" in fit.stan_fits
 
     def test_pf_fit_can_add_fits(self):
         fit = PathfinderFit()
@@ -207,4 +207,4 @@ class TestFitCoreInteraction:
             )
             fit.add_fit("kc_a", mock_stan_fit)
 
-        assert "kc_a" in fit.kc_fits
+        assert "kc_a" in fit.stan_fits

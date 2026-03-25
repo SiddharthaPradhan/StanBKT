@@ -89,8 +89,8 @@ class FitSaveFolder:
     summary_cache_available: bool = False
 
 
-FitSaves: TypeAlias = set[FitSaveFolder]
-"""Set of fit save folder metadata entries."""
+FitSaves: TypeAlias = dict[str, FitSaveFolder]
+"""Dict mapping knowledge component identifiers to fit save folder metadata entries."""
 
 
 @dataclass
@@ -102,8 +102,12 @@ class FitMetadata:
     fit_method : FitMethod
         Method used to fit all attached KCs.
     fit_saves : FitSaves
-        Saved fit folder entries.
+        Saved fit folder entries, keyed by knowledge component identifier.
+    summary_percentiles : tuple[float, float], default (2.5, 97.5)
+        Lower and upper percentiles used when computing summary statistics. Values should be in range [1, 99].
+        Persisted so that cached summaries remain valid after a save/load round-trip.
     """
 
     fit_method: FitMethod
-    fit_saves: FitSaves = field(default_factory=set)
+    fit_saves: FitSaves = field(default_factory=dict)
+    summary_percentiles: tuple[float, float] = (2.5, 97.5)

@@ -58,6 +58,8 @@ class TestFitMetadataTypes:
     def test_fit_metadata_can_hold_multiple_entries(self):
         entry_a = FitSaveFolder(kc="kc_a", save_folder="a")
         entry_b = FitSaveFolder(kc="kc_b", save_folder="b")
-        metadata = FitMetadata(fit_method=FitMethod.MCMC, fit_saves={entry_a, entry_b})
+        metadata = FitMetadata(
+            fit_method=FitMethod.MCMC, fit_saves={"kc_a": entry_a, "kc_b": entry_b}
+        )
         assert metadata.fit_method == FitMethod.MCMC
-        assert {entry.kc for entry in metadata.fit_saves} == {"kc_a", "kc_b"}
+        assert set(metadata.fit_saves.keys()) == {"kc_a", "kc_b"}

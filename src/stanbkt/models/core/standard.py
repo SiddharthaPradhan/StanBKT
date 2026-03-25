@@ -79,6 +79,7 @@ class StandardBKT(BKTModelBase):
         data: pd.DataFrame,
         column_mapping: Optional[dict[str, str]] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
+        overwrite_kcs: bool = False,
     ) -> StandardBKT:
         """
         Fit the BKT model to data. Each KC is fitted independently with its own model.
@@ -99,6 +100,10 @@ class StandardBKT(BKTModelBase):
                 - MCMC parameters (e.g., iter_sampling, chains, seed)
                 - VB parameters (e.g., iter, tol_rel_obj)
                 If None, default fitting options for the chosen fit method will be used.
+        overwrite_kcs : bool, default=False
+            Whether to overwrite existing fits for KCs that are already fitted.
+            If False, an error will be raised if attempting to fit a KC that already has a fit.
+            If True, existing fits for the same KCs will be overwritten with the new fits.
 
 
         Returns
@@ -149,9 +154,10 @@ class StandardBKT(BKTModelBase):
             print_fn=self._print,
         ):
             if self.fits.has_kc(str(kc_id)):
-                raise ValueError(
-                    f"Fit for KC '{kc_id}' already exists. Set 'overwrite_kcs=True' to overwrite."
-                )
+                if not overwrite_kcs:
+                    raise ValueError(
+                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
+                    )
 
             self._print(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
 
@@ -159,7 +165,7 @@ class StandardBKT(BKTModelBase):
             fit_result = self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
-            self.fits.add_fit(str(kc_id), fit_result)
+            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
 
         self._is_fitted = True
         return self

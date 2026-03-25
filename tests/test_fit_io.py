@@ -36,8 +36,12 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(kc="kc_with_fit", save_folder="fit_folder"),
-                FitSaveFolder(kc="kc_without_fit", save_folder="missing_folder"),
+                "kc_with_fit": FitSaveFolder(
+                    kc="kc_with_fit", save_folder="fit_folder"
+                ),
+                "kc_without_fit": FitSaveFolder(
+                    kc="kc_without_fit", save_folder="missing_folder"
+                ),
             },
         )
 
@@ -48,7 +52,7 @@ class TestSaveFitArtifacts:
             summary_cache={"kc_with_fit": pd.DataFrame({"mean": [0.2]})},
         )
 
-        assert {entry.kc for entry in updated.fit_saves} == {"kc_with_fit"}
+        assert set(updated.fit_saves.keys()) == {"kc_with_fit"}
 
     def test_save_fit_artifacts_removes_stale_cache_csv(self, tmp_path):
         save_dir = tmp_path / "fit_saves"
@@ -63,7 +67,7 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
+                kc: FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
             },
         )
 
@@ -89,7 +93,7 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
+                kc: FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
             },
         )
 
@@ -123,7 +127,7 @@ class TestLoadFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(
+                kc: FitSaveFolder(
                     kc=kc,
                     save_folder=folder,
                     summary_cache_available=False,
@@ -146,7 +150,7 @@ class TestLoadFitArtifacts:
             expected_fit_method=FitMethod.MCMC,
         )
 
-        assert {entry.kc for entry in loaded_metadata.fit_saves} == {kc}
+        assert set(loaded_metadata.fit_saves.keys()) == {kc}
         assert set(fits.keys()) == {kc}
         assert summary_cache == {}
 
@@ -160,7 +164,7 @@ class TestLoadFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(
+                kc: FitSaveFolder(
                     kc=kc,
                     save_folder=folder,
                     summary_cache_available=True,
@@ -197,4 +201,7 @@ class TestLoadFitArtifacts:
         assert set(fits.keys()) == {kc}
         assert isinstance(fits[kc], _DummyLoadedFit)
         assert summary_cache == {}
-        assert loaded_metadata.fit_saves.pop().summary_cache_available == False
+        assert (
+            next(iter(loaded_metadata.fit_saves.values())).summary_cache_available
+            == False
+        )

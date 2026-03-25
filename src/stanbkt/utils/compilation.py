@@ -1,4 +1,5 @@
 from __future__ import annotations
+from cmdstanpy.utils import cxx_toolchain_path
 from stanbkt.utils.verbose import VerbosityLevel
 
 import hashlib
@@ -31,6 +32,8 @@ def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
 
     try:
         _ = csp.cmdstan_path()
+        if is_sys_windows():
+            cxx_toolchain_path()
     except ValueError:
         print("CmdStan not found. Installing CmdStan...")
         try:  # Test for SSL cert issues as CmdStanPy download relies on urllib req to github releases.

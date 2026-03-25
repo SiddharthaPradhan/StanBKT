@@ -64,8 +64,8 @@ class DummyFit(BaseFit):
     def _create_inits(self, *args, **kwargs):
         return None
 
-    def summary(self, *args, **kwargs):
-        return "summary"
+    def _summary(self, kcs=None, kc_col_name="kc_id", percentiles=(2.5, 97.5)):
+        return pd.DataFrame()
 
 
 def _make_fitted_model(kcs=("kc_a", "kc_b")):
@@ -74,7 +74,7 @@ def _make_fitted_model(kcs=("kc_a", "kc_b")):
     model._is_fitted = True
     model.fits: BaseFit = DummyFit()
     # bypass add_fit since we don't have actual fit objects to add, but want the fitted KC keys to be present in the model's fit state
-    model.fits.kc_fits = {kc: object() for kc in kcs}  # ty:ignore[invalid-assignment]
+    model.fits.stan_fits = {kc: object() for kc in kcs}  # ty:ignore[invalid-assignment]
     model.fits.num_fitted_kcs = len(kcs)
     return model
 
@@ -205,7 +205,7 @@ class TestSave:
         )
         m._is_fitted = True
         m.fits = DummyFit()
-        m.fits.kc_fits = {"kc_a": object()}  # ty:ignore[invalid-assignment]
+        m.fits.stan_fits = {"kc_a": object()}  # ty:ignore[invalid-assignment]
         m.fits.num_fitted_kcs = 1
         m.fits._save = MagicMock()  # ty: ignore[method-assign]
         artifact_path = tmp_path / "saved_model"

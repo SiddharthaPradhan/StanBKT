@@ -26,7 +26,7 @@ class _LoadedFit(BaseFit):
     def _create_inits(self, *args, **kwargs):
         return None
 
-    def summary(self, *args, **kwargs):
+    def _summary(self, kcs=None, kc_col_name="kc_id", percentiles=(2.5, 97.5)):
         return None
 
 
@@ -34,7 +34,7 @@ class _FakeFitClass:
     @classmethod
     def _load(cls, base_save_location: str):
         loaded = _LoadedFit()
-        loaded.kc_fits = {"kc_1": object()}  # ty:ignore[invalid-assignment]
+        loaded.stan_fits = {"kc_1": object()}  # ty:ignore[invalid-assignment]
         loaded.num_fitted_kcs = 1
         return loaded
 
@@ -76,7 +76,7 @@ class _FakeModel(BKTModelBase):
 
 
 def _write_metadata(base_path: str, fit_method: FitMethod = FitMethod.MCMC) -> None:
-    metadata = FitMetadata(fit_method=fit_method, fit_saves=set())
+    metadata = FitMetadata(fit_method=fit_method, fit_saves={})
     metadata_path = os.path.join(base_path, METADATA_SAVE_FILE)
     with open(metadata_path, "w", encoding="utf-8") as f:
         f.write(fit_metadata_to_json(metadata))

@@ -15,5 +15,10 @@ class MLEFit(BaseFit):
             return {kc_name: {} for kc_name in kc}
         return {}
 
-    def summary(self, kc: Union[list[str], str]) -> pd.DataFrame:
+    def _summary(
+        self,
+        kcs: Union[list[str], str, None] = None,
+        kc_col_name: str = "kc_id",
+        percentiles: tuple[float, float] = (2.5, 97.5),
+    ) -> pd.DataFrame:
         pass

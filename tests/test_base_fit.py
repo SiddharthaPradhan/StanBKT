@@ -40,7 +40,7 @@ class _ConcreteFit(BaseFit):
     def _create_inits(self, kc=None):
         return {}
 
-    def summary(self, kc):
+    def _summary(self, kcs=None, kc_col_name="kc_id", percentiles=(2.5, 97.5)):
         return pd.DataFrame()
 
 
@@ -52,7 +52,7 @@ class _VBConcreteFit(BaseFit):
     def _create_inits(self, kc=None):
         return {}
 
-    def summary(self, kc):
+    def _summary(self, kcs=None, kc_col_name="kc_id", percentiles=(2.5, 97.5)):
         return pd.DataFrame()
 
 
@@ -75,16 +75,16 @@ class TestBaseFitInit:
 
     def test_kc_fits_starts_empty(self):
         fit = _ConcreteFit()
-        assert fit.kc_fits == {}
+        assert fit.stan_fits == {}
 
     def test_fit_metadata_starts_empty(self):
         fit = _ConcreteFit()
-        assert fit.fit_metadata.fit_method == FitMethod.MCMC
-        assert fit.fit_metadata.fit_saves == set()
+        assert fit._fit_metadata.fit_method == FitMethod.MCMC
+        assert fit._fit_metadata.fit_saves == {}
 
     def test_summary_cache_starts_empty(self):
         fit = _ConcreteFit()
-        assert fit.summary_cache == {}
+        assert fit._summary_cache == {}
 
     def test_default_verbose_is_info(self):
         fit = _ConcreteFit()
@@ -105,20 +105,18 @@ class TestAddFit:
         fit = _ConcreteFit()
         mock_stan_fit = MagicMock()
         fit.add_fit("kc_a", mock_stan_fit)
-        assert "kc_a" in fit.kc_fits
-        assert fit.kc_fits["kc_a"] is mock_stan_fit
+        assert "kc_a" in fit.stan_fits
+        assert fit.stan_fits["kc_a"] is mock_stan_fit
 
     def test_adds_metadata_entry_for_new_kc(self):
         fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
-        assert any(entry.kc == "kc_a" for entry in fit.fit_metadata.fit_saves)
+        assert "kc_a" in fit._fit_metadata.fit_saves
 
     def test_metadata_entry_contains_save_folder(self):
         fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
-        matching_entries = [
-            entry for entry in fit.fit_metadata.fit_saves if entry.kc == "kc_a"
-        ]
+        matching_entries = [fit._fit_metadata.fit_saves["kc_a"]]
         assert len(matching_entries) == 1
         assert isinstance(matching_entries[0].save_folder, str)
         assert len(matching_entries[0].save_folder) > 0
@@ -127,8 +125,8 @@ class TestAddFit:
         fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         fit.add_fit("kc_b", MagicMock())
-        assert set(fit.kc_fits.keys()) == {"kc_a", "kc_b"}
-        assert {entry.kc for entry in fit.fit_metadata.fit_saves} == {"kc_a", "kc_b"}
+        assert set(fit.stan_fits.keys()) == {"kc_a", "kc_b"}
+        assert set(fit._fit_metadata.fit_saves.keys()) == {"kc_a", "kc_b"}
 
     def test_overwrite_replaces_fit(self):
         fit = _ConcreteFit()
@@ -136,22 +134,22 @@ class TestAddFit:
         second = MagicMock()
         fit.add_fit("kc_a", first)
         fit.add_fit("kc_a", second, overwrite_kcs=True)
-        assert fit.kc_fits["kc_a"] is second
+        assert fit.stan_fits["kc_a"] is second
 
     def test_overwrite_clears_summary_cache(self):
         fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
-        fit.summary_cache["kc_a"] = pd.DataFrame({"x": [1]})
+        fit._summary_cache["kc_a"] = pd.DataFrame({"x": [1]})
         fit.add_fit("kc_a", MagicMock(), overwrite_kcs=True)
-        assert "kc_a" not in fit.summary_cache
+        assert "kc_a" not in fit._summary_cache
 
     def test_overwrite_does_not_clear_other_kc_cache(self):
         fit = _ConcreteFit()
         fit.add_fit("kc_a", MagicMock())
         fit.add_fit("kc_b", MagicMock())
-        fit.summary_cache["kc_b"] = pd.DataFrame({"x": [1]})
+        fit._summary_cache["kc_b"] = pd.DataFrame({"x": [1]})
         fit.add_fit("kc_a", MagicMock(), overwrite_kcs=True)
-        assert "kc_b" in fit.summary_cache
+        assert "kc_b" in fit._summary_cache
 
     def test_overwrite_emits_warning(self, capsys):
         # Must use WARN verbose level so the warning is not suppressed
@@ -173,14 +171,14 @@ class TestUpdateSummaryCache:
         fit = _ConcreteFit()
         df = pd.DataFrame({"mean": [0.5], "std": [0.1]})
         fit._update_summary_cache("kc_a", df)
-        pd.testing.assert_frame_equal(fit.summary_cache["kc_a"], df)
+        pd.testing.assert_frame_equal(fit._summary_cache["kc_a"], df)
 
     def test_overwrites_existing_entry(self):
         fit = _ConcreteFit()
         fit._update_summary_cache("kc_a", pd.DataFrame({"mean": [0.1]}))
         new_df = pd.DataFrame({"mean": [0.9]})
         fit._update_summary_cache("kc_a", new_df)
-        pd.testing.assert_frame_equal(fit.summary_cache["kc_a"], new_df)
+        pd.testing.assert_frame_equal(fit._summary_cache["kc_a"], new_df)
 
 
 # ---------------------------------------------------------------------------
@@ -229,19 +227,50 @@ class TestSaveLoadRoundTrip:
 
         loaded = _ConcreteFit._load(str(save_dir))
 
-        assert loaded.fit_metadata == fit.fit_metadata
-        assert set(loaded.kc_fits.keys()) == {"kc_a"}
-        assert loaded.kc_fits["kc_a"] is loaded_fit_obj
-        pd.testing.assert_frame_equal(loaded.summary_cache["kc_a"], original_summary_df)
+        assert loaded._fit_metadata == fit._fit_metadata
+        assert set(loaded.stan_fits.keys()) == {"kc_a"}
+        assert loaded.stan_fits["kc_a"] is loaded_fit_obj
+        pd.testing.assert_frame_equal(
+            loaded._summary_cache["kc_a"], original_summary_df
+        )
 
         assert (save_dir / "fit_metadata.json").exists()
-        saved_metadata = next(iter(fit.fit_metadata.fit_saves))
+        saved_metadata = next(iter(fit._fit_metadata.fit_saves.values()))
         saved_folder = saved_metadata.save_folder
         cache_file = get_summary_cache_file("kc_a")
 
         assert (save_dir / FIT_SAVE_FOLDER / str(saved_folder)).exists()
         assert (save_dir / FIT_SAVE_FOLDER / CACHE_SAVE_FOLDER / cache_file).exists()
         assert saved_metadata.summary_cache_available is True
+
+    def test_summary_percentiles_persisted_through_save_load(
+        self, tmp_path, monkeypatch
+    ):
+        save_dir = tmp_path / "fit_saves"
+        fit = _ConcreteFit(summary_percentiles=(5.0, 95.0))
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+                with open(
+                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
+                ) as f:
+                    f.write("lp__\n0\n")
+
+        class _DummyLoadedFit:
+            pass
+
+        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
+        monkeypatch.setattr(persistence_io, "CmdStanFit", (_DummyLoadedFit,))
+        monkeypatch.setattr(
+            persistence_io, "cmdstan_from_csv", lambda _: _DummyLoadedFit()
+        )
+        fit._save(str(save_dir))
+
+        loaded = _ConcreteFit._load(str(save_dir))
+
+        assert loaded._summary_percentiles == (5.0, 95.0)
+        assert loaded._fit_metadata.summary_percentiles == (5.0, 95.0)
 
     def test_load_warns_and_skips_kc_when_loaded_fit_type_is_unsupported(
         self, tmp_path, monkeypatch
@@ -266,18 +295,16 @@ class TestSaveLoadRoundTrip:
         with pytest.warns(UserWarning, match="unsupported Fit type"):
             loaded = _ConcreteFit._load(str(save_dir))
 
-        assert loaded.kc_fits == {}
-        assert "kc_a" not in loaded.summary_cache
-        assert loaded.fit_metadata.fit_saves == set()
+        assert loaded.stan_fits == {}
+        assert "kc_a" not in loaded._summary_cache
+        assert loaded._fit_metadata.fit_saves == {}
 
     def test_load_raises_on_fit_method_mismatch(self, tmp_path):
         save_dir = tmp_path / "fit_saves"
         os.makedirs(save_dir, exist_ok=True)
         fit_metadata_path = save_dir / METADATA_SAVE_FILE
         fit_metadata_path.write_text(
-            fit_metadata_to_json(
-                FitMetadata(fit_method=FitMethod.MCMC, fit_saves=set())
-            ),
+            fit_metadata_to_json(FitMetadata(fit_method=FitMethod.MCMC, fit_saves={})),
             encoding="utf-8",
         )
 
@@ -391,7 +418,7 @@ class TestFitMetadataToJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(
+                "kc_a": FitSaveFolder(
                     kc="kc_a",
                     save_folder="kc_a_abc12345",
                     summary_cache_available=True,
@@ -411,7 +438,7 @@ class TestFitMetadataToJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MLE,
             fit_saves={
-                FitSaveFolder(
+                "kc_a": FitSaveFolder(
                     kc="kc_a",
                     save_folder="folder_abc",
                     summary_cache_available=False,
@@ -449,8 +476,8 @@ class TestFitMetadataFromJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                FitSaveFolder(kc="kc_a", save_folder="kc_a_abc12345"),
-                FitSaveFolder(kc="kc_b", save_folder="kc_b_def67890"),
+                "kc_a": FitSaveFolder(kc="kc_a", save_folder="kc_a_abc12345"),
+                "kc_b": FitSaveFolder(kc="kc_b", save_folder="kc_b_def67890"),
             },
         )
         raw = fit_metadata_to_json(metadata)
@@ -546,4 +573,32 @@ class TestFitMetadataFromJson:
         raw = self._make_json(fit_saves=[])
         loaded_metadata = fit_metadata_from_json(raw)
         assert loaded_metadata.fit_method == FitMethod.MCMC
-        assert loaded_metadata.fit_saves == set()
+        assert loaded_metadata.fit_saves == {}
+
+    def test_summary_percentiles_round_trips(self):
+        metadata = FitMetadata(
+            fit_method=FitMethod.MCMC,
+            summary_percentiles=(5.0, 95.0),
+        )
+        raw = fit_metadata_to_json(metadata)
+        loaded = fit_metadata_from_json(raw)
+        assert loaded.summary_percentiles == (5.0, 95.0)
+
+    def test_summary_percentiles_defaults_when_missing_from_json(self):
+        raw = json.dumps({"fit_method": "mcmc", "fit_saves": []})
+        loaded = fit_metadata_from_json(raw)
+        assert loaded.summary_percentiles == (2.5, 97.5)
+
+    def test_raises_when_summary_percentiles_is_wrong_length(self):
+        raw = json.dumps(
+            {"fit_method": "mcmc", "fit_saves": [], "summary_percentiles": [5]}
+        )
+        with pytest.raises(ValueError, match="summary_percentiles"):
+            fit_metadata_from_json(raw)
+
+    def test_raises_when_summary_percentiles_is_not_a_list(self):
+        raw = json.dumps(
+            {"fit_method": "mcmc", "fit_saves": [], "summary_percentiles": "5,95"}
+        )
+        with pytest.raises(ValueError, match="summary_percentiles"):
+            fit_metadata_from_json(raw)
