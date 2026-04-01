@@ -2,50 +2,75 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Optional, Union
+from dataclasses import asdict, dataclass, fields
+from typing import Any, Optional, Union
 
 from stanbkt.models.model_types import ModelType, PriorEstimationType
 
 
-class BayesianPriors(StrEnum):
+@dataclass
+class BayesianPriors:
     # TODO add more for the more complex models.
     # Need to add verification for compatibility with the model type.
     # This does not depend on the estimation method as the same priors are use across
     # but it varies by the selected model type.
 
-    PI_KNOW_MU = "pi_know_mu"
-    PI_KNOW_STD = "pi_know_std"
-    LEARN_MU = "learn_mu"
-    LEARN_STD = "learn_std"
-    FORGET_MU = "forget_mu"
-    FORGET_STD = "forget_std"
-    GUESS_MU = "guess_mu"
-    GUESS_STD = "guess_std"
-    SLIP_MU = "slip_mu"
-    SLIP_STD = "slip_std"
+    pi_know_mu: float | list[float | None] | None = -2.0
+    pi_know_std: float | list[float | None] | None = 5.0
+    learn_mu: float | list[float | None] | None = 0.0
+    learn_std: float | list[float | None] | None = 5.0
+    forget_mu: float | list[float | None] | None = -2.0
+    forget_std: float | list[float | None] | None = 5.0
+    guess_mu: float | list[float | None] | None = -1.0
+    guess_std: float | list[float | None] | None = 5.0
+    slip_mu: float | list[float | None] | None = -1.0
+    slip_std: float | list[float | None] | None = 5.0
+
+    @classmethod
+    def key_names(cls) -> tuple[str, ...]:
+        """Return all valid prior key names in declaration order."""
+        return tuple(field.name for field in fields(cls))
+
+    def to_dict(self) -> dict[str, float | list[float | None] | None]:
+        """Serialize priors to a dictionary."""
+        return asdict(self)
 
     @staticmethod
-    def _default_scalar_priors() -> dict[BayesianPriors, float | None]:
+    def _default_scalar_priors() -> dict[str, float | None]:
         return {
-            BayesianPriors.PI_KNOW_MU: -2.0,
-            BayesianPriors.PI_KNOW_STD: 5.0,
-            BayesianPriors.LEARN_MU: 0.0,
-            BayesianPriors.LEARN_STD: 5.0,
-            BayesianPriors.FORGET_MU: -2.0,
-            BayesianPriors.FORGET_STD: 5.0,
-            BayesianPriors.GUESS_MU: -1.0,
-            BayesianPriors.GUESS_STD: 5.0,
-            BayesianPriors.SLIP_MU: -1.0,
-            BayesianPriors.SLIP_STD: 5.0,
+            key: value
+            for key, value in BayesianPriors().to_dict().items()
+            if isinstance(value, float) or value is None
         }
 
     @staticmethod
     def _expand_grouped_priors(
-        scalar_priors: dict[BayesianPriors, float | None],
+        scalar_priors: dict[str, float | None],
         n_groups: int,
-    ) -> dict[BayesianPriors, list[float | None]]:
+    ) -> dict[str, list[float | None]]:
         return {prior: [value] * n_groups for prior, value in scalar_priors.items()}
+
+    @staticmethod
+    def _none_priors(
+        model_type: ModelType,
+        n_groups: Optional[int] = None,
+    ) -> Union[
+        dict[str, float | None],
+        dict[str, list[float | None]],
+    ]:
+        scalar_none_priors = {key: None for key in BayesianPriors.key_names()}
+
+        if model_type in [ModelType.STANDARD, ModelType.NESTED]:
+            return scalar_none_priors
+
+        if model_type == ModelType.GROUPED:
+            if not isinstance(n_groups, int):
+                raise ValueError("n_groups must be an integer for grouped model priors")
+            if n_groups <= 0:
+                raise ValueError("n_groups must be > 0 for grouped model priors")
+            return BayesianPriors._expand_grouped_priors(scalar_none_priors, n_groups)
+
+        raise ValueError(f"Unsupported model type: {model_type}")
 
     @staticmethod
     def get_default_priors(
@@ -53,8 +78,8 @@ class BayesianPriors(StrEnum):
         estimation_type: PriorEstimationType,
         n_groups: Optional[int] = None,
     ) -> Union[
-        dict[BayesianPriors, float | None],
-        dict[BayesianPriors, list[float | None]],
+        dict[str, float | None],
+        dict[str, list[float | None]],
     ]:
         """Return default priors used for BKT parameters.
 
@@ -89,49 +114,53 @@ class BayesianPriors(StrEnum):
 
     @staticmethod
     def add_missing_priors(
-        values: dict[BayesianPriors, float | list[float | None]],
+        values: dict[str, Any],
         model_type: ModelType,
         estimation_type: PriorEstimationType,
         n_groups: Optional[int] = None,
+        defaults: bool = True,
     ) -> Union[
-        dict[BayesianPriors, float | None],
-        dict[BayesianPriors, list[float | None]],
+        dict[str, float | None],
+        dict[str, list[float | None]],
     ]:
-        """Fill missing priors with defaults and return a normalized dictionary.
+        """Fill missing priors and return a normalized dictionary.
 
         Parameters
         ----------
-        values : dict[BayesianPriors | str, float | list[float | None]]
-            Partial prior values keyed by `BayesianPriors` or by string names.
-            Missing keys are filled from defaults.
+        values : dict[str, float | list[float | None]]
+            Partial prior values keyed by prior key string names.
+            Missing keys are filled from defaults or `None` based on `defaults`.
         model_type : ModelType
             BKT model type for selecting prior structure.
         estimation_type : PriorEstimationType
             Prior estimation mode.
         n_groups : int, optional
             Number of groups for grouped models.
+        defaults : bool, optional
+            When ``True``, missing keys are filled with default prior values.
+            When ``False``, missing keys are filled with ``None`` (or ``[None] * n_groups``
+            for grouped models).
         """
-        defaults = dict(
+        base_priors = dict(
             BayesianPriors.get_default_priors(
                 model_type=model_type,
                 estimation_type=estimation_type,
                 n_groups=n_groups,
             )
+            if defaults
+            else BayesianPriors._none_priors(model_type=model_type, n_groups=n_groups)
         )
 
-        normalized_values: dict[BayesianPriors, float | list[float | None]] = {}
+        valid_keys = set(BayesianPriors.key_names())
+        normalized_values: dict[str, float | list[float | None] | None] = {}
         for key, value in values.items():
-            if isinstance(key, BayesianPriors):
-                prior_key = key
-            elif isinstance(key, str):
-                try:
-                    prior_key = BayesianPriors(key)
-                except ValueError as exc:
-                    raise ValueError(f"Unsupported prior key: {key}") from exc
-            else:
+            if not isinstance(key, str):
                 raise ValueError(f"Unsupported prior key type: {type(key).__name__}")
+            if key not in valid_keys:
+                raise ValueError(f"Unsupported prior key: {key}")
+            prior_key = key
 
             normalized_values[prior_key] = value
 
-        defaults.update(normalized_values)
-        return defaults
+        base_priors.update(normalized_values)
+        return base_priors

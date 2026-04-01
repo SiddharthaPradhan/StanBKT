@@ -8,8 +8,13 @@ from stanbkt.utils.verbose import VerbosityLevel
 from enum import StrEnum
 from natsort import natsort_keygen
 
+# fill value for missing interactions (these will be ignored in the model and the outputs)
 _NA_FILL_VALUE = -1
+
+# default kc id to use when there is no kc column in the data
 _DEFAULT_KC_ID = "default_kc"
+
+# columns names as defined in the stan code
 _PKNOW = "pKnow"
 _PCORRECT = "pCorrectness"
 

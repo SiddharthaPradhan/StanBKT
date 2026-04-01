@@ -50,7 +50,7 @@ class MCMCFit(BaseFit):
             kcs_set = set(kcs)
         available_kcs = set(self.stan_fits.keys())
         if len(kcs_set - available_kcs) > 0:
-            self._print(
+            self.log(
                 f"Warning: The following KCs were requested for summary but have not been fitted: {kcs_set - available_kcs}. Skipping these KCs in the summary.",
                 level=VerbosityLevel.WARN,
             )

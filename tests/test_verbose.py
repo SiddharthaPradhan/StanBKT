@@ -60,46 +60,46 @@ class TestVerboseMixinInit:
 class TestVerboseMixinPrint:
     def test_info_message_printed_at_info_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("hello info")
+        m.log("hello info")
         assert "hello info" in capsys.readouterr().out
 
     def test_info_message_printed_at_debug_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.DEBUG)
-        m._print("hello info", level=VerbosityLevel.INFO)
+        m.log("hello info", level=VerbosityLevel.INFO)
         assert "hello info" in capsys.readouterr().out
 
     def test_debug_message_suppressed_at_info_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("secret debug", level=VerbosityLevel.DEBUG)
+        m.log("secret debug", level=VerbosityLevel.DEBUG)
         assert capsys.readouterr().out == ""
 
     def test_debug_message_suppressed_at_warn_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.WARN)
-        m._print("secret debug", level=VerbosityLevel.DEBUG)
+        m.log("secret debug", level=VerbosityLevel.DEBUG)
         assert capsys.readouterr().out == ""
 
     def test_warn_message_printed_at_info_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("a warning", level=VerbosityLevel.WARN)
+        m.log("a warning", level=VerbosityLevel.WARN)
         out = capsys.readouterr().out
         assert out.startswith("WARNING: ")
         assert "a warning" in out
 
     def test_warn_message_printed_at_warn_level(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.WARN)
-        m._print("a warning", level=VerbosityLevel.WARN)
+        m.log("a warning", level=VerbosityLevel.WARN)
         assert "a warning" in capsys.readouterr().out
 
     def test_warn_prefix_added(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.WARN)
-        m._print("something wrong", level=VerbosityLevel.WARN)
+        m.log("something wrong", level=VerbosityLevel.WARN)
         out = capsys.readouterr().out
         assert out.startswith("WARNING: ")
         assert "something wrong" in out
 
     def test_debug_prefix_added(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.DEBUG)
-        m._print("debug msg", level=VerbosityLevel.DEBUG)
+        m.log("debug msg", level=VerbosityLevel.DEBUG)
         out = capsys.readouterr().out
         assert out.startswith("DEBUG: ")
         assert "debug msg" in out
@@ -133,18 +133,18 @@ class TestSetVerbosity:
 
     def test_set_verbosity_changes_print_behavior(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("test", level=VerbosityLevel.DEBUG)
+        m.log("test", level=VerbosityLevel.DEBUG)
         out = capsys.readouterr().out
         assert out == ""  # Should not print DEBUG at INFO level
 
         m.set_verbosity(VerbosityLevel.DEBUG)
-        m._print("test", level=VerbosityLevel.DEBUG)
+        m.log("test", level=VerbosityLevel.DEBUG)
         out = capsys.readouterr().out
         assert "test" in out  # Should print DEBUG at DEBUG level
 
     def test_info_message_has_no_prefix(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("plain info", level=VerbosityLevel.INFO)
+        m.log("plain info", level=VerbosityLevel.INFO)
         out = capsys.readouterr().out
         assert not out.startswith("WARNING:")
         assert not out.startswith("DEBUG:")
@@ -152,9 +152,9 @@ class TestSetVerbosity:
 
     def test_debug_verbose_receives_all_levels(self, capsys):
         m = VerboseMixin(verbose=VerbosityLevel.DEBUG)
-        m._print("info msg", level=VerbosityLevel.INFO)
-        m._print("warn msg", level=VerbosityLevel.WARN)
-        m._print("debug msg", level=VerbosityLevel.DEBUG)
+        m.log("info msg", level=VerbosityLevel.INFO)
+        m.log("warn msg", level=VerbosityLevel.WARN)
+        m.log("debug msg", level=VerbosityLevel.DEBUG)
         out = capsys.readouterr().out
         assert "info msg" in out
         assert "warn msg" in out
@@ -163,5 +163,5 @@ class TestSetVerbosity:
     def test_default_level_is_info(self, capsys):
         """Calling _print without a level argument should use INFO."""
         m = VerboseMixin(verbose=VerbosityLevel.INFO)
-        m._print("no level arg")
+        m.log("no level arg")
         assert "no level arg" in capsys.readouterr().out

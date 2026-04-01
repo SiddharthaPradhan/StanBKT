@@ -1,7 +1,6 @@
 """Filesystem persistence helpers for fit artifacts."""
 
 from __future__ import annotations
-from IPython.utils.decorators import F
 
 import hashlib
 import os

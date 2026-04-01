@@ -142,7 +142,7 @@ class BaseFit(VerboseMixin, ABC):
                 raise ValueError(
                     f"Fit for KC '{kc}' already exists. Set 'overwrite_kcs=True' to overwrite."
                 )
-            self._print(
+            self.log(
                 f"Overwriting existing fit for KC '{kc}'.", level=VerbosityLevel.WARN
             )
             if self._should_cache_summary:
@@ -207,7 +207,7 @@ class BaseFit(VerboseMixin, ABC):
         Should be called at the start of ``summary()`` before any cache reads.
         """
         if force or percentiles != self._summary_percentiles:
-            self._print(
+            self.log(
                 f"Percentiles {percentiles} differ from cached summary percentiles "
                 f"{self._summary_percentiles}. Clearing summary cache.",
                 level=VerbosityLevel.DEBUG,
@@ -218,7 +218,7 @@ class BaseFit(VerboseMixin, ABC):
 
     def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame) -> None:
         if kc in self._summary_cache:
-            self._print(
+            self.log(
                 f"Overwriting existing summary cache for KC '{kc}'.",
                 level=VerbosityLevel.DEBUG,
             )
@@ -283,7 +283,7 @@ class BaseFit(VerboseMixin, ABC):
         # save fits if not empty
         if not self.stan_fits:
             # users cannot remove fits once added, so empty means this model has never been fitted.
-            self._print(
+            self.log(
                 "Model has not been fitted. Skipping fit save.",
                 level=VerbosityLevel.WARN,
             )
@@ -295,7 +295,7 @@ class BaseFit(VerboseMixin, ABC):
             if fit_save.kc not in self.stan_fits
         }
         for stale_kc in stale_kcs:
-            self._print(
+            self.log(
                 f"Fit metadata contains KC '{stale_kc}' that is not present in fits. Skipping save for this KC.",
                 level=VerbosityLevel.DEBUG,
             )

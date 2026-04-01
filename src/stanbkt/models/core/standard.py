@@ -151,7 +151,7 @@ class StandardBKT(BKTModelBase):
             data=data,
             col_mapping=column_mapping,
             return_groups=False,
-            print_fn=self._print,
+            print_fn=self.log,
         ):
             if self.fits.has_kc(str(kc_id)):
                 if not overwrite_kcs:
@@ -159,7 +159,7 @@ class StandardBKT(BKTModelBase):
                         f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
                     )
 
-            self._print(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
 
             data_dict = self._build_stan_data_dict(kc_data)
             fit_result = self._fit_stan_model_using_method(

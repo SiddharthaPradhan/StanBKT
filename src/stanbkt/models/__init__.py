@@ -13,6 +13,7 @@ from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.model_types import ModelType, PriorEstimationType
 from stanbkt.models.priors import BayesianPriors
 
+
 __all__ = [
     # Core models
     "BKTModelBase",

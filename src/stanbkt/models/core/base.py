@@ -297,11 +297,11 @@ class BKTModelBase(VerboseMixin, ABC):
             )
         kcs_not_fitted = kcs - fitted_kcs
         if kcs_not_fitted:
-            self._print(
+            self.log(
                 f"Data contains {len(kcs_not_fitted)} KCs that were not fitted.",
                 level=VerbosityLevel.WARN,
             )
-            self._print(
+            self.log(
                 f"{list(kcs_not_fitted)} do not have fits.",
                 level=VerbosityLevel.INFO,
             )
@@ -363,7 +363,7 @@ class BKTModelBase(VerboseMixin, ABC):
             data=filtered_data,
             col_mapping=column_mapping,
             return_groups=False,
-            print_fn=self._print,
+            print_fn=self.log,
         ):
             kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
@@ -456,7 +456,7 @@ class BKTModelBase(VerboseMixin, ABC):
             data=filtered_data,
             col_mapping=column_mapping,
             return_groups=False,
-            print_fn=self._print,
+            print_fn=self.log,
         ):
             kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
@@ -864,7 +864,7 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         if data is not None and posterior_draws is not None:
-            self._print(
+            self.log(
                 "Both 'data' and 'posterior_draws' are provided. 'posterior_draws' will be used and 'data' will be ignored.",
                 level=VerbosityLevel.WARN,
             )
@@ -891,7 +891,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     self._stan_hidden_filename,
                     cpp_options=self.cpp_compile_kwargs,
                     stanc_options=self.stan_compile_kwargs,
-                    print_fn=self._print,
+                    print_fn=self.log,
                 )
 
             posterior_draws_stan = self._predict_generated_quantities(
@@ -939,7 +939,7 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         if data is not None and posterior_draws is not None:
-            self._print(
+            self.log(
                 "Both 'data' and 'posterior_draws' are provided. 'posterior_draws' will be used and 'data' will be ignored.",
                 level=VerbosityLevel.WARN,
             )
@@ -969,7 +969,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     self._stan_smoothed_hidden_filename,
                     cpp_options=self.cpp_compile_kwargs,
                     stanc_options=self.stan_compile_kwargs,
-                    print_fn=self._print,
+                    print_fn=self.log,
                 )
 
             posterior_draws_stan = self._predict_generated_quantities(
@@ -1020,7 +1020,7 @@ class BKTModelBase(VerboseMixin, ABC):
             data=data,
             col_mapping=column_mapping,
             return_groups=False,
-            print_fn=self._print,
+            print_fn=self.log,
         ):
             kc_id_str = str(kc_id)
 
@@ -1058,13 +1058,13 @@ class BKTModelBase(VerboseMixin, ABC):
             data=data,
             col_mapping=col_mapping,
             return_groups=False,
-            print_fn=self._print,
+            print_fn=self.log,
         ):
             kc_id_str = str(kc_id)
             gq_kc = posterior_draws_raw.get(kc_id_str)
             # this if should not happen since we only generate GQ for KCs in the data.
             if gq_kc is None:
-                self._print(
+                self.log(
                     f"No generated quantities found for KC '{kc_id_str}' when post processing predictions.",
                     level=VerbosityLevel.WARN,
                 )
@@ -1274,5 +1274,5 @@ class BKTModelBase(VerboseMixin, ABC):
             stan_file,
             stanc_options=self.stan_compile_kwargs,
             cpp_options=self.cpp_compile_kwargs,
-            print_fn=self._print,
+            print_fn=self.log,
         )
