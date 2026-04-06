@@ -46,7 +46,13 @@ API Reference
 
 .. toctree::
    :maxdepth: 2
-
+   
    public_api
    internal_api
+
+Indices
+=======
+
+* :ref:`genindex`
+* :ref:`search`
 

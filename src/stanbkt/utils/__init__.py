@@ -5,6 +5,7 @@ from stanbkt.utils.compilation import (
     get_cache_root,
     list_cached_models,
     is_sys_windows,
+    setup_cmdstanpy,
 )
 from stanbkt.utils.data_utils import ColumnNames, KCData, validate_data, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
@@ -32,12 +33,10 @@ __all__ = [
     "ColumnNames",
     "KCData",
     "validate_data",
-    "format_kc_data",
     # Verbosity
     "VerbosityLevel",
-    # Model I/O
-    "pack_model_directory",
-    "unpack_model_archive",
     # Simulation
     "sim_simple_BKT",
+    # CmdStanPy setup
+    "setup_cmdstanpy",
 ]

@@ -39,6 +39,7 @@ templates_path = ["_templates"]
 exclude_patterns = []
 
 autosummary_generate = True
+autosummary_imported_members = True
 
 # TOC tree config
 toc_object_entries_show_parents = "hide"
@@ -85,7 +86,6 @@ html_theme_options = {
         "image_light": "_static/logo-light.png",
         "image_dark": "_static/logo-dark.png",
         "text": title_text,
-        "link": "https://TODO.com",
     },
 }
 

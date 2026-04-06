@@ -4,6 +4,9 @@ Public API Reference
 This page documents the public API that users should interact with.
 All classes and functions listed here are stable and intended for public use.
 
+.. note::
+   **For complete internal API usage, see the** :doc:`internal_api` **instead.**
+
 Models (``stanbkt.models``)
 ---------------------------
 Model definitions and related classes, including model variants and Bayesian prior specifications.
@@ -157,6 +160,21 @@ Utilities (``stanbkt.utils``)
 
 .. currentmodule:: stanbkt.utils
 
+
+CmdStanPy Setup
+^^^^^^^^^^^^^^^^
+StanBTK uses CmdStan for model compilation, fitting and inference. This utility function installs CmdStan and sets the 
+appropriate environment variables. This is required for using StanBKT for the first time, but only needs to be done once per machine.
+On Windows, this always install `RTools` which installs the `c++`` compiler and `make`` binary. See the `CmdStanPy installation <https://mc-stan.org/cmdstanpy/installation.html>`__  documentation for 
+more details.
+
+.. autosummary::
+   :signatures: long
+   :caption: CmdStan Setup
+   :toctree: generated
+
+   setup_cmdstanpy
+
 Mapping Column Names
 ^^^^^^^^^^^^^^^^^^^^
 Utility class to map expected column names to the actual user provided column names in the data.
@@ -224,9 +242,3 @@ StanBKT caches compiled Stan models to speed up subsequent fits and will automat
    get_cache_root
    list_cached_models
 
-
-Indices
-=======
-
-* :ref:`genindex`
-* :ref:`search`
