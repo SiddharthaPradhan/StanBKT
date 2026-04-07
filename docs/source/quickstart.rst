@@ -38,7 +38,7 @@ StanBKT expects interaction data in long format with these columns:
 - ``kc_id``: knowledge component identifier
 
 If your column names differ, pass a ``column_mapping`` dictionary with keys:
-``student_id``, ``problem_id``, ``correct``, and ``kc_id``. To avoid hardcoding column names, use the ``ColumnNames`` constants. 
+``student_id``, ``problem_id``, ``correct``, ``order``, and ``kc_id``. To avoid hardcoding column names, use the ``ColumnNames`` constants.
 Example for ASSISTments data:
 
 .. code-block:: python

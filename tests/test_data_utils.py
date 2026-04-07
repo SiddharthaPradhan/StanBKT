@@ -18,6 +18,7 @@ def _base_df() -> pd.DataFrame:
             "student_id": ["s1", "s1", "s2", "s2"],
             "problem_id": ["p1", "p2", "p1", "p2"],
             "correct": [1, 0, 0, 1],
+            "timestamp": [1, 2, 1, 2],
             "kc_id": ["kc_a", "kc_a", "kc_a", "kc_a"],
             "group_id": ["g1", "g1", "g2", "g2"],
         }
@@ -148,6 +149,7 @@ def test_iter_kc_data_yields_multiple_kcs() -> None:
             "student_id": ["s1", "s1", "s2", "s2"],
             "problem_id": ["p1", "p2", "p1", "p2"],
             "correct": [1, 0, 0, 1],
+            "timestamp": [1, 2, 1, 2],
             "kc_id": ["kc_a", "kc_a", "kc_b", "kc_b"],
         }
     )
@@ -172,6 +174,7 @@ def test_iter_kc_data_compacts_nas_and_tracks_original_problem_ids() -> None:
             "student_id": ["s1", "s1", "s2"],
             "problem_id": ["p1", "p3", "p2"],
             "correct": [1, 0, 1],
+            "timestamp": [1, 2, 1],
             "kc_id": ["kc_a", "kc_a", "kc_a"],
         }
     )
@@ -180,7 +183,7 @@ def test_iter_kc_data_compacts_nas_and_tracks_original_problem_ids() -> None:
     kc_data = result["kc_a"]
 
     assert kc_data.correctness.dtype == np.int8
-    assert kc_data.correctness.tolist() == [[1, 0, -1], [1, -1, -1]]
+    assert kc_data.correctness.tolist() == [[1, 0], [1, -1]]
     assert kc_data.student_inter_dict["s1"].problem_ids == ["p1", "p3"]
     assert kc_data.student_inter_dict["s1"].length == 2
     assert kc_data.student_inter_dict["s2"].problem_ids == ["p2"]
@@ -193,6 +196,7 @@ def test_iter_kc_data_keeps_student_interactions_isolated_per_kc() -> None:
             "student_id": ["s1", "s1", "s2", "s2"],
             "problem_id": ["p1", "p2", "p1", "p2"],
             "correct": [1, 0, 1, 1],
+            "timestamp": [1, 1, 2, 2],
             "kc_id": ["kc_a", "kc_b", "kc_a", "kc_b"],
         }
     )
@@ -205,6 +209,57 @@ def test_iter_kc_data_keeps_student_interactions_isolated_per_kc() -> None:
     assert kc_a.student_inter_dict["s2"].problem_ids == ["p1"]
     assert kc_b.student_inter_dict["s1"].problem_ids == ["p2"]
     assert kc_b.student_inter_dict["s2"].problem_ids == ["p2"]
+
+
+def test_iter_kc_data_orders_student_sequences_by_order_column() -> None:
+    df = pd.DataFrame(
+        {
+            "student_id": ["s1", "s1", "s2", "s2"],
+            "problem_id": ["p10", "p2", "p1", "p3"],
+            "correct": [0, 1, 1, 0],
+            "timestamp": [2, 1, 2, 1],
+            "kc_id": ["kc_a", "kc_a", "kc_a", "kc_a"],
+        }
+    )
+
+    kc_data = dict(iter_kc_data(df))["kc_a"]
+
+    assert kc_data.correctness.tolist() == [[1, 0], [0, 1]]
+    assert kc_data.student_inter_dict["s1"].problem_ids == ["p2", "p10"]
+    assert kc_data.student_inter_dict["s2"].problem_ids == ["p3", "p1"]
+
+
+def test_iter_kc_data_ignores_rows_with_missing_order() -> None:
+    df = pd.DataFrame(
+        {
+            "student_id": ["s1", "s1", "s2"],
+            "problem_id": ["p1", "p2", "p3"],
+            "correct": [1, 0, 1],
+            "timestamp": [1, np.nan, 1],
+            "kc_id": ["kc_a", "kc_a", "kc_a"],
+        }
+    )
+
+    kc_data = dict(iter_kc_data(df))["kc_a"]
+
+    assert kc_data.correctness.tolist() == [[1], [1]]
+    assert kc_data.student_inter_dict["s1"].problem_ids == ["p1"]
+    assert kc_data.student_inter_dict["s2"].problem_ids == ["p3"]
+
+
+def test_iter_kc_data_raises_on_duplicate_order_within_student() -> None:
+    df = pd.DataFrame(
+        {
+            "student_id": ["s1", "s1"],
+            "problem_id": ["p1", "p2"],
+            "correct": [1, 0],
+            "timestamp": [1, 1],
+            "kc_id": ["kc_a", "kc_a"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Duplicate ORDER values"):
+        list(iter_kc_data(df))
 
 
 # ---------------------------------------------------------------------------

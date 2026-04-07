@@ -23,6 +23,7 @@ def _minimal_df() -> pd.DataFrame:
             "student_id": ["s1", "s1", "s2", "s2"],
             "problem_id": ["p1", "p2", "p1", "p2"],
             "correct": [1, 0, 0, 1],
+            "timestamp": [1, 2, 1, 2],
         }
     )
 
@@ -345,6 +346,7 @@ class TestPredict:
                 "problem_id": ["p1", "p2", "p1", "p2"],
                 "correct": [1, 0, 0, 1],
                 "kc_id": ["kc_a", "kc_a", "kc_b", "kc_b"],
+                "timestamp": [1, 2, 1, 2],
             }
         )
 
@@ -377,6 +379,7 @@ class TestPredict:
                 "student_id": ["s1", "s1", "s2"],
                 "problem_id": ["p10", "p30", "p20"],
                 "correct": [1, 0, 1],
+                "timestamp": [1, 2, 1],
             }
         )
 
@@ -418,6 +421,7 @@ _SPARSE_DF = pd.DataFrame(
         "student_id": ["s1", "s1", "s2"],
         "problem_id": ["p10", "p30", "p20"],
         "correct": [1, 0, 1],
+        "timestamp": [1, 2, 1],
     }
 )
 
@@ -705,6 +709,7 @@ class TestPredictPosteriorDataPath:
                 "problem_id": ["p10", "p30", "p20"],
                 "correct": [1, 0, 1],
                 "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
             }
         )
 
@@ -765,6 +770,7 @@ class TestPredictPosteriorDataPath:
                 "problem_id": ["p10", "p30", "p20"],
                 "correct": [1, 0, 1],
                 "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
             }
         )
 
@@ -929,6 +935,7 @@ class TestPredictSmoothedPosteriorDataPath:
                 "problem_id": ["p10", "p30", "p20"],
                 "correct": [1, 0, 1],
                 "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
             }
         )
 
