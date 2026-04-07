@@ -1,5 +1,5 @@
-Internal API Reference
-======================
+Internal API
+============
 
 This section documents the complete internal API for developers and contributors.
 
@@ -16,5 +16,6 @@ Package Structure
 
     stanbkt.models
     stanbkt.fits
+    stanbkt.plot
     stanbkt.utils
 

@@ -7,6 +7,18 @@ from typing import Literal
 
 
 class ModelType(StrEnum):
+    """Enumeration of BKT model types.
+
+    Attributes
+    ----------
+    STANDARD : str
+        Standard Bayesian Knowledge Tracing model (single parameter set across all students).
+    GROUPED : str
+        Grouped BKT model with parameters varying across student groups.
+    NESTED : str
+        Nested BKT model with hierarchical parameter structure.
+    """
+
     STANDARD = "standard"
     GROUPED = "grouped"
     NESTED = "nested"
@@ -14,6 +26,16 @@ class ModelType(StrEnum):
 
 # TODO need better names for these, ASK Prof. Adam
 class PriorEstimationType(StrEnum):
+    """Enumeration of prior estimation strategies.
+
+    Attributes
+    ----------
+    JOINT : str
+        Jointly estimate priors from data.
+    DEFAULT : str
+        Use default prior specification.
+    """
+
     JOINT = "joint"
     DEFAULT = "default"
 

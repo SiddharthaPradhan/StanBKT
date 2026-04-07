@@ -20,6 +20,22 @@ _PCORRECT = "pCorrectness"
 
 
 class ColumnNames(StrEnum):
+    """Enumeration of standard column names for BKT data.
+
+    Attributes
+    ----------
+    STUDENT_ID : str
+        Unique student identifier column name.
+    PROBLEM_ID : str
+        Unique problem identifier column name.
+    CORRECTNESS : str
+        Binary correctness column (1=correct, 0=incorrect).
+    KC_ID : str
+        Knowledge component identifier column name.
+    GROUP : str
+        Student or problem group identifier (optional).
+    """
+
     STUDENT_ID = "student_id"
     PROBLEM_ID = "problem_id"
     CORRECTNESS = "correct"
@@ -28,10 +44,32 @@ class ColumnNames(StrEnum):
 
     @staticmethod
     def get_default_mapping() -> dict[str, str]:
+        """Get default column name mapping.
+
+        Returns
+        -------
+        dict[str, str]
+            Mapping where all standard column names map to themselves.
+        """
         return {col: col for col in ColumnNames}
 
     @staticmethod
     def apply_default_mapping(col_mapping: Optional[dict[str, str]]) -> dict[str, str]:
+        """Apply default mapping to fill missing column name mappings.
+
+        For any standard column not in the provided mapping, uses the default
+        (column name maps to itself).
+
+        Parameters
+        ----------
+        col_mapping : Optional[dict[str, str]]
+            User-provided column name mapping. If None, treated as empty dict.
+
+        Returns
+        -------
+        dict[str, str]
+            Complete column mapping with defaults applied.
+        """
         if not col_mapping:
             col_mapping = {}
         col_mapping = col_mapping.copy()
@@ -59,6 +97,30 @@ class StudentInteraction:
 
 @dataclass(slots=True, frozen=True)
 class KCData:
+    """Structured data container for a single knowledge component.
+
+    Stores preprocessed interaction data for a KC, including correctness matrix,
+    student/problem identifiers, and optional group assignments.
+
+    Attributes
+    ----------
+    correctness : np.ndarray
+        Correctness matrix of shape (num_students, num_problems).
+    student_inter_dict : dict[str, StudentInteraction]
+        Mapping of student IDs to their interaction sequences, used to preserve
+        original problem IDs and interaction counts.
+    lengths : npt.NDArray[np.int32]
+        Vector of interaction sequence lengths for each student.
+    student_ids : list[str]
+        Student identifiers matching rows of correctness matrix.
+    problem_ids : list[str]
+        Problem identifiers matching columns of correctness matrix.
+    groups : Optional[np.ndarray], default None
+        Optional group array (e.g., student group assignments or problem difficulty groups).
+    group_2_index : Optional[dict[str, int]], default None
+        Optional mapping from group ID to index in groups array.
+    """
+
     # correctness matrix of shape (num_students, num_problems)
     correctness: np.ndarray
     # student interaction data containing StudentInteraction
@@ -336,6 +398,22 @@ def rename_summary_var_columns(
 def dict_has_types(
     x: object, key_type: type = str, value_type: type = pd.DataFrame
 ) -> bool:
+    """Check if object is a dict with specific key and value types.
+
+    Parameters
+    ----------
+    x : object
+        Object to validate.
+    key_type : type, default str
+        Expected type for all dictionary keys.
+    value_type : type, default pd.DataFrame
+        Expected type for all dictionary values.
+
+    Returns
+    -------
+    bool
+        True if x is a dict with all keys and values matching the specified types.
+    """
     if not isinstance(x, dict):
         return False
 

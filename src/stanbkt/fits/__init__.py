@@ -1,3 +1,10 @@
+"""BKT Fit results and options for different inference methods.
+
+This module defines the core fit result classes for various inference methods
+(MCMC, MLE, VB, Pathfinder) and their associated options. It also includes a
+factory for creating fit instances based on user-specified options.
+"""
+
 from stanbkt.fits.core.base import BaseFit
 from stanbkt.fits.core.mcmc import MCMCFit
 from stanbkt.fits.core.mle import MLEFit

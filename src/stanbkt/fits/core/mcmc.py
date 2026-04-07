@@ -9,11 +9,41 @@ from cmdstanpy import CmdStanMCMC
 
 
 class MCMCFit(BaseFit):
+    """Fit class using Markov Chain Monte Carlo (MCMC) sampling.
+
+    This class wraps CmdStanPy's MCMC sampler to fit BKT models using
+    full Bayesian inference via Hamiltonian Monte Carlo sampling.
+
+    Inherits all state management from :class:`BaseFit`.
+    """
+
     @property
     def _fit_method(self) -> FitMethod:
+        """Return the fit method identifier.
+
+        Returns
+        -------
+        FitMethod
+            FitMethod.MCMC identifier.
+        """
         return FitMethod.MCMC
 
     def _create_inits(self, kc: Union[list[str], str, None] = None) -> object:
+        """Create initial values for MCMC sampler.
+
+        For MCMC, initial values are optional and typically not used, so
+        this method returns an empty dictionary structure.
+
+        Parameters
+        ----------
+        kc : Union[list[str], str, None], optional
+            Knowledge component identifier(s). If a list, creates keys for each KC.
+
+        Returns
+        -------
+        object
+            Dictionary mapping KC names to empty initialization dicts, or empty dict.
+        """
         if isinstance(kc, list):
             return {kc_name: {} for kc_name in kc}
         return {}
@@ -99,4 +129,9 @@ class MCMCFit(BaseFit):
             raise RuntimeError("No valid KCs found for summary generation.")
 
     def diagnose(self):
+        """Generate MCMC diagnostic information.
+
+        Provides convergence diagnostics (Rhat, effective sample size, etc.) for
+        the fitted MCMC chains. This method is not yet implemented.
+        """
         pass

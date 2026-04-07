@@ -10,10 +10,43 @@ from stanbkt.models.model_types import ModelType, PriorEstimationType
 
 @dataclass
 class BayesianPriors:
+    """Bayesian priors for BKT model parameters.
+
+    Stores prior specifications (means and standard deviations on logit scale)
+    for the four core BKT parameters: prior knowledge (pi_know), learning rate
+    (learn), forgetting rate (forget), guessing (guess), and slipping (slip).
+
+    Each parameter can be specified as a scalar (standard model), a list of
+    values (grouped model), or None (non-informative priors).
+
+    Parameters
+    ----------
+    pi_know_mu : float | list[float | None] | None, default -2.0
+        Prior mean for logit-scale initial knowledge probability.
+    pi_know_std : float | list[float | None] | None, default 5.0
+        Prior std dev for logit-scale initial knowledge probability.
+    learn_mu : float | list[float | None] | None, default 0.0
+        Prior mean for logit-scale learning rate.
+    learn_std : float | list[float | None] | None, default 5.0
+        Prior std dev for logit-scale learning rate.
+    forget_mu : float | list[float | None] | None, default -2.0
+        Prior mean for logit-scale forgetting rate.
+    forget_std : float | list[float | None] | None, default 5.0
+        Prior std dev for logit-scale forgetting rate.
+    guess_mu : float | list[float | None] | None, default -1.0
+        Prior mean for logit-scale guessing probability.
+    guess_std : float | list[float | None] | None, default 5.0
+        Prior std dev for logit-scale guessing probability.
+    slip_mu : float | list[float | None] | None, default -1.0
+        Prior mean for logit-scale slipping probability.
+    slip_std : float | list[float | None] | None, default 5.0
+        Prior std dev for logit-scale slipping probability.
+    """
+
     # TODO add more for the more complex models.
     # Need to add verification for compatibility with the model type.
-    # This does not depend on the estimation method as the same priors are use across
-    # but it varies by the selected model type.
+    # This does not depend on the estimation method as the same priors are used
+    # across methods, but it varies by the selected model type.
 
     pi_know_mu: float | list[float | None] | None = -2.0
     pi_know_std: float | list[float | None] | None = 5.0
@@ -37,6 +70,13 @@ class BayesianPriors:
 
     @staticmethod
     def _default_scalar_priors() -> dict[str, float | None]:
+        """Extract scalar defaults from a standard BayesianPriors instance.
+
+        Returns
+        -------
+        dict[str, float | None]
+            Mapping of prior keys to their default scalar values.
+        """
         return {
             key: value
             for key, value in BayesianPriors().to_dict().items()
@@ -48,6 +88,23 @@ class BayesianPriors:
         scalar_priors: dict[str, float | None],
         n_groups: int,
     ) -> dict[str, list[float | None]]:
+        """Expand scalar priors to grouped model format.
+
+        Replicates each scalar prior value ``n_groups`` times to create
+        parameter lists suitable for grouped BKT models.
+
+        Parameters
+        ----------
+        scalar_priors : dict[str, float | None]
+            Mapping of prior names to scalar values.
+        n_groups : int
+            Number of groups (replicas) for each prior value.
+
+        Returns
+        -------
+        dict[str, list[float | None]]
+            Mapping of prior names to lists of replicated prior values.
+        """
         return {prior: [value] * n_groups for prior, value in scalar_priors.items()}
 
     @staticmethod
@@ -58,6 +115,25 @@ class BayesianPriors:
         dict[str, float | None],
         dict[str, list[float | None]],
     ]:
+        """Return priors with all values set to None (non-informative).
+
+        Parameters
+        ----------
+        model_type : ModelType
+            The model type (STANDARD, GROUPED, or NESTED).
+        n_groups : Optional[int]
+            Number of groups (required for GROUPED model type, ignored for others).
+
+        Returns
+        -------
+        Union[dict[str, float | None], dict[str, list[float | None]]]
+            Mapping of prior names to None values, structured according to model_type.
+
+        Raises
+        ------
+        ValueError
+            If model_type is GROUPED and n_groups is not a positive integer.
+        """
         scalar_none_priors = {key: None for key in BayesianPriors.key_names()}
 
         if model_type in [ModelType.STANDARD, ModelType.NESTED]:
@@ -85,8 +161,8 @@ class BayesianPriors:
 
         Notes
         -----
-        Priors are modeled as Normal distributions with means and standard deviations
-        specified on the logit scale for probability parameters.
+        Priors are modeled as Normal distributions with means and standard
+        deviations specified on the logit scale for probability parameters.
         """
         if estimation_type == PriorEstimationType.JOINT:
             raise NotImplementedError(
@@ -129,7 +205,7 @@ class BayesianPriors:
         ----------
         values : dict[str, float | list[float | None]]
             Partial prior values keyed by prior key string names.
-            Missing keys are filled from defaults or `None` based on `defaults`.
+            Missing keys are filled from defaults or ``None`` based on ``defaults``.
         model_type : ModelType
             BKT model type for selecting prior structure.
         estimation_type : PriorEstimationType
@@ -138,8 +214,8 @@ class BayesianPriors:
             Number of groups for grouped models.
         defaults : bool, optional
             When ``True``, missing keys are filled with default prior values.
-            When ``False``, missing keys are filled with ``None`` (or ``[None] * n_groups``
-            for grouped models).
+            When ``False``, missing keys are filled with ``None`` (or
+            ``[None] * n_groups`` for grouped models).
         """
         base_priors = dict(
             BayesianPriors.get_default_priors(
@@ -158,9 +234,7 @@ class BayesianPriors:
                 raise ValueError(f"Unsupported prior key type: {type(key).__name__}")
             if key not in valid_keys:
                 raise ValueError(f"Unsupported prior key: {key}")
-            prior_key = key
-
-            normalized_values[prior_key] = value
+            normalized_values[key] = value
 
         base_priors.update(normalized_values)
         return base_priors

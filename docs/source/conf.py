@@ -26,7 +26,8 @@ extensions = [
     "sphinx.ext.intersphinx",  # External links for CmdStanPy
     "sphinx_new_tab_link",
     "sphinx_autodoc_typehints",
-    "sphinx.ext.coverage",  # External links for CmdStanPy
+    "sphinx.ext.coverage",
+    "sphinx_design",
 ]
 
 intersphinx_mapping = {
@@ -87,10 +88,22 @@ html_theme_options = {
         "image_dark": "_static/logo-dark.png",
         "text": title_text,
     },
+    # Footer config
+    "footer_start": ["copyright", "sphinx-version"],
+    "footer_center": ["maple-lab"],
+    "footer_end": ["theme-version"],
 }
 
+# side bar config
+html_sidebars = {
+    "**": ["sidebar-nav-bs.html", "sidebar-ethical-ads.html"],
+    "installation": [],
+    "index": [],
+}
+# hide the Show Source link in the right nav bar
+html_show_sourcelink = False
 
-# finegrained control using Application Events
+# Application Events
 
 # all base classes that contain entries in this list will be ignored.
 IGNORE_BASES_LIST = [str, int, enum.StrEnum, enum.IntEnum, object]

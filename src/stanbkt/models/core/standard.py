@@ -53,6 +53,19 @@ class StandardBKT(BKTModelBase):
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
     ):
+        """Initialize a StandardBKT model instance.
+
+        Parameters
+        ----------
+        fit_method : FitMethod, default FitMethod.MCMC
+            The Bayesian inference method to use for fitting.
+        verbose : VerbosityLevel, default VerbosityLevel.INFO
+            Verbosity level for logging.
+        stan_compile_kwargs : dict | None, optional
+            Additional Stan compilation options.
+        cpp_compile_kwargs : dict | None, optional
+            Additional C++ compilation options.
+        """
         super().__init__(
             verbose=verbose,
             fit_method=fit_method,
@@ -62,14 +75,35 @@ class StandardBKT(BKTModelBase):
 
     @property
     def _stan_model_filename(self) -> str:
+        """Get path to the main Stan model file.
+
+        Returns
+        -------
+        str
+            Path to BKT_model.stan.
+        """
         return str(files("stanbkt").joinpath("stan_code", "BKT", "BKT_model.stan"))
 
     @property
     def _stan_hidden_filename(self) -> str:
+        """Get path to the Stan hidden states model file.
+
+        Returns
+        -------
+        str
+            Path to hidden_states.stan for generating hidden state estimates.
+        """
         return str(files("stanbkt").joinpath("stan_code", "BKT", "hidden_states.stan"))
 
     @property
     def _stan_smoothed_hidden_filename(self) -> str:
+        """Get path to the Stan smoothed hidden states model file.
+
+        Returns
+        -------
+        str
+            Path to smoothed_hidden_states.stan for generating smoothed state estimates.
+        """
         return str(
             files("stanbkt").joinpath("stan_code", "BKT", "smoothed_hidden_states.stan")
         )
@@ -201,6 +235,25 @@ class StandardBKT(BKTModelBase):
         n_students: int,
         point_estimate: Literal["mean", "median"] = "mean",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Extract BKT parameters from a fitted Stan model.
+
+        Extracts point estimates for each BKT parameter (prior knowledge, learn,
+        forget, guess, slip) and expands them to match the student dimension.
+
+        Parameters
+        ----------
+        fit : CmdStanFit
+            Fitted Stan model object.
+        n_students : int
+            Number of students (used to broadcast scalar parameters to array form).
+        point_estimate : Literal["mean", "median"], default "mean"
+            Which point estimate to use (posterior mean or median).
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+            Tuple of (prior_know, learn, forget, guess, slip) arrays, each of shape (n_students,).
+        """
         prior = StandardBKT._extract_param_point_estimate(
             fit, "pi_know", point_estimate
         )
@@ -220,6 +273,21 @@ class StandardBKT(BKTModelBase):
         )
 
     def evaluate(self, **kwargs) -> dict[str, Any]:
+        """Evaluate model performance (not yet implemented).
+
+        This method will provide evaluation metrics for the fitted model
+        in a future release.
+
+        Returns
+        -------
+        dict[str, Any]
+            Evaluation results (implementation pending).
+
+        Raises
+        ------
+        NotImplementedError
+            This method is not yet implemented.
+        """
         raise NotImplementedError(
             "'evaluate' is not yet implemented for StandardBKT. "
             "This method will be available in a future release."

@@ -1,4 +1,4 @@
-"""BKT model implementations and utilities.
+"""BKT model implementations and Bayesian priors for parameters.
 
 This module provides the core BKT model classes and supporting utilities
 for model types, priors, and error handling.

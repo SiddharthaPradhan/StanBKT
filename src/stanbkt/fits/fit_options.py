@@ -38,6 +38,22 @@ class BaseFitOptions:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Self:
+        """Create fit options from a dictionary.
+
+        Known dataclass fields are extracted and used for instantiation.
+        Remaining keys are stored in ``extra_kwargs`` for CmdStanPy.
+
+        Parameters
+        ----------
+        d : dict[str, Any]
+            Dictionary containing fit options. Keys matching dataclass fields
+            are assigned to those fields; remaining keys go to ``extra_kwargs``.
+
+        Returns
+        -------
+        Self
+            New instance of the fit options class with fields populated from dict.
+        """
         field_names = {f.name for f in fields(cls)}
 
         known = {k: v for k, v in d.items() if k in field_names}

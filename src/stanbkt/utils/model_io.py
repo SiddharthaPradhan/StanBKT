@@ -20,6 +20,30 @@ MODEL_METADATA_SAVE_FILE = "model_metadata.json"
 
 
 def _resolve_model_class(base_path: str) -> tuple[type[BKTModelBase], dict[str, Any]]:
+    """Resolve the model class and initialization kwargs from saved metadata.
+
+    Loads model_metadata.json from the given path and extracts the model
+    class reference and initialization arguments.
+
+    Parameters
+    ----------
+    base_path : str
+        Path to the directory containing model_metadata.json.
+
+    Returns
+    -------
+    tuple[type[BKTModelBase], dict[str, Any]]
+        Tuple of (resolved model class, initialization kwargs dictionary).
+
+    Raises
+    ------
+    FileNotFoundError
+        If model_metadata.json does not exist at base_path.
+    ValueError
+        If metadata is invalid or missing required fields.
+    TypeError
+        If resolved class is not a BKTModelBase subclass.
+    """
     model_metadata_path = os.path.join(base_path, MODEL_METADATA_SAVE_FILE)
     if not os.path.exists(model_metadata_path):
         raise FileNotFoundError(
@@ -58,6 +82,26 @@ def _resolve_model_class(base_path: str) -> tuple[type[BKTModelBase], dict[str, 
 
 
 def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Parse and validate saved model initialization kwargs.
+
+    Deserializes raw kwargs from model metadata, converting string/int fields
+    back to their proper enum types and validating required fields.
+
+    Parameters
+    ----------
+    raw_kwargs : dict[str, Any]
+        Raw initialization kwargs from model metadata JSON.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parsed kwargs with enums restored (FitMethod, VerbosityLevel).
+
+    Raises
+    ------
+    ValueError
+        If required fields are missing or have invalid types.
+    """
     fit_method_raw = raw_kwargs.get("fit_method")
     verbose_raw = raw_kwargs.get("verbose")
     stan_compile_kwargs_raw = raw_kwargs.get("stan_compile_kwargs")

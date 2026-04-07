@@ -1,5 +1,5 @@
-Public API Reference
-====================
+Public API
+==========
 
 This page documents the public API that users should interact with.
 All classes and functions listed here are stable and intended for public use.
@@ -160,12 +160,14 @@ Utilities (``stanbkt.utils``)
 
 .. currentmodule:: stanbkt.utils
 
+.. _public_api_setup_cmdstanpy:
+
 
 CmdStanPy Setup
 ^^^^^^^^^^^^^^^^
 StanBTK uses CmdStan for model compilation, fitting and inference. This utility function installs CmdStan and sets the 
 appropriate environment variables. This is required for using StanBKT for the first time, but only needs to be done once per machine.
-On Windows, this always install `RTools` which installs the `c++`` compiler and `make`` binary. See the `CmdStanPy installation <https://mc-stan.org/cmdstanpy/installation.html>`__  documentation for 
+On Windows, this always install `RTools` which installs the `c++` compiler and `make` binary. See the `CmdStanPy installation <https://mc-stan.org/cmdstanpy/installation.html>`__  documentation for 
 more details.
 
 .. autosummary::

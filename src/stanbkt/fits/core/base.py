@@ -59,6 +59,23 @@ class BaseFit(VerboseMixin, ABC):
         summary_percentiles: tuple[float, float] = (2.5, 97.5),
         _summary_cache: dict[str, pd.DataFrame] | None = None,
     ):
+        """Initialize fit container state.
+
+        Parameters
+        ----------
+        verbose : VerbosityLevel, default VerbosityLevel.INFO
+            Verbosity level used for logging.
+        fits : dict[str, CmdStanFit] | None, optional
+            Existing per-KC fit objects to initialize from.
+        fit_metadata : FitMetadata | None, optional
+            Persisted metadata for this fit collection.
+        cache_summary : bool, default True
+            Whether generated summaries should be cached in memory.
+        summary_percentiles : tuple[float, float], default (2.5, 97.5)
+            Default percentile bounds used by summary computations.
+        _summary_cache : dict[str, pd.DataFrame] | None, optional
+            Existing summary cache keyed by KC.
+        """
         super().__init__(verbose=verbose)
         self.stan_fits: dict[str, CmdStanFit] = fits.copy() if fits is not None else {}
         self.num_fitted_kcs = len(self.stan_fits)
@@ -217,6 +234,15 @@ class BaseFit(VerboseMixin, ABC):
             self._summary_cache.clear()
 
     def _update_summary_cache(self, kc: str, kc_summary_df: pd.DataFrame) -> None:
+        """Insert or replace summary cache entry and update metadata.
+
+        Parameters
+        ----------
+        kc : str
+            Knowledge component identifier.
+        kc_summary_df : pd.DataFrame
+            Summary DataFrame for the KC.
+        """
         if kc in self._summary_cache:
             self.log(
                 f"Overwriting existing summary cache for KC '{kc}'.",
@@ -324,6 +350,7 @@ class BaseFit(VerboseMixin, ABC):
 
     @property
     def _fit_method(self) -> FitMethod:
+        """Return the fitting method implemented by the subclass."""
         raise NotImplementedError("Subclasses must implement the _fit_method property.")
 
     @abstractmethod
@@ -333,10 +360,38 @@ class BaseFit(VerboseMixin, ABC):
         kc_col_name: str = "kc_id",
         percentiles: tuple[float, float] = (2.5, 97.5),
     ) -> pd.DataFrame:
+        """Return per-KC fit summary statistics.
+
+        Parameters
+        ----------
+        kcs : Union[list[str], str, None], optional
+            KCs to summarize; if None, summarize all fitted KCs.
+        kc_col_name : str, default "kc_id"
+            Name for the KC column in returned output.
+        percentiles : tuple[float, float], default (2.5, 97.5)
+            Percentile bounds to include in summary output.
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary table indexed or labeled by KC and parameter.
+        """
         raise NotImplementedError("Subclasses must implement the _summary method.")
 
     # TODO: check if all fit types support create_inits
     # if so I can move create_inits to the base class and implement it here.
     @abstractmethod
     def _create_inits(self, kc: Union[list[str], str, None] = None) -> object:
+        """Create initialization payload for CmdStanPy fitting routines.
+
+        Parameters
+        ----------
+        kc : Union[list[str], str, None], optional
+            KC identifier(s) used to shape initialization payloads.
+
+        Returns
+        -------
+        object
+            CmdStanPy-compatible initialization object.
+        """
         raise NotImplementedError("Subclasses must implement the _create_inits method.")

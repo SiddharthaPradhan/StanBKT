@@ -1,3 +1,5 @@
+"""Utilities for StanBKT, including model compilation, data handling, verbosity control, and simulation functions."""
+
 from stanbkt.utils.compilation import (
     compile_stan_model,
     get_stan_model_cache_dir,
