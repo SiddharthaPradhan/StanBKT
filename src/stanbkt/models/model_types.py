@@ -25,19 +25,19 @@ class ModelType(StrEnum):
 
 
 # TODO need better names for these, ASK Prof. Adam
-class PriorEstimationType(StrEnum):
-    """Enumeration of prior estimation strategies.
+class InitKnowledgeStrategy(StrEnum):
+    """Enumeration of initial knowledge estimation strategies.
 
     Attributes
     ----------
     JOINT : str
-        Jointly estimate priors from data.
-    DEFAULT : str
-        Use default prior specification.
+        Jointly estimate initial knowledge from additional pre-test or prior data.
+    CORRECTNESS_ONLY : str
+        Estimate initial knowledge based only on correctness data.
     """
 
     JOINT = "joint"
-    DEFAULT = "default"
+    CORRECTNESS_ONLY = "correctness_only"
 
 
 # if PosteriorPredictionOutput is changed update `_check_predict_posterior_args`.

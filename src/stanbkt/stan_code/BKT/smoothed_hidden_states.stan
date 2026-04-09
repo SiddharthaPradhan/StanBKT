@@ -1,6 +1,11 @@
 // include the base BKT model
 #include "BKT_model.stan"
 
+// We need to recompute log_omega for here as we use reduce_sum in the model which does not retain it.
+// Note on computation: This is perfectly fine as the GQ block runs once per iteration, while the model block runs several times per iteration.
+//                      The added overhead is neglible in comparison to not using reduce_sum and parallelizing the model block.
+
+
 // Run forward-backward to compute the smoothed probability of knowing/mastery for each student and problem.
 generated quantities {    
     array[nStudents] row_vector[nProblems] pKnow;        // P(know/mastery | all observations) for each student and problem

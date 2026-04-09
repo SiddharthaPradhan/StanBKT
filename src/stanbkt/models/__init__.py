@@ -10,7 +10,7 @@ from stanbkt.models.core.standard import StandardBKT
 
 # Model utilities
 from stanbkt.models.error import FitMethodMismatchError
-from stanbkt.models.model_types import ModelType, PriorEstimationType
+from stanbkt.models.model_types import ModelType, InitKnowledgeStrategy
 from stanbkt.models.priors import BayesianPriors
 
 
@@ -21,6 +21,6 @@ __all__ = [
     # Utilities
     "FitMethodMismatchError",
     "ModelType",
-    "PriorEstimationType",
+    "InitKnowledgeStrategy",
     "BayesianPriors",
 ]

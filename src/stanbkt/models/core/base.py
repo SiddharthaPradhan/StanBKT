@@ -27,8 +27,7 @@ from stanbkt.fits.fit_types import CmdStanFit
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.core.base import BaseFit
 from stanbkt.models.model_types import (
-    ModelType,
-    PriorEstimationType,
+    InitKnowledgeStrategy,
     PosteriorPredictionOutput,
 )
 from stanbkt.models.error import FitMethodMismatchError
@@ -133,14 +132,23 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
     @abstractmethod
+    def _default_priors(self) -> BayesianPriors:
+        """Return default priors for the model parameters."""
+        raise NotImplementedError(
+            "Subclasses must implement the _default_priors method to provide default priors."
+        )
+
     def fit(
         self,
         data: pd.DataFrame,
+        priors: Optional[dict[str, BayesianPriors] | BayesianPriors] = None,
         column_mapping: Optional[dict[str, str]] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
+        overwrite_kcs: bool = False,
     ) -> BKTModelBase:
         """
-        Fit the BKT model to data.
+        Fit the BKT model to data. Each KC is fitted independently with its own model.
+        Additional KCs can be fitted by calling fit again with new data.
 
         Parameters
         ----------
@@ -148,29 +156,110 @@ class BKTModelBase(VerboseMixin, ABC):
             DataFrame containing the training data. Must include columns for:
             Student ID, Problem ID, and Correctness (0/1).
             If the KC column is absent, all interactions are assumed to belong to a single knowledge component.
+        priors : dict[str, BayesianPriors] or BayesianPriors, optional
+            Prior specifications for the model parameters. Can be provided as:
+            - A single BayesianPriors object applied to all KCs.
+            - A dictionary mapping KC IDs to their specific BayesianPriors.
+            If None, default priors will be used for all KCs.
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
         stan_fit_options : StanFitOptions or dict, optional
-            Arguments to pass to the CmdStanPy fit method. It is recommended to use the typed
-            :class:`StanFitOptions`, but a raw dictionary of option, value pairs can also be passed. See :externa
-            For example:
-            - MCMC parameters (e.g., iter_sampling, chains, seed)
-            - VB parameters (e.g., iter, tol_rel_obj)
+                Additional keyword arguments to pass to the Stan fitting method. If a dict is passed, it will be forwarded as-is to the CmdStanPy fit method.
+                It is recommended to use the typed :class:`StanFitOptions` for better type checking and validation. The accepted options depend on the chosen fit method. For example:
+                - MCMC parameters (e.g., iter_sampling, chains, seed)
+                - VB parameters (e.g., iter, tol_rel_obj)
+                If None, default fitting options for the chosen fit method will be used.
+        overwrite_kcs : bool, default=False
+            Whether to overwrite existing fits for KCs that are already fitted.
+            If False, an error will be raised if attempting to fit a KC that already has a fit.
+            If True, existing fits for the same KCs will be overwritten with the new fits.
 
 
         Returns
         -------
-        self
-            Returns self for method chaining.
+        BKTModelBase
+            The fitted BKT model instance.
 
         Raises
         ------
         ValueError
-            If data validation fails, invalid method specified, or invalid fit arguments provided.
-
+            If data validation fails or invalid method specified.
         """
-        pass
+
+        # Intialize new fits object if not already initialized.
+        if self.fits is None:
+            self.fits = self.fit_class()
+
+        if self._stan_model is None:
+            self._compile_model(self._stan_model_filename)
+
+        # ensure _compile_model succeeded before proceeding
+        # this helps with: (1) type checking and  (2) catches any missed compilation failures
+        if self._stan_model is None:
+            raise RuntimeError(
+                "Stan model compilation failed. The model object is None after compilation. "
+                "Ensure the Stan source file is valid and that CmdStanPy is correctly installed."
+            )
+
+        # validate priors
+        if priors is None:
+            # use default priors for all KCs
+            self.log(
+                "No priors provided, using default priors for all KCs.",
+                level=VerbosityLevel.DEBUG,
+            )
+            priors = self._default_priors()
+        else:
+            BayesianPriors._validate(priors, type(self))
+
+        # check stan_fit_options
+        if stan_fit_options is None:
+            stan_fit_options = FitFactory.create_default_fit_options(self._fit_method)
+        else:
+            # convert to StanFitOptions if it is a dict, mainly for better type checking and validation,
+            # but also to ensure compatibility with the FitFactory verification method
+            if isinstance(stan_fit_options, dict):
+                stan_fit_options = FitFactory.create_fit_options_from_dict(
+                    stan_fit_options, self._fit_method
+                )
+            # verify compatibility of provided options with the fit method
+            FitFactory.verify_fit_options_compatibility(
+                stan_fit_options, self._fit_method
+            )
+        # convert to dict for CmdStanPy
+        fit_options_dict = stan_fit_options.to_dict()
+
+        for kc_id, kc_data in iter_kc_data(
+            data=data,
+            col_mapping=column_mapping,
+            return_groups=False,
+            print_fn=self.log,
+        ):
+            if self.fits.has_kc(str(kc_id)):
+                if not overwrite_kcs:
+                    raise ValueError(
+                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
+                    )
+
+            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+
+            # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
+            kc_priors = (
+                priors.get(
+                    str(kc_id), self._default_priors()
+                )  # ty:ignore[no-matching-overload]
+                if isinstance(priors, dict)
+                else priors
+            )
+            data_dict = self._build_stan_data_dict(kc_data, kc_priors)
+            fit_result = self._fit_stan_model_using_method(
+                data_dict=data_dict, fit_options=stan_fit_options
+            )
+            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
+            self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+            self._is_fitted = True
+        return self
 
     def _fit_stan_model_using_method(
         self, data_dict: dict[str, Any], fit_options: StanFitOptions
@@ -821,6 +910,7 @@ class BKTModelBase(VerboseMixin, ABC):
         ValueError
             If parameter cannot be extracted from the fit object.
         """
+
         def _to_1d(values: Any) -> npt.NDArray[np.float64]:
             """Convert extracted values to a non-empty flattened float array."""
             array: npt.NDArray[np.float64] = np.asarray(values, dtype=np.float64)
@@ -1189,7 +1279,7 @@ class BKTModelBase(VerboseMixin, ABC):
             if kc_fit_result is None:
                 continue
 
-            data_dict = self._build_stan_data_dict(kc_data)
+            data_dict = self._build_stan_data_dict(kc_data, None)
             gq_fit = gq_model.generate_quantities(
                 data=data_dict,
                 previous_fit=kc_fit_result,
@@ -1450,13 +1540,19 @@ class BKTModelBase(VerboseMixin, ABC):
         pass
 
     @abstractmethod
-    def _build_stan_data_dict(self, kc_data: KCData) -> dict[str, Any]:
+    def _build_stan_data_dict(
+        self, kc_data: KCData, priors: Optional[BayesianPriors] = None
+    ) -> dict[str, Any]:
         """Build Stan data dictionary for a single KC interaction bundle.
 
         Parameters
         ----------
         kc_data : KCData
             Preprocessed KC-specific interaction data.
+        priors : BayesianPriors, optional
+            BayesianPriors object containing the prior specifications for the model parameters for this KC.
+            If None, the priors will not be added to the return dict.
+
 
         Returns
         -------

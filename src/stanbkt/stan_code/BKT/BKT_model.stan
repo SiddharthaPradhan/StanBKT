@@ -36,6 +36,18 @@ functions{
     }
     return target_;
   }
+
+  void handle_priors_lp(int unif_prior,         // binary indicator for uniform prior
+                        row_vector logit_param, // parameter on logit scale
+                        array[] real prior_mu,  // prior means for normal distribution
+                        array[]  real prior_std // prior stds for normal distribution
+                    ){
+    if (unif_prior != 1) {
+        // Apply normal priors on logit scale
+        logit_param ~ normal(prior_mu, prior_std);
+    }
+    // else stan will automatically apply uniform over the parameter space/support.
+  }
 }
 
 
@@ -47,6 +59,25 @@ data {
     // Note on correctness matrix: -1 = NA, 0 = incorrect, 1 = correct.
     array[nStudents, nProblems] int<lower=-1, upper=1> correctness; // correctness matrix
     array[nStudents] int<lower=1> interaction_lengths; // lengths of each student's interaction sequence
+
+    // priors for the parameters
+    array[nGroups] real prior_pi_know_mu;
+    array[nGroups] real<lower=0> prior_pi_know_std;
+    array[nGroups] real prior_learn_mu;
+    array[nGroups] real<lower=0> prior_learn_std;
+    array[nGroups] real prior_forget_mu;
+    array[nGroups] real<lower=0> prior_forget_std;
+    array[nGroups] real prior_guess_mu;
+    array[nGroups] real<lower=0> prior_guess_std;
+    array[nGroups] real prior_slip_mu;
+    array[nGroups] real<lower=0> prior_slip_std;
+
+    // binary indicator whether to use non-infomative uniform priors.
+    int<lower=0, upper=1> unif_prior_pi_know;
+    int<lower=0, upper=1> unif_prior_learn;
+    int<lower=0, upper=1> unif_prior_forget;
+    int<lower=0, upper=1> unif_prior_guess;
+    int<lower=0, upper=1> unif_prior_slip;
 }
 
 parameters {
@@ -71,12 +102,12 @@ transformed parameters {
 
 model {
     // Bayesian Priors
-    // TODO implement user input for the priors. This will add 10 parameters (mean and sd for each of the 5 parameter types).
-    logit_pi_know_group ~ normal(-2, 5);
-    logit_learn_group ~ normal(0, 5);
-    logit_forget_group ~ normal(-2, 5);
-    logit_guess_group ~ normal(-1, 5);
-    logit_slip_group ~ normal(-1, 5);
+    handle_priors_lp(unif_prior_pi_know, logit_pi_know_group, prior_pi_know_mu, prior_pi_know_std);
+    handle_priors_lp(unif_prior_learn, logit_learn_group, prior_learn_mu, prior_learn_std);
+    handle_priors_lp(unif_prior_forget, logit_forget_group, prior_forget_mu, prior_forget_std);
+    handle_priors_lp(unif_prior_guess, logit_guess_group, prior_guess_mu, prior_guess_std);
+    handle_priors_lp(unif_prior_slip, logit_slip_group, prior_slip_mu, prior_slip_std);
+
 
     // The following variables are based on the parameters and converted into suitable vector or matrix form.
     // While this could have been technically been done in the transformed parameters block, 
@@ -102,7 +133,7 @@ model {
     }
 
     // Parallelized likelihood computation
-    int grainsize = 1; // default is 1, that uses an internal scheduler
+    int grainsize = 1; // use internal scheduler
     target += reduce_sum(partial_sum, correctness,
                         grainsize,
                         interaction_lengths,
@@ -113,6 +144,3 @@ model {
 
 
 
-// We need to recompute log_omega for here as we use reduce_sum in the model which does not retain it.
-// Note on computation: This is perfectly fine as the GQ block runs once per iteration, while the model block runs several times per iteration.
-//                      The added overhead is neglible in comparison to not using reduce_sum and parallelizing the model block.

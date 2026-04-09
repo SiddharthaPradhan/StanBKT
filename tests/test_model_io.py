@@ -13,6 +13,7 @@ from stanbkt.fits.persistence.fit_io import METADATA_SAVE_FILE
 from stanbkt.fits.persistence.metadata import fit_metadata_to_json
 from stanbkt.fits.fit_types import FitMetadata, FitMethod
 from stanbkt.models.core.base import BKTModelBase
+from stanbkt.models.priors import BayesianPriors
 from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX
 from stanbkt.utils.verbose import VerbosityLevel
 from stanbkt.utils.model_io import MODEL_METADATA_SAVE_FILE, load_model
@@ -64,6 +65,9 @@ class _FakeModel(BKTModelBase):
 
     def _build_stan_data_dict(self, correctness: np.ndarray):
         return {"correctness": correctness}
+
+    def _default_priors(self):
+        return BayesianPriors()
 
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (

@@ -3,13 +3,14 @@ from stanbkt.fits.core.base import BaseFit
 import json
 import pytest
 import numpy as np
+import pandas as pd
 import os
 import zipfile
 from unittest.mock import MagicMock
 
 from stanbkt.models.core.base import BKTModelBase
 from stanbkt.models.priors import BayesianPriors
-from stanbkt.models.model_types import ModelType, PriorEstimationType
+from stanbkt.models.model_types import ModelType, InitKnowledgeStrategy
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX
 from stanbkt.utils.verbose import VerbosityLevel
@@ -23,7 +24,12 @@ from stanbkt.utils.model_io import MODEL_METADATA_SAVE_FILE
 
 class _ConcreteModel(BKTModelBase):
     def fit(
-        self, data, column_mapping=None, method=FitMethod.MCMC, stan_fit_kwargs=None
+        self,
+        data,
+        priors=None,
+        column_mapping=None,
+        stan_fit_options=None,
+        overwrite_kcs=False,
     ):
         return self
 
@@ -42,8 +48,11 @@ class _ConcreteModel(BKTModelBase):
     def _stan_smoothed_hidden_filename(self):
         return "/nonexistent_smoothed.stan"
 
-    def _build_stan_data_dict(self, correctness):
-        return {"correctness": correctness}
+    def _build_stan_data_dict(self, kc_data, priors=None):
+        return {"correctness": kc_data.correctness}
+
+    def _default_priors(self):
+        return BayesianPriors()
 
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (
@@ -283,178 +292,3 @@ class TestGetKCInFittedKCs:
         m = _ConcreteModel()
         with pytest.raises(RuntimeError):
             m.get_kcs_in_fitted_kcs({"kc_a"})
-
-
-# ---------------------------------------------------------------------------
-# BayesianPriors.get_default_priors
-# ---------------------------------------------------------------------------
-
-
-class TestBayesianPriorsGetDefaultPriors:
-    def test_standard_returns_scalar_priors(self):
-        priors = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        assert isinstance(priors, dict)
-        assert all(isinstance(v, float) for v in priors.values())
-
-    def test_standard_returns_all_10_prior_keys(self):
-        priors = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        assert set(priors.keys()) == set(BayesianPriors.key_names())
-
-    def test_nested_returns_same_scalar_priors_as_standard(self):
-        standard = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        nested = BayesianPriors.get_default_priors(
-            ModelType.NESTED, PriorEstimationType.DEFAULT
-        )
-        assert standard == nested
-
-    def test_grouped_returns_list_priors(self):
-        priors = BayesianPriors.get_default_priors(
-            ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=3
-        )
-        assert all(isinstance(v, list) for v in priors.values())
-
-    def test_grouped_list_length_matches_n_groups(self):
-        n = 4
-        priors = BayesianPriors.get_default_priors(
-            ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=n
-        )
-        assert all(
-            len(v) == n for v in priors.values()  # ty:ignore[invalid-argument-type]
-        )
-
-    def test_grouped_values_replicated_from_scalar(self):
-        scalar = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        grouped = BayesianPriors.get_default_priors(
-            ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=2
-        )
-        for key in scalar:
-            assert grouped[key] == [scalar[key], scalar[key]]
-
-    def test_grouped_raises_for_non_integer_n_groups(self):
-        with pytest.raises(ValueError, match="n_groups must be an integer"):
-            BayesianPriors.get_default_priors(
-                ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=None
-            )
-
-    def test_grouped_raises_for_zero_n_groups(self):
-        with pytest.raises(ValueError, match="n_groups must be > 0"):
-            BayesianPriors.get_default_priors(
-                ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=0
-            )
-
-    def test_grouped_raises_for_negative_n_groups(self):
-        with pytest.raises(ValueError, match="n_groups must be > 0"):
-            BayesianPriors.get_default_priors(
-                ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=-1
-            )
-
-    def test_joint_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            BayesianPriors.get_default_priors(
-                ModelType.STANDARD, PriorEstimationType.JOINT
-            )
-
-
-# ---------------------------------------------------------------------------
-# BayesianPriors.add_missing_priors
-# ---------------------------------------------------------------------------
-
-
-class TestBayesianPriorsAddMissingPriors:
-    def test_empty_input_returns_all_defaults(self):
-        result = BayesianPriors.add_missing_priors(
-            {}, ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        defaults = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        assert result == defaults
-
-    def test_empty_input_with_defaults_false_returns_all_none(self):
-        result = BayesianPriors.add_missing_priors(
-            {},
-            ModelType.STANDARD,
-            PriorEstimationType.DEFAULT,
-            defaults=False,
-        )
-        assert set(result.keys()) == set(BayesianPriors.key_names())
-        assert all(value is None for value in result.values())
-
-    def test_partial_override_merges_correctly(self):
-        override: dict[str, int | float | list[int | float]] = {"learn_mu": 1.5}
-        result = BayesianPriors.add_missing_priors(
-            override, ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        assert result["learn_mu"] == 1.5
-        # Other keys remain as defaults
-        defaults = BayesianPriors.get_default_priors(
-            ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        for key in defaults:
-            if key != "learn_mu":
-                assert result[key] == defaults[key]
-
-    def test_string_key_accepted(self):
-        result = BayesianPriors.add_missing_priors(
-            {"learn_mu": 2.0},  # ty:ignore[invalid-argument-type]
-            ModelType.STANDARD,
-            PriorEstimationType.DEFAULT,
-        )
-        assert result["learn_mu"] == 2.0
-
-    def test_invalid_string_key_raises(self):
-        with pytest.raises(ValueError, match="Unsupported prior key"):
-            vals = {"nonexistent_param": 1.0}
-            BayesianPriors.add_missing_priors(
-                vals,  # ty:ignore[invalid-argument-type]
-                ModelType.STANDARD,
-                PriorEstimationType.DEFAULT,
-            )
-
-    def test_result_contains_all_prior_keys(self):
-        result = BayesianPriors.add_missing_priors(
-            {"slip_mu": -0.5},
-            ModelType.STANDARD,
-            PriorEstimationType.DEFAULT,
-        )
-        assert set(result.keys()) == set(BayesianPriors.key_names())
-
-    def test_grouped_partial_override(self):
-        override: dict[str, int | float | list[float | int]] = {
-            "learn_mu": [1.5, 1.5, 1.5]
-        }
-        result = BayesianPriors.add_missing_priors(
-            override, ModelType.GROUPED, PriorEstimationType.DEFAULT, n_groups=3
-        )
-        assert result["learn_mu"] == [1.5, 1.5, 1.5]
-
-    def test_grouped_defaults_false_uses_none_lists(self):
-        result = BayesianPriors.add_missing_priors(
-            {"learn_mu": [1.5, 1.5, 1.5]},
-            ModelType.GROUPED,
-            PriorEstimationType.DEFAULT,
-            n_groups=3,
-            defaults=False,
-        )
-        assert result["learn_mu"] == [1.5, 1.5, 1.5]
-        for key, value in result.items():
-            if key == "learn_mu":
-                continue
-            assert value == [None, None, None]
-
-    def test_full_override_with_prior_keys(self):
-        overrides: dict[str, int | float | list[int | float]] = {
-            prior: 0.0 for prior in BayesianPriors.key_names()
-        }
-        result = BayesianPriors.add_missing_priors(
-            overrides, ModelType.STANDARD, PriorEstimationType.DEFAULT
-        )
-        assert all(v == 0.0 for v in result.values())
