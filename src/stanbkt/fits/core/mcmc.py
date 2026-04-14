@@ -2,13 +2,13 @@ from __future__ import annotations
 from stanbkt.utils.verbose import VerbosityLevel
 from typing import Union
 import pandas as pd
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.fit_types import FitMethod
 
 from cmdstanpy import CmdStanMCMC
 
 
-class MCMCFit(BaseFit):
+class MCMCFit(FitBase):
     """Fit class using Markov Chain Monte Carlo (MCMC) sampling.
 
     This class wraps CmdStanPy's MCMC sampler to fit BKT models using

@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Union
 import pandas as pd
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.fit_types import FitMethod
 
 
-class VBFit(BaseFit):
+class VBFit(FitBase):
     """Fit class using Variational Bayes (VB) approximation.
 
     This class wraps CmdStanPy's variational Bayes algorithm to fit BKT models

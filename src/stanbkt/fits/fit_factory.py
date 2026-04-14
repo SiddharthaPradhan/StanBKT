@@ -15,10 +15,10 @@ from stanbkt.fits.core.mle import MLEFit
 from stanbkt.fits.core.vb import VBFit
 from stanbkt.fits.core.pf import PathfinderFit
 from stanbkt.fits.fit_types import FitMethod, CmdStanFit
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from cmdstanpy import CmdStanMCMC, CmdStanMLE, CmdStanPathfinder, CmdStanVB
 
-FitClassType: TypeAlias = type[BaseFit]
+FitClassType: TypeAlias = type[FitBase]
 """ Alias for fit class types, i.e. subclasses of BaseFit."""
 
 

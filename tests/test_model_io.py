@@ -8,18 +8,18 @@ from typing import Any
 import numpy as np
 import pytest
 
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.persistence.fit_io import METADATA_SAVE_FILE
 from stanbkt.fits.persistence.metadata import fit_metadata_to_json
 from stanbkt.fits.fit_types import FitMetadata, FitMethod
 from stanbkt.models.core.base import BKTModelBase
-from stanbkt.models.priors import BayesianPriors
+from stanbkt.models.priors import StandardPriors
 from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX
 from stanbkt.utils.verbose import VerbosityLevel
 from stanbkt.utils.model_io import MODEL_METADATA_SAVE_FILE, load_model
 
 
-class _LoadedFit(BaseFit):
+class _LoadedFit(FitBase):
     @property
     def _fit_method(self):
         return FitMethod.MCMC
@@ -67,7 +67,7 @@ class _FakeModel(BKTModelBase):
         return {"correctness": correctness}
 
     def _default_priors(self):
-        return BayesianPriors()
+        return StandardPriors()
 
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (

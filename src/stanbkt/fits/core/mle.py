@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Union
 import pandas as pd
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.fit_types import FitMethod
 
 
-class MLEFit(BaseFit):
+class MLEFit(FitBase):
     """Fit class using Maximum Likelihood Estimation (MLE) / Optimization.
 
     This class wraps CmdStanPy's optimization algorithm to fit BKT models by

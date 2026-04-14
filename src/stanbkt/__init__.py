@@ -2,7 +2,7 @@
 
 from stanbkt.models.core.base import BKTModelBase
 from stanbkt.models.core.standard import StandardBKT
-from stanbkt.models.priors import BayesianPriors
+from stanbkt.models.priors import StandardPriors
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.fit_options import (
     MCMCFitOptions,
@@ -25,7 +25,7 @@ __all__ = [
     # Models
     "BKTModelBase",
     "StandardBKT",
-    "BayesianPriors",
+    "StandardPriors",
     # Fitting
     "FitMethod",
     "MCMCFitOptions",

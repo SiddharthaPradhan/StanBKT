@@ -26,17 +26,15 @@ User's Guide
 
 .. toctree::
    :maxdepth: 2
-   :caption: User's Guide
 
    guide
-   examples
+   example_root
 
 API Reference
 -------------
 
 .. toctree::
    :maxdepth: 2
-   :caption: API Reference
    
    public_api
    internal_api

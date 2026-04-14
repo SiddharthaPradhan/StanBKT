@@ -5,7 +5,7 @@ This module defines the core fit result classes for various inference methods
 factory for creating fit instances based on user-specified options.
 """
 
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.core.mcmc import MCMCFit
 from stanbkt.fits.core.mle import MLEFit
 from stanbkt.fits.core.vb import VBFit
@@ -23,7 +23,7 @@ from stanbkt.fits.fit_factory import FitFactory
 
 __all__ = [
     # Fit classes
-    "BaseFit",
+    "FitBase",
     "MCMCFit",
     "MLEFit",
     "VBFit",

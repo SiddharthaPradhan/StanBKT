@@ -1,18 +1,21 @@
 import pandas as pd
 import numpy as np
+from natsort import natsort_keygen
+from typing import Sequence
 
 
 def sim_simple_BKT(
-    nStudents: int = 10,
-    nProblems: int = 20,
-    nKcs: int = 1,
-    prior=0.1,
-    learn=0.01,
-    forget=0.05,
-    guess=0.2,
-    slip=0.1,
+    n_students: int = 10,
+    n_problems: int = 20,
+    n_kcs: int = 1,
+    prior: float | Sequence[float] = 0.1,
+    learn: float | Sequence[float] = 0.01,
+    forget: float | Sequence[float] = 0.05,
+    guess: float | Sequence[float] = 0.2,
+    slip: float | Sequence[float] = 0.1,
     rng_seed=None,
     kc_sequence=None,
+    frac=1.0,
 ) -> pd.DataFrame:
     """Simulate student problem responses under simple BKT model.
 
@@ -41,6 +44,10 @@ def sim_simple_BKT(
         Random seed for reproducibility.
     kc_sequence : array-like of int or None, optional
         KC assignment for each problem. If None, randomly sampled.
+    frac : float, default 1.0
+        Fraction of rows to include in the output dataset. This simulates missing data,
+        or students not completing all problems, by randomly dropping rows after simulation.
+
 
     Returns
     -------
@@ -79,10 +86,13 @@ def sim_simple_BKT(
             If array size does not equal nKcs.
         """
         arr = np.asarray(x, dtype=float)
-        if arr.size == 1:
-            arr = np.repeat(arr, nKcs)
-        if arr.size != nKcs:
-            raise ValueError(f"{name} must be scalar or length nKcs")
+        if arr.ndim == 0:
+            arr = np.repeat(arr, n_kcs)
+        else:
+            arr = arr.reshape(-1)
+
+        if arr.shape[0] != n_kcs:
+            raise ValueError(f"{name} must be scalar or length n_kcs")
         return arr
 
     prior_vec = _param_to_vec(prior, "prior")
@@ -92,21 +102,21 @@ def sim_simple_BKT(
     slip_vec = _param_to_vec(slip, "slip")
 
     if kc_sequence is None:
-        kc_sequence = rng.integers(0, nKcs, size=nProblems)
+        kc_sequence = rng.integers(0, n_kcs, size=n_problems)
     else:
         kc_sequence = np.asarray(kc_sequence, dtype=int)
-        if kc_sequence.shape[0] != nProblems:
-            raise ValueError("kc_sequence must have length nProblems")
-        if kc_sequence.min() < 0 or kc_sequence.max() >= nKcs:
-            raise ValueError("kc_sequence entries must be in [0, nKcs-1]")
+        if kc_sequence.shape[0] != n_problems:
+            raise ValueError("kc_sequence must have length n_problems")
+        if kc_sequence.min() < 0 or kc_sequence.max() >= n_kcs:
+            raise ValueError("kc_sequence entries must be in [0, n_kcs-1]")
 
-    knowledge = rng.random(size=(nStudents, nKcs)) < prior_vec
-    correctness = np.zeros((nStudents, nProblems), dtype=int)
-    states = np.zeros((nStudents, nProblems), dtype=int)
+    knowledge = rng.random(size=(n_students, n_kcs)) < prior_vec
+    correctness = np.zeros((n_students, n_problems), dtype=int)
+    states = np.zeros((n_students, n_problems), dtype=int)
 
-    for t in range(nProblems):
+    for t in range(n_problems):
         kc = kc_sequence[t]
-        for s in range(nStudents):
+        for s in range(n_students):
             knows_before = knowledge[s, kc]
             if knows_before:
                 correct = int(rng.random() >= slip_vec[kc])
@@ -129,8 +139,19 @@ def sim_simple_BKT(
             "student_id": "stu_" + student_idx.ravel().astype(str),
             "problem_id": "prob_" + problem_idx.ravel().astype(str),
             "correct": correctness.ravel().astype(np.int8),
+            "timestamp": pd.Timestamp("2024-01-01")
+            + pd.to_timedelta(problem_idx.ravel(), unit="m"),
             "kc_id": "kc_" + kc_sequence[problem_idx.ravel()].astype(str),
         }
     )
 
+    if frac < 1.0:
+        data_df = data_df.sample(frac=frac, random_state=rng_seed).reset_index(
+            drop=True
+        )
+
+        data_df = data_df.sort_values(
+            ["student_id", "timestamp"],
+            key=natsort_keygen(),  # ty:ignore[invalid-argument-type]
+        ).reset_index(drop=True)
     return data_df

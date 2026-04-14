@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Union
 import pandas as pd
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.fit_types import FitMethod
 
 
-class PathfinderFit(BaseFit):
+class PathfinderFit(FitBase):
     """Fit class using Pathfinder variational approximation.
 
     This class wraps CmdStanPy's Pathfinder algorithm to fit BKT models using

@@ -29,7 +29,7 @@ from stanbkt.fits.persistence.metadata import (
 # TODO: create_inits
 # diagnose support for MCMC
 # check API in __init__.py.
-class BaseFit(VerboseMixin, ABC):
+class FitBase(VerboseMixin, ABC):
     """Base class for StanBKT fits.
 
     This class provides shared fit state management and delegates all persistence
@@ -37,13 +37,13 @@ class BaseFit(VerboseMixin, ABC):
 
     Attributes
     ----------
-    fits : dict[str, BaseCmdStanFit]
+    fits : dict[str, CmdStanFit]
         Mapping of knowledge component IDs to CmdStan fit objects.
     num_fitted_kcs : int
         Number of knowledge components that have been fitted.
     _fit_metadata : FitMetadata
         Metadata used to resolve persisted fit folders.
-    _summary_cache : dict[str, pandas.DataFrame]
+    _summary_cache : dict[str, pd.DataFrame]
         Cached summary DataFrames for each knowledge component.
     _summary_percentiles : tuple[float, float], default (2.5, 97.5)
         Percentiles used for generating summary statistics. Values should be in range [1, 99].
@@ -131,7 +131,7 @@ class BaseFit(VerboseMixin, ABC):
         ----------
         kc : str
             Knowledge component identifier.
-        fit : BaseCmdStanFit
+        fit : CmdStanFit
             CmdStan fit object to add for the KC.
         overwrite_kcs : bool, default=False
             Whether to overwrite existing fits for KCs that are being added again.
@@ -262,7 +262,7 @@ class BaseFit(VerboseMixin, ABC):
         self._summary_cache[kc] = kc_summary_df
 
     @classmethod
-    def _load(cls, base_save_location: str) -> BaseFit:
+    def _load(cls, base_save_location: str) -> FitBase:
         """Load fit artifacts from disk into a ``BaseFit`` subclass instance.
 
         Parameters

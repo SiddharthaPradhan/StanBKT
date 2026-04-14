@@ -3,7 +3,7 @@ import natsort
 from stanbkt.utils.data_utils import format_kc_data, iter_kc_data, KCData, ColumnNames
 from stanbkt.models.core.base import BKTModelBase
 from stanbkt.fits.fit_types import FitMethod
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 import matplotlib.pyplot as plt
 import pandas as pd
 from typing import Optional, Literal

@@ -23,7 +23,7 @@ from stanbkt.fits.persistence.metadata import (
     fit_metadata_to_json,
     fit_metadata_from_json,
 )
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 from stanbkt.utils.verbose import VerbosityLevel
 
 
@@ -32,7 +32,7 @@ from stanbkt.utils.verbose import VerbosityLevel
 # ---------------------------------------------------------------------------
 
 
-class _ConcreteFit(BaseFit):
+class _ConcreteFit(FitBase):
     @property
     def _fit_method(self) -> FitMethod:
         return FitMethod.MCMC
@@ -44,7 +44,7 @@ class _ConcreteFit(BaseFit):
         return pd.DataFrame()
 
 
-class _VBConcreteFit(BaseFit):
+class _VBConcreteFit(FitBase):
     @property
     def _fit_method(self) -> FitMethod:
         return FitMethod.VB

@@ -48,11 +48,11 @@ Example Usage:
 .. code-block:: python
    :emphasize-lines: 5,7,11,15
 
-   from stanbkt.models import StandardBKT, BayesianPriors, PriorEstimationType
+   from stanbkt.models import StandardBKT, StandardPriors, InitKnowledgeStrategy
    from stanbkt.fits import FitMethod
 
    # select FIXME prior estimation method
-   est_type = PriorEstimationType.FIXME
+   est_type = InitKnowledgeStrategy.FIXME
    # create a model with the specified estimation method
    model = StandardBKT(FitMethod.MCMC, prior_estimation_type=est_type)
    
@@ -71,7 +71,7 @@ Example Usage:
     :caption: Bayesian Priors
     :toctree: generated
    
-    PriorEstimationType
+    InitKnowledgeStrategy
     BayesianPriors
 
 Fits (``stanbkt.fits``)

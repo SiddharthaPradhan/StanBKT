@@ -9,6 +9,7 @@ should inherit from.
 from __future__ import annotations
 from natsort import natsort_keygen
 import re
+import stanbkt
 from stanbkt.fits.fit_factory import FitFactory
 import json
 
@@ -25,13 +26,14 @@ from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 from stanbkt.fits.fit_options import StanFitOptions
 from stanbkt.fits.fit_types import CmdStanFit
 from stanbkt.fits.fit_types import FitMethod
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase as BaseFit
 from stanbkt.models.model_types import (
+    ModelType,
     InitKnowledgeStrategy,
     PosteriorPredictionOutput,
 )
 from stanbkt.models.error import FitMethodMismatchError
-from stanbkt.models.priors import BayesianPriors
+from stanbkt.models.priors import StandardPriors
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
@@ -72,19 +74,6 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        """Initialize common model state for all BKT implementations.
-
-        Parameters
-        ----------
-        fit_method : FitMethod | str, default FitMethod.MCMC
-            Inference method used to fit Stan models.
-        verbose : VerbosityLevel, default VerbosityLevel.INFO
-            Verbosity level for internal logging.
-        stan_compile_kwargs : Optional[dict[str, Any]], optional
-            Additional options forwarded to Stan compilation.
-        cpp_compile_kwargs : Optional[dict[str, Any]], optional
-            Additional options forwarded to C++ compilation.
-        """
         super().__init__(verbose=verbose)
         resolved_fit_method = FitMethod(fit_method)
         self._fit_method: Final[FitMethod] = resolved_fit_method
@@ -132,23 +121,14 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
     @abstractmethod
-    def _default_priors(self) -> BayesianPriors:
-        """Return default priors for the model parameters."""
-        raise NotImplementedError(
-            "Subclasses must implement the _default_priors method to provide default priors."
-        )
-
     def fit(
         self,
         data: pd.DataFrame,
-        priors: Optional[dict[str, BayesianPriors] | BayesianPriors] = None,
         column_mapping: Optional[dict[str, str]] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
-        overwrite_kcs: bool = False,
     ) -> BKTModelBase:
         """
-        Fit the BKT model to data. Each KC is fitted independently with its own model.
-        Additional KCs can be fitted by calling fit again with new data.
+        Fit the BKT model to data.
 
         Parameters
         ----------
@@ -156,135 +136,33 @@ class BKTModelBase(VerboseMixin, ABC):
             DataFrame containing the training data. Must include columns for:
             Student ID, Problem ID, and Correctness (0/1).
             If the KC column is absent, all interactions are assumed to belong to a single knowledge component.
-        priors : dict[str, BayesianPriors] or BayesianPriors, optional
-            Prior specifications for the model parameters. Can be provided as:
-            - A single BayesianPriors object applied to all KCs.
-            - A dictionary mapping KC IDs to their specific BayesianPriors.
-            If None, default priors will be used for all KCs.
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
         stan_fit_options : StanFitOptions or dict, optional
-                Additional keyword arguments to pass to the Stan fitting method. If a dict is passed, it will be forwarded as-is to the CmdStanPy fit method.
-                It is recommended to use the typed :class:`StanFitOptions` for better type checking and validation. The accepted options depend on the chosen fit method. For example:
-                - MCMC parameters (e.g., iter_sampling, chains, seed)
-                - VB parameters (e.g., iter, tol_rel_obj)
-                If None, default fitting options for the chosen fit method will be used.
-        overwrite_kcs : bool, default=False
-            Whether to overwrite existing fits for KCs that are already fitted.
-            If False, an error will be raised if attempting to fit a KC that already has a fit.
-            If True, existing fits for the same KCs will be overwritten with the new fits.
+            Arguments to pass to the CmdStanPy fit method. It is recommended to use the typed
+            :class:`StanFitOptions`, but a raw dictionary of option, value pairs can also be passed. See :externa
+            For example:
+            - MCMC parameters (e.g., iter_sampling, chains, seed)
+            - VB parameters (e.g., iter, tol_rel_obj)
 
 
         Returns
         -------
-        BKTModelBase
-            The fitted BKT model instance.
+        self
+            Returns self for method chaining.
 
         Raises
         ------
         ValueError
-            If data validation fails or invalid method specified.
+            If data validation fails, invalid method specified, or invalid fit arguments provided.
+
         """
-
-        # Intialize new fits object if not already initialized.
-        if self.fits is None:
-            self.fits = self.fit_class()
-
-        if self._stan_model is None:
-            self._compile_model(self._stan_model_filename)
-
-        # ensure _compile_model succeeded before proceeding
-        # this helps with: (1) type checking and  (2) catches any missed compilation failures
-        if self._stan_model is None:
-            raise RuntimeError(
-                "Stan model compilation failed. The model object is None after compilation. "
-                "Ensure the Stan source file is valid and that CmdStanPy is correctly installed."
-            )
-
-        # validate priors
-        if priors is None:
-            # use default priors for all KCs
-            self.log(
-                "No priors provided, using default priors for all KCs.",
-                level=VerbosityLevel.DEBUG,
-            )
-            priors = self._default_priors()
-        else:
-            BayesianPriors._validate(priors, type(self))
-
-        # check stan_fit_options
-        if stan_fit_options is None:
-            stan_fit_options = FitFactory.create_default_fit_options(self._fit_method)
-        else:
-            # convert to StanFitOptions if it is a dict, mainly for better type checking and validation,
-            # but also to ensure compatibility with the FitFactory verification method
-            if isinstance(stan_fit_options, dict):
-                stan_fit_options = FitFactory.create_fit_options_from_dict(
-                    stan_fit_options, self._fit_method
-                )
-            # verify compatibility of provided options with the fit method
-            FitFactory.verify_fit_options_compatibility(
-                stan_fit_options, self._fit_method
-            )
-        # convert to dict for CmdStanPy
-        fit_options_dict = stan_fit_options.to_dict()
-
-        for kc_id, kc_data in iter_kc_data(
-            data=data,
-            col_mapping=column_mapping,
-            return_groups=False,
-            print_fn=self.log,
-        ):
-            if self.fits.has_kc(str(kc_id)):
-                if not overwrite_kcs:
-                    raise ValueError(
-                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
-                    )
-
-            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
-
-            # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
-            kc_priors = (
-                priors.get(
-                    str(kc_id), self._default_priors()
-                )  # ty:ignore[no-matching-overload]
-                if isinstance(priors, dict)
-                else priors
-            )
-            data_dict = self._build_stan_data_dict(kc_data, kc_priors)
-            fit_result = self._fit_stan_model_using_method(
-                data_dict=data_dict, fit_options=stan_fit_options
-            )
-            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
-            self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
-            self._is_fitted = True
-        return self
+        pass
 
     def _fit_stan_model_using_method(
         self, data_dict: dict[str, Any], fit_options: StanFitOptions
     ) -> CmdStanFit:
-        """Fit compiled Stan model using the configured inference method.
-
-        Parameters
-        ----------
-        data_dict : dict[str, Any]
-            Stan data payload passed to CmdStanPy.
-        fit_options : StanFitOptions
-            Method-specific fit options object.
-
-        Returns
-        -------
-        CmdStanFit
-            CmdStanPy fit result object.
-
-        Raises
-        ------
-        RuntimeError
-            If Stan model is not compiled.
-        ValueError
-            If fit method is unsupported.
-        """
         if self._stan_model is None:
             raise RuntimeError("Stan model is not compiled. Cannot fit the model.")
 
@@ -301,11 +179,13 @@ class BKTModelBase(VerboseMixin, ABC):
                 f"Invalid fitting method '{self._fit_method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', '{FitMethod.MLE}', and '{FitMethod.PATHFINDER}'."
             )
 
+    # TODO: implement this, but override if needed.
+    # This will really just call the summary method of the fit object.
     def summary(
         self,
-        percentiles: Tuple[float, float] = (2.5, 97.5),
-        column_mapping: dict[str, str] = {},
-        clear_cache: bool = False,
+        params: Optional[list[str]] = None,
+        percentiles: Tuple[float, ...] = (5, 50, 95),
+        refresh_cache: bool = False,
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -314,8 +194,8 @@ class BKTModelBase(VerboseMixin, ABC):
         ----------
         params : list of str, optional
             List of parameters to summarize. If None, summarizes all.
-        percentiles : tuple of float, default=(2.5, 97.5)
-            Percentiles to include in summary. Values should be in range [1, 99].
+        percentiles : tuple of float, default=(5, 50, 95)
+            Percentiles to include in summary.
         refresh_cache : bool, default=False
             Whether to refresh the cached summary.
 
@@ -329,28 +209,13 @@ class BKTModelBase(VerboseMixin, ABC):
         RuntimeError
             If model has not been fitted yet.
         """
-        self._fit_check("summary")
-        if self.fits is None:
+        if not self._is_fitted:
             raise RuntimeError("Model must be fitted before calling summary()")
-        if clear_cache:
-            self.fits._clear_summary_cache_if_stale(percentiles, force=True)
 
-        # validate percentiles
-        if not (
-            len(percentiles) == 2
-            and (1 <= percentiles[0] <= 99)
-            and (1 <= percentiles[1] <= 99)
-            and (percentiles[0] < percentiles[1])
-        ):
-            raise ValueError(
-                f"'percentiles' must be a tuple of two numeric values between 1 and 99 (inclusive), where the first value is less than the second. Got {percentiles}."
-            )
-        kc_col_name = column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)
-
-        return self.fits._summary(
-            percentiles=percentiles,
-            kc_col_name=kc_col_name,
-        )
+        # if hasattr(self.fit, "summary"):
+        #     if params:
+        #         return self.fit.summary(var_names=params, percentiles=percentiles)
+        #     return self._fit.summary(percentiles=percentiles)
 
         raise NotImplementedError("Summary not available for this fit method")
 
@@ -604,13 +469,13 @@ class BKTModelBase(VerboseMixin, ABC):
                 ),
             )
 
-            kc_predictions.insert(0, kc_column_name, str(kc_id))
+            kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
             predictions.append(kc_predictions)
 
         if not predictions:
             return pd.DataFrame(
                 columns=[
-                    kc_column_name,
+                    ColumnNames.KC_ID,
                     ColumnNames.STUDENT_ID,
                     ColumnNames.PROBLEM_ID,
                     "pKnow",
@@ -843,6 +708,60 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return pd.DataFrame(long_data_df)
 
+    @staticmethod
+    def _build_prediction_index_frame(kc_data: KCData, n_problems: int) -> pd.DataFrame:
+        """Build a lookup frame mapping Stan 1-based (student_idx, problem_idx) to original IDs.
+
+        Used by the posterior prediction path to remap numeric Stan indices back to the
+        original student/problem ID strings.
+        """
+        n_students = len(kc_data.student_inter_dict)
+        lengths = np.clip(kc_data.lengths, 0, n_problems)
+
+        flat_student_idx = np.repeat(
+            np.arange(1, n_students + 1, dtype=np.int64), n_problems
+        )
+        flat_problem_idx = np.tile(
+            np.arange(1, n_problems + 1, dtype=np.int64), n_students
+        )
+
+        student_positions = np.repeat(np.arange(n_students, dtype=np.int64), n_problems)
+        problem_positions = flat_problem_idx - 1  # 0-based
+        flat_is_valid = problem_positions < lengths[student_positions]
+
+        flat_student_ids = np.repeat(
+            np.fromiter(
+                (str(sid) for sid in kc_data.student_inter_dict.keys()),
+                dtype=object,
+                count=n_students,
+            ),
+            n_problems,
+        )
+
+        flat_problem_ids = np.full(n_students * n_problems, "-1", dtype=object)
+        for student_index, interaction in enumerate(
+            kc_data.student_inter_dict.values()
+        ):
+            row_start = student_index * n_problems
+            for problem_index, pid in enumerate(interaction.problem_ids):
+                flat_problem_ids[row_start + problem_index] = str(pid)
+
+        flat_correctness = kc_data.correctness.ravel(order="C").astype(
+            np.float64, copy=True
+        )
+        flat_correctness[flat_correctness < 0] = -1.0
+
+        return pd.DataFrame(
+            {
+                "student_idx": flat_student_idx,
+                "problem_idx": flat_problem_idx,
+                "student_id": flat_student_ids,
+                "problem_id": flat_problem_ids,
+                "is_valid": flat_is_valid,
+                "correctness": flat_correctness,
+            }
+        )
+
     @abstractmethod
     def _extract_bkt_params_from_fit(
         self,
@@ -865,22 +784,6 @@ class BKTModelBase(VerboseMixin, ABC):
         param_name: str,
         point_estimate: Literal["mean", "median"] = "mean",
     ) -> float:
-        """Extract scalar point estimate from posterior draws.
-
-        Parameters
-        ----------
-        fit : CmdStanFit
-            Fit object containing posterior/optimized parameter values.
-        param_name : str
-            Parameter name to extract.
-        point_estimate : Literal["mean", "median"], default "mean"
-            Aggregation statistic applied to draws.
-
-        Returns
-        -------
-        float
-            Scalar point estimate for the requested parameter.
-        """
         draws = BKTModelBase._extract_param_draws(fit, param_name)
         if point_estimate == "mean":
             return float(np.mean(draws))
@@ -891,28 +794,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def _extract_param_draws(
         fit: CmdStanFit, param_name: str
     ) -> npt.NDArray[np.float64]:
-        """Extract 1D draws for a parameter across CmdStan fit types.
-
-        Parameters
-        ----------
-        fit : CmdStanFit
-            CmdStanPy fit object.
-        param_name : str
-            Parameter name to look up.
-
-        Returns
-        -------
-        npt.NDArray[np.float64]
-            Flattened vector of parameter values.
-
-        Raises
-        ------
-        ValueError
-            If parameter cannot be extracted from the fit object.
-        """
-
         def _to_1d(values: Any) -> npt.NDArray[np.float64]:
-            """Convert extracted values to a non-empty flattened float array."""
             array: npt.NDArray[np.float64] = np.asarray(values, dtype=np.float64)
             if array.size == 0:
                 raise ValueError(f"No values found for parameter '{param_name}'.")
@@ -966,11 +848,6 @@ class BKTModelBase(VerboseMixin, ABC):
 
     @staticmethod
     def _find_param_series(df: pd.DataFrame, param_name: str) -> Optional[pd.Series]:
-        """Find a parameter column in a draws DataFrame.
-
-        Supports bare, indexed, and dotted naming conventions produced by
-        different CmdStanPy outputs.
-        """
         exact_candidates = [param_name, f"{param_name}[1]", f"{param_name}.1"]
         for col in exact_candidates:
             if col in df.columns:
@@ -1020,41 +897,10 @@ class BKTModelBase(VerboseMixin, ABC):
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
-        seed: Optional[int] = None,
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
-        """Generate posterior predictions of student knowledge at each step.
-
-        Generates predictions of hidden knowledge state for each student-problem interaction
-        using the posterior distribution from the fitted model.
-
-        Parameters
-        ----------
-        data : Optional[pd.DataFrame]
-            Input interaction data. If None, must provide posterior_draws.
-        column_mapping : Optional[dict[str, str]]
-            Mapping of standard column names (student_id, problem_id, etc.) to actual column names.
-        posterior_draws : Optional[dict[str, pd.DataFrame]]
-            Precomputed posterior draws. If provided, data is ignored.
-        output : PosteriorPredictionOutput, default "default"
-            Output format: "default" for cleaned DataFrames, "summary" for summary stats,
-            "stan" for raw CmdStanGQ objects.
-        summary_quantiles : list[float], default [0.025, 0.975]
-            Quantiles for uncertainty intervals (summary output only).
-        seed : Optional[int]
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]
-            Posterior predictions in requested format. Format depends on output parameter.
-
-        Raises
-        ------
-        ValueError
-            If neither data nor posterior_draws is provided, or if output format is invalid.
-        """
         self._check_predict_posterior_args(
             data=data,
+            calling_method="predict_posterior",
             posterior_draws=posterior_draws,
             output=output,
         )
@@ -1094,7 +940,6 @@ class BKTModelBase(VerboseMixin, ABC):
                 data=data,
                 gq_model=self._hidden_states_model,
                 column_mapping=column_mapping,
-                seed=seed,
             )
 
             if output == "stan":
@@ -1126,47 +971,10 @@ class BKTModelBase(VerboseMixin, ABC):
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
-        seed: Optional[int] = None,
     ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
-        """Generate smoothed posterior predictions of student knowledge.
-
-        Similar to predict_posterior but uses fixed-interval smoothing to generate
-        predictions that account for both past and future information in the observed sequence.
-        Smoothed estimates typically have lower variance than filtered estimates.
-
-        Parameters
-        ----------
-        data : Optional[pd.DataFrame]
-            Input interaction data. If None, must provide posterior_draws.
-        column_mapping : Optional[dict[str, str]]
-            Mapping of standard column names (student_id, problem_id, etc.) to actual column names.
-        posterior_draws : Optional[dict[str, pd.DataFrame]]
-            Precomputed smoothed posterior draws. If provided, data is ignored.
-        output : PosteriorPredictionOutput, default "default"
-            Output format: "default" for cleaned DataFrames, "summary" for summary stats,
-            "stan" for raw CmdStanGQ objects.
-        summary_quantiles : list[float], default [0.025, 0.975]
-            Quantiles for uncertainty intervals (summary output only).
-        seed : Optional[int]
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]
-            Smoothed posterior predictions in requested format. Format depends on output parameter.
-
-        Raises
-        ------
-        ValueError
-            If neither data nor posterior_draws is provided, or if output format is invalid.
-
-        Notes
-        -----
-        Smoothing uses future observations to improve state estimates at earlier time points.
-        This is appropriate for retrospective analysis (e.g. experiments or historical data) but not for real-time prediction scenarios.
-        """
         self._check_predict_posterior_args(
             data=data,
+            calling_method="predict_smoothed_posterior",
             posterior_draws=posterior_draws,
             output=output,
         )
@@ -1209,7 +1017,6 @@ class BKTModelBase(VerboseMixin, ABC):
                 data=data,
                 gq_model=self._smoothed_hidden_states_model,
                 column_mapping=column_mapping,
-                seed=seed,
             )
 
             if output == "stan":
@@ -1225,6 +1032,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     posterior_draws,
                     column_mapping,
                     quantiles=summary_quantiles,
+                    pCorrectness=False,
                 )
             return posterior_draws
 
@@ -1239,26 +1047,7 @@ class BKTModelBase(VerboseMixin, ABC):
         data: pd.DataFrame,
         gq_model: csp.CmdStanModel,
         column_mapping: Optional[dict[str, str]] = None,
-        seed: Optional[int] = None,
     ) -> dict[str, csp.CmdStanGQ]:
-        """Run generated quantities for each KC using fitted posteriors.
-
-        Parameters
-        ----------
-        data : pd.DataFrame
-            Input interaction data.
-        gq_model : csp.CmdStanModel
-            Compiled generated-quantities Stan model.
-        column_mapping : Optional[dict[str, str]], optional
-            Column mapping used to parse interactions.
-        seed : Optional[int], optional
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        dict[str, csp.CmdStanGQ]
-            Mapping from KC ID to generated-quantities fit object.
-        """
 
         if self.fits is None:
             raise RuntimeError(
@@ -1279,11 +1068,10 @@ class BKTModelBase(VerboseMixin, ABC):
             if kc_fit_result is None:
                 continue
 
-            data_dict = self._build_stan_data_dict(kc_data, None)
+            data_dict = self._build_stan_data_dict(kc_data)
             gq_fit = gq_model.generate_quantities(
                 data=data_dict,
                 previous_fit=kc_fit_result,
-                seed=seed,
             )
 
             gq_kc_fit[kc_id_str] = gq_fit
@@ -1398,68 +1186,43 @@ class BKTModelBase(VerboseMixin, ABC):
         gq_dict: dict[str, pd.DataFrame],
         col_mapping: dict[str, str],
         quantiles=(0.025, 0.975),
+        pCorrectness=True,
     ) -> pd.DataFrame:
-        """Summarize posterior prediction draws by student-problem interaction.
-
-        Parameters
-        ----------
-        gq_dict : dict[str, pd.DataFrame]
-            Per-KC posterior draw tables.
-        col_mapping : dict[str, str]
-            Column mapping for identifier fields.
-        quantiles : tuple[float, ...], default (0.025, 0.975)
-            Quantiles to compute in addition to mean/std/median.
-
-        Returns
-        -------
-        pd.DataFrame
-            Long-format summary with one row per KC/student/problem interaction.
-        """
         if not gq_dict:
             raise ValueError("Input Dict is empty.")
 
         if not all(0 <= q <= 1 for q in quantiles):
             raise ValueError("Quantiles must be between 0 and 1.")
 
-        stat_labels = ["mean", "std", "median"] + [f"{q * 100:.2f}%" for q in quantiles]
-        ordered_params = [_PKNOW, _PCORRECT]
-        summary_cols = [
-            f"{col}_{stat}" for col in ordered_params for stat in stat_labels
-        ]
+        stat_fns: list[tuple[str, Any]] = [
+            ("mean", "mean"),
+            ("std", "std"),
+            ("median", "median"),
+        ] + [(f"{q * 100:.2f}%", (lambda s, q=q: s.quantile(q))) for q in quantiles]
+        summary_cols = [f"{_PKNOW}_{stat}" for stat, _ in stat_fns]
+        if pCorrectness:
+            summary_cols += [f"{_PCORRECT}_{stat}" for stat, _ in stat_fns]
         param_id_cols = [
             col_mapping.get(ColumnNames.STUDENT_ID),
             col_mapping.get(ColumnNames.PROBLEM_ID),
             col_mapping.get(ColumnNames.CORRECTNESS),
         ]
-        q_vals = list(quantiles)
         result_frames: list[pd.DataFrame] = []
         for kc, gq_kc_df in gq_dict.items():
             if gq_kc_df.empty:
                 continue
 
-            agg_cols = [c for c in ordered_params if c in gq_kc_df.columns]
-            grouped = gq_kc_df.groupby(param_id_cols, sort=False)[agg_cols]
-
-            # Base stats via single optimized Cython path
-            base = grouped.agg(["mean", "std", "median"])
-            base.columns = [f"{col}_{stat}" for col, stat in base.columns]
-
-            # Quantiles: one optimized Cython call per quantile, no per-group Python lambdas
-            if q_vals:
-                q_parts = []
-                for q in q_vals:
-                    qf = grouped.quantile(q).rename(
-                        columns={col: f"{col}_{q * 100:.2f}%" for col in agg_cols}
-                    )
-                    q_parts.append(qf)
-                gq_kc_summary = pd.concat([base] + q_parts, axis=1)
-            else:
-                gq_kc_summary = base
-
-            ordered_value_cols = [
-                col for col in summary_cols if col in gq_kc_summary.columns
-            ]
-            gq_kc_summary = gq_kc_summary[ordered_value_cols].reset_index()
+            agg_cols = [c for c in [_PKNOW, _PCORRECT] if c in gq_kc_df.columns]
+            agg_kwargs = {
+                f"{col}_{stat}": pd.NamedAgg(column=col, aggfunc=fn)
+                for col in agg_cols
+                for stat, fn in stat_fns
+            }
+            gq_kc_summary: pd.DataFrame = (
+                gq_kc_df.groupby(param_id_cols, sort=False)
+                .agg(**agg_kwargs)
+                .reset_index()
+            )
             gq_kc_summary.sort_values(
                 by=param_id_cols, inplace=True, key=natsort_keygen()
             )
@@ -1474,18 +1237,10 @@ class BKTModelBase(VerboseMixin, ABC):
     @staticmethod
     def _check_predict_posterior_args(
         data: Optional[pd.DataFrame],
+        calling_method: Literal["predict_posterior", "predict_smoothed_posterior"],
         posterior_draws: Optional[dict[str, pd.DataFrame]],
         output: PosteriorPredictionOutput,
     ):
-        """Validate inputs for posterior prediction APIs.
-
-        Raises
-        ------
-        ValueError
-            If output argument is invalid.
-        TypeError
-            If posterior_draws has incompatible type for requested output mode.
-        """
         if output not in get_args(PosteriorPredictionOutput):
             raise ValueError(
                 f"Invalid value for 'output': '{output}'. "
@@ -1506,6 +1261,15 @@ class BKTModelBase(VerboseMixin, ABC):
                 "'posterior_draws' must be a dict mapping knowledge component IDs to "
                 "pd.DataFrame or CmdStanGQ objects. Pass the return value of a previous "
                 "call as 'posterior_draws'."
+            )
+
+        if calling_method not in (
+            "predict_posterior",
+            "predict_smoothed_posterior",
+        ):
+            raise ValueError(
+                f"Invalid calling method: '{calling_method}'. "
+                "Expected 'predict_posterior' or 'predict_smoothed_posterior'."
             )
 
         if output == "stan":
@@ -1530,35 +1294,15 @@ class BKTModelBase(VerboseMixin, ABC):
     @property
     @abstractmethod
     def _stan_hidden_filename(self) -> str:
-        """Return path to Stan file used for hidden-state GQ predictions."""
         pass
 
     @property
     @abstractmethod
     def _stan_smoothed_hidden_filename(self) -> str:
-        """Return path to Stan file used for smoothed-state GQ predictions."""
         pass
 
     @abstractmethod
-    def _build_stan_data_dict(
-        self, kc_data: KCData, priors: Optional[BayesianPriors] = None
-    ) -> dict[str, Any]:
-        """Build Stan data dictionary for a single KC interaction bundle.
-
-        Parameters
-        ----------
-        kc_data : KCData
-            Preprocessed KC-specific interaction data.
-        priors : BayesianPriors, optional
-            BayesianPriors object containing the prior specifications for the model parameters for this KC.
-            If None, the priors will not be added to the return dict.
-
-
-        Returns
-        -------
-        dict[str, Any]
-            Stan-compatible data payload.
-        """
+    def _build_stan_data_dict(self, kc_data: KCData) -> dict[str, Any]:
         raise NotImplementedError(
             "Subclasses must implement _build_stan_data_dict to support posterior predictions."
         )

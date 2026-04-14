@@ -1,5 +1,5 @@
 from cmdstanpy import CmdStanMCMC
-from stanbkt.fits.core.base import BaseFit
+from stanbkt.fits.core.base import FitBase
 import json
 import pytest
 import numpy as np
@@ -9,7 +9,7 @@ import zipfile
 from unittest.mock import MagicMock
 
 from stanbkt.models.core.base import BKTModelBase
-from stanbkt.models.priors import BayesianPriors
+from stanbkt.models.priors import StandardPriors
 from stanbkt.models.model_types import ModelType, InitKnowledgeStrategy
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX
@@ -52,7 +52,7 @@ class _ConcreteModel(BKTModelBase):
         return {"correctness": kc_data.correctness}
 
     def _default_priors(self):
-        return BayesianPriors()
+        return StandardPriors()
 
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (
@@ -64,7 +64,7 @@ class _ConcreteModel(BKTModelBase):
         )
 
 
-class DummyFit(BaseFit):
+class DummyFit(FitBase):
 
     @property
     def _fit_method(self):
@@ -81,7 +81,7 @@ def _make_fitted_model(kcs=("kc_a", "kc_b")):
     """Return a model whose _is_fitted and fits reflect a completed fit."""
     model = _ConcreteModel()
     model._is_fitted = True
-    model.fits: BaseFit = DummyFit()
+    model.fits: FitBase = DummyFit()
     # bypass add_fit since we don't have actual fit objects to add, but want the fitted KC keys to be present in the model's fit state
     model.fits.stan_fits = {kc: object() for kc in kcs}  # ty:ignore[invalid-assignment]
     model.fits.num_fitted_kcs = len(kcs)
