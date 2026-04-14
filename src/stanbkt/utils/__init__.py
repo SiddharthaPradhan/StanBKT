@@ -13,6 +13,7 @@ from stanbkt.utils.data_utils import ColumnNames, KCData, validate_data, format_
 from stanbkt.utils.verbose import VerbosityLevel
 from stanbkt.utils.sim import sim_simple_BKT
 from stanbkt.utils.model_archive import pack_model_directory, unpack_model_archive
+from stanbkt.utils.metrics import accuracy, rmse, auc
 
 # add RTools to PATH
 if is_sys_windows():
@@ -41,4 +42,8 @@ __all__ = [
     "sim_simple_BKT",
     # CmdStanPy setup
     "setup_cmdstanpy",
+    # Metrics
+    "accuracy",
+    "rmse",
+    "auc",
 ]

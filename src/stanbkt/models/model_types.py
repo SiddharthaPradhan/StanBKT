@@ -24,7 +24,6 @@ class ModelType(StrEnum):
     NESTED = "nested"
 
 
-# TODO need better names for these, ASK Prof. Adam
 class InitKnowledgeStrategy(StrEnum):
     """Enumeration of initial knowledge estimation strategies.
 
