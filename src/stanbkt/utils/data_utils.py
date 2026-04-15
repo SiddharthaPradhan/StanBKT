@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import pandas as pd
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Union
+from collections.abc import Mapping
 import numpy.typing as npt
 import numpy as np
 from dataclasses import dataclass
@@ -57,7 +60,9 @@ class ColumnNames(StrEnum):
         return {col: col for col in ColumnNames}
 
     @staticmethod
-    def apply_default_mapping(col_mapping: Optional[dict[str, str]]) -> dict[str, str]:
+    def apply_default_mapping(
+        col_mapping: Optional[Mapping[str, str]],
+    ) -> dict[str, str]:
         """Apply default mapping to fill missing column name mappings.
 
         For any standard column not in the provided mapping, uses the default
@@ -65,21 +70,19 @@ class ColumnNames(StrEnum):
 
         Parameters
         ----------
-        col_mapping : Optional[dict[str, str]]
+        col_mapping : Optional[Union[dict[str, str], dict[ColumnNames, str]]]
             User-provided column name mapping. If None, treated as empty dict.
 
         Returns
         -------
-        dict[str, str]
+        dict[str | ColumnNames, str]
             Complete column mapping with defaults applied.
         """
-        if not col_mapping:
-            col_mapping = {}
-        col_mapping = col_mapping.copy()
+        result: dict[str, str] = dict(col_mapping) if col_mapping else {}
         default_mapping = ColumnNames.get_default_mapping()
         for key in default_mapping.keys():
-            col_mapping.setdefault(key, default_mapping[key])
-        return col_mapping
+            result.setdefault(key, default_mapping[key])
+        return result
 
 
 # the basic columns required for any BKT model fitting.
@@ -165,6 +168,9 @@ def validate_data(
     ValueError
         If required columns are missing or if correctness values are not binary.
     """
+    # check if dataframe is empty
+    if data.empty:
+        raise ValueError("Input data is empty.")
 
     required_cols_mapped: set[str] = {
         col_mapping.get(col, col) for col in BASE_REQUIRED_COLS
@@ -192,7 +198,7 @@ def validate_data(
 
 def format_kc_data(
     data: pd.DataFrame,
-    col_mapping: Optional[dict[str, str]] = None,
+    col_mapping: Optional[Mapping[str, str]] = None,
     return_groups: bool = False,
     print_fn: Optional[Callable] = None,
 ) -> dict[str, KCData]:
@@ -227,7 +233,7 @@ def format_kc_data(
 
 def iter_kc_data(
     data: pd.DataFrame,
-    col_mapping: Optional[dict[str, str]] = None,
+    col_mapping: Optional[Mapping[str, str]] = None,
     return_groups: bool = False,
     print_fn: Optional[Callable] = None,
 ) -> Iterator[tuple[str, KCData]]:

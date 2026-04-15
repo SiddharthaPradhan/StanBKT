@@ -326,7 +326,7 @@ class StandardPriors(PriorsBase):
                     f"Invalid model class: {StandardPriors.__name__} should be used with {StandardPriors.expected_class().__name__}, "
                     f"got {model_class.__name__}"
                 )
-            if not isinstance(value, (float, type(None))):
+            if not isinstance(value, (int, float, type(None))):
                 raise ValueError(
                     f"Invalid prior value type for {key}: expected float, or None, got {type(value).__name__}"
                 )
@@ -409,17 +409,17 @@ class MultiPriors(PriorsBase):
     """
 
     # Note: any changes here should also be reflected in the default priors returned by _get_default_priors()
-    learn_mu: float | list[float | None] | None | _UnsetType = _UNSET
-    learn_std: float | list[float | None] | None | _UnsetType = _UNSET
-    forget_mu: float | list[float | None] | None | _UnsetType = _UNSET
-    forget_std: float | list[float | None] | None | _UnsetType = _UNSET
-    guess_mu: float | list[float | None] | None | _UnsetType = _UNSET
-    guess_std: float | list[float | None] | None | _UnsetType = _UNSET
-    slip_mu: float | list[float | None] | None | _UnsetType = _UNSET
-    slip_std: float | list[float | None] | None | _UnsetType = _UNSET
+    learn_mu: float | list[float] | None | _UnsetType = _UNSET
+    learn_std: float | list[float] | None | _UnsetType = _UNSET
+    forget_mu: float | list[float] | None | _UnsetType = _UNSET
+    forget_std: float | list[float] | None | _UnsetType = _UNSET
+    guess_mu: float | list[float] | None | _UnsetType = _UNSET
+    guess_std: float | list[float] | None | _UnsetType = _UNSET
+    slip_mu: float | list[float] | None | _UnsetType = _UNSET
+    slip_std: float | list[float] | None | _UnsetType = _UNSET
 
-    pi_know_mu: float | list[float | None] | None | _UnsetType = _UNSET
-    pi_know_std: float | list[float | None] | None | _UnsetType = _UNSET
+    pi_know_mu: float | list[float] | None | _UnsetType = _UNSET
+    pi_know_std: float | list[float] | None | _UnsetType = _UNSET
 
     def expected_class() -> type[BKTModelBase]:
         """Return the expected BKT model class type for these priors."""
@@ -492,7 +492,7 @@ class MultiPriors(PriorsBase):
 
     @staticmethod
     def _expand_grouped_priors(
-        scalar_priors: dict[str, float | None],
+        scalar_priors: Union[dict[str, float | None], dict[str, list[float | None]]],
         n_groups: int,
     ) -> dict[str, float | list[float | None] | None]:
         """Expand scalar priors to grouped model format.
@@ -522,6 +522,7 @@ class MultiPriors(PriorsBase):
                 if prior
                 in JOINT_STRATEGY_KEYS  # leave as is if priors is for joint strategy
                 or isinstance(value, list)  # or is already a list
+                or n_groups < 1  # or no groups specified
                 else ([value] * n_groups)
             )
             for prior, value in scalar_priors.items()
@@ -587,7 +588,6 @@ class MultiPriors(PriorsBase):
         # need to ignore invalid-argument-type as ty cannot infer that the dict
         # output of _expand_grouped_priors is compatible with the MultiPriors
         # constructor due to the dynamic typing of the values (float | list[float | None] | None)
-        # use_defaults=False: all values are already explicitly provided, avoids recursion
         return MultiPriors(
             **priors, use_defaults=False  # ty:ignore[invalid-argument-type]
         ).to_dict(estimation_type=estimation_type)

@@ -9,11 +9,11 @@ should inherit from.
 from __future__ import annotations
 from natsort import natsort_keygen
 import re
-import stanbkt
 from stanbkt.fits.fit_factory import FitFactory
 import json
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any, Dict, Literal, Optional, Tuple, Union, Final, get_args, Callable
 import numpy as np
 import numpy.typing as npt
@@ -33,7 +33,7 @@ from stanbkt.models.model_types import (
     PosteriorPredictionOutput,
 )
 from stanbkt.models.error import FitMethodMismatchError
-from stanbkt.models.priors import StandardPriors
+from stanbkt.models.priors import PriorsBase
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
@@ -57,6 +57,15 @@ class BKTModelBase(VerboseMixin, ABC):
     ----------
     fit_method : FitMethod
         The method used for fitting the model (e.g., MCMC, VB, MAP).
+    individual_initial_knowledge : bool
+        Whether to initial know states are individualized to the student. If False,
+        a single initial knowledge parameter is estimated for all students.
+    initital_knowledge_strategy : InitKnowledgeStrategy
+        Strategy for estimating initial knowledge. This is only applicable if `individual_initial_knowledge` is True.
+        When  this is set to `CORRECTNESS_ONLY`, only the correctness data is used to estimate initial knowledge.
+        When `JOINT`, model requires student level covariate (e.g. pretest) to jointly estimate initial knowledge (uses correctness and covariate).
+        For example, `CORRECTNESS_ONLY` uses only the correctness of the first interaction for each student to inform
+        initial knowledge estimates, while `FIRST_INTERACTION` uses the correctness of the first interaction with each KC for each student.
     verbose : VerbosityLevel
         Verbosity level for logging.
     stan_compile_kwargs : dict
@@ -70,10 +79,23 @@ class BKTModelBase(VerboseMixin, ABC):
     def __init__(
         self,
         fit_method: FitMethod | str = FitMethod.MCMC,
+        individual_initial_knowledge: bool = False,
+        init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
     ):
+
+        # verify if initial_knowledge_strategy is valid given the individual_initial_knowledge setting
+        if (
+            not individual_initial_knowledge
+            and init_knowledge_strategy != InitKnowledgeStrategy.CORRECTNESS_ONLY
+        ):
+            raise ValueError(
+                f"Invalid combination of 'individual_initial_knowledge' and 'init_knowledge_strategy'. "
+                f"When 'individual_initial_knowledge' is False, 'init_knowledge_strategy' must be 'CORRECTNESS_ONLY'. "
+                f"Got individual_initial_knowledge={individual_initial_knowledge} and init_knowledge_strategy={init_knowledge_strategy}."
+            )
         super().__init__(verbose=verbose)
         resolved_fit_method = FitMethod(fit_method)
         self._fit_method: Final[FitMethod] = resolved_fit_method
@@ -85,6 +107,8 @@ class BKTModelBase(VerboseMixin, ABC):
         # TODO: catch the Error thrown and re-raise with custom error for invalid
         self.stan_compile_kwargs: dict[str, Any] = stan_compile_kwargs or {}
         self.cpp_compile_kwargs: dict[str, Any] = cpp_compile_kwargs or {}
+        self.individual_initial_knowledge: bool = individual_initial_knowledge
+        self.init_knowledge_strategy: InitKnowledgeStrategy = init_knowledge_strategy
         # Model is instantiated lazily during first fit and cached
         self._stan_model: Optional[csp.CmdStanModel] = None
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
@@ -120,15 +144,17 @@ class BKTModelBase(VerboseMixin, ABC):
             f"is_fitted={self._is_fitted})"
         )
 
-    @abstractmethod
     def fit(
         self,
         data: pd.DataFrame,
-        column_mapping: Optional[dict[str, str]] = None,
+        priors: Optional[dict[str, PriorsBase] | PriorsBase] = None,
+        column_mapping: Optional[Mapping[str, str]] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
+        overwrite_kcs: bool = False,
     ) -> BKTModelBase:
         """
-        Fit the BKT model to data.
+        Fit the BKT model to data. Each KC is fitted independently with its own model.
+        Additional KCs can be fitted by calling fit again with new data.
 
         Parameters
         ----------
@@ -136,29 +162,124 @@ class BKTModelBase(VerboseMixin, ABC):
             DataFrame containing the training data. Must include columns for:
             Student ID, Problem ID, and Correctness (0/1).
             If the KC column is absent, all interactions are assumed to belong to a single knowledge component.
+        priors : dict[str, BayesianPriors] or BayesianPriors, optional
+            Prior specifications for the model parameters. Can be provided as:
+            - A single BayesianPriors object applied to all KCs.
+            - A dictionary mapping KC IDs to their specific BayesianPriors.
+            If None, default priors will be used for all KCs.
         column_mapping : dict, optional
             Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
             If None, default column names are used.
         stan_fit_options : StanFitOptions or dict, optional
-            Arguments to pass to the CmdStanPy fit method. It is recommended to use the typed
-            :class:`StanFitOptions`, but a raw dictionary of option, value pairs can also be passed. See :externa
-            For example:
-            - MCMC parameters (e.g., iter_sampling, chains, seed)
-            - VB parameters (e.g., iter, tol_rel_obj)
+                Additional keyword arguments to pass to the Stan fitting method. If a dict is passed, it will be forwarded as-is to the CmdStanPy fit method.
+                It is recommended to use the typed :class:`StanFitOptions` for better type checking and validation. The accepted options depend on the chosen fit method. For example:
+                - MCMC parameters (e.g., iter_sampling, chains, seed)
+                - VB parameters (e.g., iter, tol_rel_obj)
+                If None, default fitting options for the chosen fit method will be used.
+        overwrite_kcs : bool, default=False
+            Whether to overwrite existing fits for KCs that are already fitted.
+            If False, an error will be raised if attempting to fit a KC that already has a fit.
+            If True, existing fits for the same KCs will be overwritten with the new fits.
 
 
         Returns
         -------
-        self
-            Returns self for method chaining.
+        BKTModelBase
+            The fitted BKT model instance.
 
         Raises
         ------
         ValueError
-            If data validation fails, invalid method specified, or invalid fit arguments provided.
-
+            If data validation fails or invalid method specified.
         """
-        pass
+
+        # Intialize new fits object if not already initialized.
+        if self.fits is None:
+            self.fits = self.fit_class()
+
+        if self._stan_model is None:
+            self._compile_model(self._stan_model_filename)
+
+        # ensure _compile_model succeeded before proceeding
+        # this helps with: (1) type checking and  (2) catches any missed compilation failures
+        if self._stan_model is None:
+            raise RuntimeError(
+                "Stan model compilation failed. The model object is None after compilation. "
+                "Ensure the Stan source file is valid and that CmdStanPy is correctly installed."
+            )
+
+        # validate priors
+        if priors is None:
+            # use default priors for all KCs
+            self.log(
+                "No priors provided, using default priors for all KCs.",
+                level=VerbosityLevel.DEBUG,
+            )
+            priors = self._default_priors()
+        else:
+            self._default_priors_class()._validate(
+                priors, type(self), self.init_knowledge_strategy
+            )
+
+        # check stan_fit_options
+        if stan_fit_options is None:
+            stan_fit_options = FitFactory.create_default_fit_options(self._fit_method)
+        else:
+            # convert to StanFitOptions if it is a dict, mainly for better type checking and validation,
+            # but also to ensure compatibility with the FitFactory verification method
+            if isinstance(stan_fit_options, dict):
+                stan_fit_options = FitFactory.create_fit_options_from_dict(
+                    stan_fit_options, self._fit_method
+                )
+            # verify compatibility of provided options with the fit method
+            FitFactory.verify_fit_options_compatibility(
+                stan_fit_options, self._fit_method
+            )
+
+        for kc_id, kc_data in iter_kc_data(
+            data=data,
+            col_mapping=column_mapping,
+            return_groups=False,
+            print_fn=self.log,
+        ):
+            if self.fits.has_kc(str(kc_id)):
+                if not overwrite_kcs:
+                    raise ValueError(
+                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
+                    )
+
+            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+
+            # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
+            kc_priors = (
+                priors.get(
+                    str(kc_id), self._default_priors()
+                )  # ty:ignore[no-matching-overload]
+                if isinstance(priors, dict)
+                else priors
+            )
+            data_dict = self._build_stan_data_dict(kc_data, kc_priors)
+            fit_result = self._fit_stan_model_using_method(
+                data_dict=data_dict, fit_options=stan_fit_options
+            )
+            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
+            self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+            self._is_fitted = True
+        return self
+
+    @abstractmethod
+    def _default_priors(self) -> PriorsBase:
+        """Return default priors for the model parameters."""
+        raise NotImplementedError(
+            "Subclasses must implement the _default_priors method to provide default priors."
+        )
+
+    @abstractmethod
+    def _default_priors_class(self) -> type[PriorsBase]:
+        """Return default priors class for the model parameters."""
+        raise NotImplementedError(
+            "Subclasses must implement the _default_priors_class method to provide default priors class."
+        )
 
     def _fit_stan_model_using_method(
         self, data_dict: dict[str, Any], fit_options: StanFitOptions
@@ -303,8 +424,8 @@ class BKTModelBase(VerboseMixin, ABC):
     def predict(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[dict[str, str]] = None,
-        point_estimate: Literal["mean", "median"] = "mean",
+        column_mapping: Optional[Mapping[str, str]] = None,
+        point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
     ) -> pd.DataFrame:
@@ -314,8 +435,8 @@ class BKTModelBase(VerboseMixin, ABC):
         if data is None:
             raise ValueError("'data' must be provided for point-estimate prediction.")
 
-        if point_estimate not in ("mean", "median"):
-            raise ValueError("'point_estimate' must be either 'mean' or 'median'.")
+        if point_estimate not in ("mean", "median", "mode"):
+            raise ValueError("'point_estimate' must be 'mean', 'median', or 'mode'.")
 
         column_mapping = ColumnNames.apply_default_mapping(column_mapping)
         kc_column_name = column_mapping[ColumnNames.KC_ID]
@@ -329,7 +450,7 @@ class BKTModelBase(VerboseMixin, ABC):
             set(working_data[kc_column_name].astype(str).unique())
         )
         overlapping_kcs = self.get_kcs_in_fitted_kcs(
-            set(working_data[kc_column_name].unique())
+            set(working_data[kc_column_name].astype(str).unique())
         )
         filtered_data = working_data.loc[
             working_data[kc_column_name].isin(overlapping_kcs)
@@ -340,6 +461,19 @@ class BKTModelBase(VerboseMixin, ABC):
                 "The fits container has not been initialized. Ensure the model has been "
                 "successfully fitted before calling prediction methods."
             )
+
+        if filtered_data.empty:
+            return pd.DataFrame(
+                columns=[
+                    ColumnNames.KC_ID,
+                    ColumnNames.STUDENT_ID,
+                    ColumnNames.PROBLEM_ID,
+                    "pKnow",
+                    "pCorrectness",
+                    ColumnNames.CORRECTNESS,
+                ]
+            )
+
         # compile and cache the numba function
         njit_predict_numba: Callable = njit(
             fastmath=fast_math, parallel=parallel, cache=True
@@ -396,8 +530,8 @@ class BKTModelBase(VerboseMixin, ABC):
     def predict_smoothed_states(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[dict[str, str]] = None,
-        point_estimate: Literal["mean", "median"] = "mean",
+        column_mapping: Optional[Mapping[str, str]] = None,
+        point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
     ) -> pd.DataFrame:
@@ -407,8 +541,8 @@ class BKTModelBase(VerboseMixin, ABC):
         if data is None:
             raise ValueError("'data' must be provided for point-estimate prediction.")
 
-        if point_estimate not in ("mean", "median"):
-            raise ValueError("'point_estimate' must be either 'mean' or 'median'.")
+        if point_estimate not in ("mean", "median", "mode"):
+            raise ValueError("'point_estimate' must be 'mean', 'median', or 'mode'.")
 
         column_mapping = ColumnNames.apply_default_mapping(column_mapping)
         kc_column_name = column_mapping[ColumnNames.KC_ID]
@@ -422,7 +556,7 @@ class BKTModelBase(VerboseMixin, ABC):
             set(working_data[kc_column_name].astype(str).unique())
         )
         overlapping_kcs = self.get_kcs_in_fitted_kcs(
-            set(working_data[kc_column_name].unique())
+            set(working_data[kc_column_name].astype(str).unique())
         )
         filtered_data = working_data.loc[
             working_data[kc_column_name].isin(overlapping_kcs)
@@ -432,6 +566,18 @@ class BKTModelBase(VerboseMixin, ABC):
             raise RuntimeError(
                 "The fits container has not been initialized. Ensure the model has been "
                 "successfully fitted before calling prediction methods."
+            )
+
+        if filtered_data.empty:
+            return pd.DataFrame(
+                columns=[
+                    ColumnNames.KC_ID,
+                    ColumnNames.STUDENT_ID,
+                    ColumnNames.PROBLEM_ID,
+                    "pKnow",
+                    "pCorrectness",
+                    ColumnNames.CORRECTNESS,
+                ]
             )
 
         # compile and cache the numba function
@@ -767,7 +913,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         fit: CmdStanFit,
         n_students: int,
-        point_estimate: Literal["mean", "median"] = "mean",
+        point_estimate: Literal["mean", "median", "mode"] = "mean",
     ) -> tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
@@ -779,15 +925,26 @@ class BKTModelBase(VerboseMixin, ABC):
         raise NotImplementedError
 
     @staticmethod
+    def _modal_estimate(draws: npt.NDArray[np.float64]) -> float:
+        """Compute a simple modal estimate from the draws using histogram binning.
+        This is simple and fast. May need to look into using a KDE approach for smoother estimates.
+        """
+        counts, edges = np.histogram(draws, bins="auto")
+        idx = int(np.argmax(counts))
+        return float(0.5 * (edges[idx] + edges[idx + 1]))
+
+    @staticmethod
     def _extract_param_point_estimate(
         fit: CmdStanFit,
         param_name: str,
-        point_estimate: Literal["mean", "median"] = "mean",
+        point_estimate: Literal["mean", "median", "mode"] = "mean",
     ) -> float:
         draws = BKTModelBase._extract_param_draws(fit, param_name)
         if point_estimate == "mean":
             return float(np.mean(draws))
-        return float(np.median(draws))
+        if point_estimate == "median":
+            return float(np.median(draws))
+        return BKTModelBase._modal_estimate(draws)
 
     # TODO fix this monstrous function
     @staticmethod
@@ -893,7 +1050,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def predict_posterior(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[dict[str, str]] = None,
+        column_mapping: Optional[Mapping[str, str]] = None,
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
@@ -967,7 +1124,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def predict_smoothed_posterior(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[dict[str, str]] = None,
+        column_mapping: Optional[dict[str | ColumnNames, str]] = None,
         posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
         output: PosteriorPredictionOutput = "default",
         summary_quantiles: list[float] = [0.025, 0.975],
@@ -1046,7 +1203,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         data: pd.DataFrame,
         gq_model: csp.CmdStanModel,
-        column_mapping: Optional[dict[str, str]] = None,
+        column_mapping: Optional[dict[str | ColumnNames, str]] = None,
     ) -> dict[str, csp.CmdStanGQ]:
 
         if self.fits is None:
@@ -1302,9 +1459,27 @@ class BKTModelBase(VerboseMixin, ABC):
         pass
 
     @abstractmethod
-    def _build_stan_data_dict(self, kc_data: KCData) -> dict[str, Any]:
+    def _build_stan_data_dict(
+        self, kc_data: KCData, priors: Optional[PriorsBase] = None
+    ) -> dict[str, Any]:
+        """Build Stan data dictionary for a single KC interaction bundle.
+
+        Parameters
+        ----------
+        kc_data : KCData
+            Preprocessed KC-specific interaction data.
+        priors : PriorsBase, optional
+            Priors object containing the prior specifications for the model parameters for this KC.
+            If None, the priors will not be added to the return dict.
+
+
+        Returns
+        -------
+        dict[str, Any]
+            Stan-compatible data.
+        """
         raise NotImplementedError(
-            "Subclasses must implement _build_stan_data_dict to support posterior predictions."
+            "Subclasses must implement _build_stan_data_dict to support model estimation and posterior predictions."
         )
 
     def _compile_model(self, stan_file: str | os.PathLike[str]) -> None:

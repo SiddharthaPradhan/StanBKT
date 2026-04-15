@@ -54,6 +54,9 @@ class _ConcreteModel(BKTModelBase):
     def _default_priors(self):
         return StandardPriors()
 
+    def _default_priors_class(self):
+        return StandardPriors
+
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (
             np.full(n_students, 0.2),
@@ -128,6 +131,39 @@ class TestBKTModelBaseInit:
     def test_string_fit_method_is_normalized(self):
         m = _ConcreteModel(fit_method="mcmc")
         assert m._fit_method == FitMethod.MCMC
+
+    def test_individual_initial_knowledge_default_false(self):
+        m = _ConcreteModel()
+        assert m.individual_initial_knowledge is False
+
+    def test_individual_initial_knowledge_can_be_set_true(self):
+        m = _ConcreteModel(individual_initial_knowledge=True)
+        assert m.individual_initial_knowledge is True
+
+    def test_init_knowledge_strategy_default_correctness_only(self):
+        m = _ConcreteModel()
+        assert m.init_knowledge_strategy == InitKnowledgeStrategy.CORRECTNESS_ONLY
+
+    def test_init_knowledge_strategy_joint_allowed_with_individual_knowledge(self):
+        m = _ConcreteModel(
+            individual_initial_knowledge=True,
+            init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+        )
+        assert m.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
+
+    def test_init_knowledge_strategy_joint_without_individual_raises(self):
+        with pytest.raises(ValueError, match="individual_initial_knowledge"):
+            _ConcreteModel(
+                individual_initial_knowledge=False,
+                init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+            )
+
+    def test_invalid_init_strategy_error_message_includes_values(self):
+        with pytest.raises(ValueError, match="CORRECTNESS_ONLY"):
+            _ConcreteModel(
+                individual_initial_knowledge=False,
+                init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -234,8 +234,8 @@ class TestPredict:
     def test_predict_rejects_invalid_point_estimate(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
-        with pytest.raises(ValueError, match="'point_estimate' must be either"):
-            model.predict(data=_minimal_df(), point_estimate="mode")
+        with pytest.raises(ValueError, match="'point_estimate' must be"):
+            model.predict(data=_minimal_df(), point_estimate="garbage")
 
     def test_predict_returns_default_output(self, monkeypatch):
         model = StandardBKT()
@@ -284,8 +284,8 @@ class TestPredict:
     def test_predict_smoothed_states_rejects_invalid_point_estimate(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
-        with pytest.raises(ValueError, match="'point_estimate' must be either"):
-            model.predict_smoothed_states(data=_minimal_df(), point_estimate="mode")
+        with pytest.raises(ValueError, match="'point_estimate' must be"):
+            model.predict_smoothed_states(data=_minimal_df(), point_estimate="garbage")
 
     def test_predict_smoothed_states_returns_dataframe(self, monkeypatch):
         model = StandardBKT()

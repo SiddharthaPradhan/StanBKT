@@ -69,6 +69,9 @@ class _FakeModel(BKTModelBase):
     def _default_priors(self):
         return StandardPriors()
 
+    def _default_priors_class(self):
+        return StandardPriors
+
     def _extract_bkt_params_from_fit(self, fit, n_students, point_estimate="mean"):
         return (
             np.full(n_students, 0.2),

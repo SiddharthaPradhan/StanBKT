@@ -1,7 +1,7 @@
 from __future__ import annotations
 from stanbkt.fits.fit_options import StanFitOptions
 from stanbkt.fits.fit_factory import FitFactory
-from stanbkt.models.priors import StandardPriors
+from stanbkt.models.priors import PriorsBase, StandardPriors
 from stanbkt.models.model_types import InitKnowledgeStrategy
 from importlib.resources import files
 from typing import Any, Optional, Union, Literal
@@ -51,26 +51,42 @@ class StandardBKT(BKTModelBase):
     def __init__(
         self,
         fit_method: FitMethod = FitMethod.MCMC,
+        individual_initial_knowledge: bool = False,
+        init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
     ):
         """Initialize a StandardBKT model instance.
 
-        Parameters
+        Attributes
         ----------
-        fit_method : FitMethod, default FitMethod.MCMC
-            The Bayesian inference method to use for fitting.
-        verbose : VerbosityLevel, default VerbosityLevel.INFO
+        fit_method : FitMethod
+            The method used for fitting the model (e.g., MCMC, VB, MAP).
+        individual_initial_knowledge : bool
+            Whether to initial know states are individualized to the student. If False,
+            a single initial knowledge parameter is estimated for all students.
+        initital_knowledge_strategy : InitKnowledgeStrategy
+            Strategy for estimating initial knowledge. This is only applicable if `individual_initial_knowledge` is True.
+            When  this is set to `CORRECTNESS_ONLY`, only the correctness data is used to estimate initial knowledge.
+            When `JOINT`, model requires student level covariate (e.g. pretest) to jointly estimate initial knowledge (uses correctness and covariate).
+            For example, `CORRECTNESS_ONLY` uses only the correctness of the first interaction for each student to inform
+            initial knowledge estimates, while `FIRST_INTERACTION` uses the correctness of the first interaction with each KC for each student.
+        verbose : VerbosityLevel
             Verbosity level for logging.
-        stan_compile_kwargs : dict | None, optional
-            Additional Stan compilation options.
-        cpp_compile_kwargs : dict | None, optional
-            Additional C++ compilation options.
+        stan_compile_kwargs : dict
+            Additional keyword arguments for Stan model compilation.
+        cpp_compile_kwargs : dict
+            Additional keyword arguments for C++ compilation of the Stan model.
+        fits : Optional[BaseFit]
+            Object to store fitted model results for each KC.
         """
+
         super().__init__(
             verbose=verbose,
             fit_method=fit_method,
+            individual_initial_knowledge=individual_initial_knowledge,
+            init_knowledge_strategy=init_knowledge_strategy,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
         )
@@ -113,8 +129,11 @@ class StandardBKT(BKTModelBase):
     def _default_priors(self):
         return StandardPriors(use_defaults=True)
 
+    def _default_priors_class(self):
+        return StandardPriors
+
     def _build_stan_data_dict(
-        self, kc_data: KCData, kc_priors: Optional[StandardPriors] = None
+        self, kc_data: KCData, priors: Optional[PriorsBase] = None
     ) -> dict[str, Any]:
         """Build data dictionary for the stan models.
 
@@ -122,8 +141,8 @@ class StandardBKT(BKTModelBase):
         ----------
         kc_data : KCData
             KCData object containing the correctness matrix and student interaction information for a single knowledge component.
-        priors : StandardPriors, optional
-            StandardPriors object containing the prior specifications for the model parameters for this KC.
+        priors : PriorsBase, optional
+            PriorsBase object containing the prior specifications for the model parameters for this KC.
             If None, priors are not added to the return dictionary.
 
         Returns
@@ -142,28 +161,37 @@ class StandardBKT(BKTModelBase):
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
         }
-        # define a list of parameters to be removed from the priors if they exist.
-        if kc_priors is not None:
-            for prior_param_key, value in kc_priors.to_dict(
-                InitKnowledgeStrategy.CORRECTNESS_ONLY
+        if priors is not None:
+            for prior_param_key, value in priors.to_dict(
+                self.init_knowledge_strategy
             ).items():
+                base_key = prior_param_key.removesuffix("_mu").removesuffix("_std")
                 if isinstance(value, list):
                     data_dict["prior_" + prior_param_key] = value
-                else:
+                    data_dict["unif_prior_" + base_key] = 0
+                elif isinstance(value, type(None)):
+                    data_dict["unif_prior_" + base_key] = 1
+                elif np.isscalar(value):  # scalar but stan expects array
                     data_dict["prior_" + prior_param_key] = [value]
+                    data_dict["unif_prior_" + base_key] = 0
+                else:
+                    raise ValueError(
+                        f"Unsupported prior value type for parameter '{prior_param_key}': {type(value)}. "
+                        "Expected list, or scalar."
+                    )
 
-            data_dict.update(kc_priors.to_dict(InitKnowledgeStrategy.CORRECTNESS_ONLY))
+            data_dict.update(priors.to_dict(self.init_knowledge_strategy))
         return data_dict
 
     def _extract_bkt_params_from_fit(
         self,
         fit,
         n_students: int,
-        point_estimate: Literal["mean", "median"] = "mean",
+        point_estimate: Literal["mean", "median", "mode"] = "mean",
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Extract BKT parameters from a fitted Stan model.
 
-        Extracts point estimates for each BKT parameter (prior knowledge, learn,
+        Extracts point estimates for each BKT parameter (`prior` knowledge, learn,
         forget, guess, slip) and expands them to match the student dimension.
 
         Parameters
@@ -172,7 +200,7 @@ class StandardBKT(BKTModelBase):
             Fitted Stan model object.
         n_students : int
             Number of students (used to broadcast scalar parameters to array form).
-        point_estimate : Literal["mean", "median"], default "mean"
+        point_estimate : Literal["mean", "median", "mode"], default "mean"
             Which point estimate to use (posterior mean or median).
 
         Returns
@@ -180,7 +208,7 @@ class StandardBKT(BKTModelBase):
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
             Tuple of (prior_know, learn, forget, guess, slip) arrays, each of shape (n_students,).
         """
-        prior = StandardBKT._extract_param_point_estimate(
+        init_know = StandardBKT._extract_param_point_estimate(
             fit, "pi_know", point_estimate
         )
         learn = StandardBKT._extract_param_point_estimate(fit, "learn", point_estimate)
@@ -191,108 +219,12 @@ class StandardBKT(BKTModelBase):
         slip = StandardBKT._extract_param_point_estimate(fit, "slip", point_estimate)
 
         return (
-            np.full(n_students, prior, dtype=np.float64),
+            np.full(n_students, init_know, dtype=np.float64),
             np.full(n_students, learn, dtype=np.float64),
             np.full(n_students, forget, dtype=np.float64),
             np.full(n_students, guess, dtype=np.float64),
             np.full(n_students, slip, dtype=np.float64),
         )
-
-    def fit(
-        self,
-        data: pd.DataFrame,
-        column_mapping: Optional[dict[str, str]] = None,
-        stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
-        overwrite_kcs: bool = False,
-    ) -> StandardBKT:
-        """
-        Fit the BKT model to data. Each KC is fitted independently with its own model.
-        Additional KCs can be fitted by calling fit again with new data.
-
-        Parameters
-        ----------
-        data : pd.DataFrame
-            DataFrame containing the training data. Must include columns for:
-            Student ID, Problem ID, and Correctness (0/1).
-            If the KC column is absent, all interactions are assumed to belong to a single knowledge component.
-        column_mapping : dict, optional
-            Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
-            If None, default column names are used.
-        stan_fit_options : StanFitOptions or dict, optional
-                Additional keyword arguments to pass to the Stan fitting method. If a dict is passed, it will be forwarded as-is to the CmdStanPy fit method.
-                It is recommended to use the typed :class:`StanFitOptions` for better type checking and validation. The accepted options depend on the chosen fit method. For example:
-                - MCMC parameters (e.g., iter_sampling, chains, seed)
-                - VB parameters (e.g., iter, tol_rel_obj)
-                If None, default fitting options for the chosen fit method will be used.
-        overwrite_kcs : bool, default=False
-            Whether to overwrite existing fits for KCs that are already fitted.
-            If False, an error will be raised if attempting to fit a KC that already has a fit.
-            If True, existing fits for the same KCs will be overwritten with the new fits.
-
-
-            Returns
-            -------
-            StandardBKT
-                The fitted StandardBKT model instance.
-
-            Raises
-            ------
-            ValueError
-                If data validation fails or invalid method specified.
-        """
-        # Intialize new fits object if not already initialized.
-        if self.fits is None:
-            self.fits = self.fit_class()
-
-        if self._stan_model is None:
-            self._compile_model(self._stan_model_filename)
-
-        # ensure _compile_model succeeded before proceeding
-        # this helps with: (1) type checking and  (2) catches any missed compilation failures
-        if self._stan_model is None:
-            raise RuntimeError(
-                "Stan model compilation failed. The model object is None after compilation. "
-                "Ensure the Stan source file is valid and that CmdStanPy is correctly installed."
-            )
-
-        # check stan_fit_options
-        if stan_fit_options is None:
-            stan_fit_options = FitFactory.create_default_fit_options(self._fit_method)
-        else:
-            # convert to StanFitOptions if it is a dict, mainly for better type checking and validation, but also to ensure compatibility with the FitFactory verification method
-            if isinstance(stan_fit_options, dict):
-                stan_fit_options = FitFactory.create_fit_options_from_dict(
-                    stan_fit_options, self._fit_method
-                )
-            # verify compatibility of provided options with the fit method
-            FitFactory.verify_fit_options_compatibility(
-                stan_fit_options, self._fit_method
-            )
-        # convert to dict for CmdStanPy
-        fit_options_dict = stan_fit_options.to_dict()
-
-        for kc_id, kc_data in iter_kc_data(
-            data=data,
-            col_mapping=column_mapping,
-            return_groups=False,
-            print_fn=self.log,
-        ):
-            if self.fits.has_kc(str(kc_id)):
-                if not overwrite_kcs:
-                    raise ValueError(
-                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
-                    )
-
-            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
-
-            data_dict = self._build_stan_data_dict(kc_data)
-            fit_result = self._fit_stan_model_using_method(
-                data_dict=data_dict, fit_options=stan_fit_options
-            )
-            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
-
-        self._is_fitted = True
-        return self
 
     def evaluate(self, **kwargs) -> dict[str, Any]:
         """Evaluate model performance (not yet implemented).

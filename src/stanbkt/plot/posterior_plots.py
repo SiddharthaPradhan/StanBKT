@@ -16,7 +16,7 @@ def plot_posterior_correctness(
     data: pd.DataFrame,
     kc: str,
     type: Literal["probs", "preds"],
-    point_estimate: Literal["mean", "median"] = "mean",
+    point_estimate: Literal["mean", "median", "mode"] = "mean",
     *,
     percentiles: tuple[float, float] = (2.5, 97.5),
     problem_ids: Optional[list[str]] = None,
@@ -37,8 +37,8 @@ def plot_posterior_correctness(
         The KC for which to plot posterior predictions.
     type : Literal["probs", "preds"]
         Whether the posterior predictions are probabilities ("probs") or binary predictions ("preds").
-    point_estimate : Literal["mean", "median"], optional, default "mean"
-        The point estimate to display for each problem. Can be either "mean" or "median".
+    point_estimate : Literal["mean", "median", "mode"], optional, default "mean"
+        The point estimate to display for each problem. Can be "mean", "median", or "mode".
     problem_ids : list[str], optional
         List of problem IDs to include in the plot. If None, all problems for the KC
     trajectory: bool = False,
@@ -63,8 +63,8 @@ def plot_posterior_correctness(
     col_mapping = ColumnNames.apply_default_mapping(col_mapping)
     if kc not in data[col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)].unique():
         raise ValueError(f"KC '{kc}' not found in input data.")
-    if point_estimate not in ["mean", "median"]:
-        raise ValueError("point_estimate must be either 'mean' or 'median'.")
+    if point_estimate not in ["mean", "median", "mode"]:
+        raise ValueError("point_estimate must be 'mean', 'median', or 'mode'.")
     if type not in ["probs", "preds"]:
         raise ValueError(f"type must be either 'probs' or 'preds'. Got {type}.")
     if len(percentiles) != 2 or not all(1 <= p <= 99 for p in percentiles):

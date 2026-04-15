@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from stanbkt.models.priors import (
+    HierarchicalPriors,
     MultiPriors,
     PriorsBase,
     StandardPriors,
@@ -423,10 +424,11 @@ class TestMultiPriorsGetDefaultPriors:
             else:
                 assert val is None
 
-    def test_n_groups_zero_returns_empty_lists(self):
+    def test_n_groups_zero_returns_scalars(self):
+        # n_groups=0 means no group info yet — priors pass through as scalars
         d = MultiPriors.get_default_priors(CO, n_groups=0)
         for key in ("learn_mu", "learn_std"):
-            assert d[key] == []
+            assert isinstance(d[key], float)
 
     def test_invalid_estimation_type_raises(self):
         with pytest.raises(ValueError, match="Unsupported prior estimation type"):
@@ -461,10 +463,11 @@ class TestMultiPriorsExpandGroupedPriors:
         expanded = MultiPriors._expand_grouped_priors(scalar, n_groups=5)
         assert expanded["learn_mu"] == [1.0, 2.0]  # unchanged, not re-expanded
 
-    def test_n_groups_zero_produces_empty_lists(self):
+    def test_n_groups_zero_leaves_scalars_unchanged(self):
+        # n_groups < 1 means no expansion — scalars pass through as-is
         scalar = {"learn_mu": 0.0}
         expanded = MultiPriors._expand_grouped_priors(scalar, n_groups=0)
-        assert expanded["learn_mu"] == []
+        assert expanded["learn_mu"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -538,3 +541,17 @@ class TestPriorsBaseToDict:
         p = StandardPriors()
         with pytest.raises(ValueError, match="Unsupported estimation type"):
             p.to_dict("unsupported")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# HierarchicalPriors — abstract stub
+# ---------------------------------------------------------------------------
+
+
+class TestHierarchicalPriorsStub:
+    def test_is_subclass_of_priors_base(self):
+        assert issubclass(HierarchicalPriors, PriorsBase)
+
+    def test_cannot_be_instantiated_directly(self):
+        with pytest.raises(TypeError, match="abstract"):
+            HierarchicalPriors()  # type: ignore[abstract]
