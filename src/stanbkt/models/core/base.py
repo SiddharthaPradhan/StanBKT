@@ -14,7 +14,7 @@ import json
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, Dict, Literal, Optional, Tuple, Union, Final, get_args, Callable
+from typing import Any, Dict, Literal, Optional, Tuple, Union, Final, Callable
 import numpy as np
 import numpy.typing as npt
 import cmdstanpy as csp
@@ -30,14 +30,12 @@ from stanbkt.fits.core.base import FitBase as BaseFit
 from stanbkt.models.model_types import (
     ModelType,
     InitKnowledgeStrategy,
-    PosteriorPredictionOutput,
 )
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import PriorsBase
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
-    dict_has_types,
     ColumnNames,
     KCData,
     _DEFAULT_KC_ID,
@@ -46,6 +44,7 @@ from stanbkt.utils.data_utils import (
     _PCORRECT,
 )
 from stanbkt.utils.model_archive import pack_model_directory
+from stanbkt.utils.posterior_utils import gq_to_draws
 
 
 class BKTModelBase(VerboseMixin, ABC):
@@ -148,7 +147,13 @@ class BKTModelBase(VerboseMixin, ABC):
         self,
         data: pd.DataFrame,
         priors: Optional[dict[str, PriorsBase] | PriorsBase] = None,
-        column_mapping: Optional[Mapping[str, str]] = None,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
         overwrite_kcs: bool = False,
     ) -> BKTModelBase:
@@ -300,13 +305,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 f"Invalid fitting method '{self._fit_method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', '{FitMethod.MLE}', and '{FitMethod.PATHFINDER}'."
             )
 
-    # TODO: implement this, but override if needed.
-    # This will really just call the summary method of the fit object.
     def summary(
         self,
-        params: Optional[list[str]] = None,
-        percentiles: Tuple[float, ...] = (5, 50, 95),
-        refresh_cache: bool = False,
+        percentiles: Tuple[float, float] = (2.5, 97.5),
+        column_mapping: dict[str, str] = {},
+        clear_cache: bool = False,
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -315,8 +318,8 @@ class BKTModelBase(VerboseMixin, ABC):
         ----------
         params : list of str, optional
             List of parameters to summarize. If None, summarizes all.
-        percentiles : tuple of float, default=(5, 50, 95)
-            Percentiles to include in summary.
+        percentiles : tuple of float, default=(2.5, 97.5)
+            Percentiles to include in summary. Values should be in range [1, 99].
         refresh_cache : bool, default=False
             Whether to refresh the cached summary.
 
@@ -330,15 +333,28 @@ class BKTModelBase(VerboseMixin, ABC):
         RuntimeError
             If model has not been fitted yet.
         """
-        if not self._is_fitted:
+        self._fit_check("summary")
+        if self.fits is None:
             raise RuntimeError("Model must be fitted before calling summary()")
+        if clear_cache:
+            self.fits._clear_summary_cache_if_stale(percentiles, force=True)
 
-        # if hasattr(self.fit, "summary"):
-        #     if params:
-        #         return self.fit.summary(var_names=params, percentiles=percentiles)
-        #     return self._fit.summary(percentiles=percentiles)
+        # validate percentiles
+        if not (
+            len(percentiles) == 2
+            and (1 <= percentiles[0] <= 99)
+            and (1 <= percentiles[1] <= 99)
+            and (percentiles[0] < percentiles[1])
+        ):
+            raise ValueError(
+                f"'percentiles' must be a tuple of two numeric values between 1 and 99 (inclusive), where the first value is less than the second. Got {percentiles}."
+            )
+        kc_col_name = column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)
 
-        raise NotImplementedError("Summary not available for this fit method")
+        return self.fits._summary(
+            percentiles=percentiles,
+            kc_col_name=kc_col_name,
+        )
 
     def _fit_check(self, referrer: Optional[str] = None) -> None:
         """Check if model has been fitted."""
@@ -424,7 +440,13 @@ class BKTModelBase(VerboseMixin, ABC):
     def predict(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[Mapping[str, str]] = None,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
@@ -527,16 +549,22 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return pd.concat(predictions, ignore_index=True)
 
-    def predict_smoothed_states(
+    def predict_smoothed(
         self,
         data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[Mapping[str, str]] = None,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
     ) -> pd.DataFrame:
         """Predict smoothed hidden states using point-estimate parameters."""
-        self._fit_check(referrer="predict_smoothed_states")
+        self._fit_check(referrer="predict_smoothed")
 
         if data is None:
             raise ValueError("'data' must be provided for point-estimate prediction.")
@@ -598,7 +626,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 n_students=kc_data.correctness.shape[0],
                 point_estimate=point_estimate,
             )
-            p_smooth = njit_predict_smoothed_numba(
+            p_smooth, p_correctness = njit_predict_smoothed_numba(
                 correctness=kc_data.correctness,
                 prior=prior,
                 learn=learn,
@@ -608,8 +636,9 @@ class BKTModelBase(VerboseMixin, ABC):
                 lengths=kc_data.lengths,
             )
             kc_predictions = self._state_arrays_to_long_df(
-                p_smooth,
-                kc_data,
+                p_know=p_smooth,
+                kc_data=kc_data,
+                p_correctness=p_correctness,
                 correctness_col_name=column_mapping.get(
                     ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS
                 ),
@@ -699,10 +728,13 @@ class BKTModelBase(VerboseMixin, ABC):
         guess: np.ndarray,
         slip: np.ndarray,
         lengths: npt.NDArray[np.int64],
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Numba-accelerated forward-backward recursion for smoothed state probabilities."""
         n_students, n_problems = correctness.shape
         p_smooth = np.full((n_students, n_problems), _NA_FILL_VALUE, dtype=np.float64)
+        p_correctness = np.full(
+            (n_students, n_problems), _NA_FILL_VALUE, dtype=np.float64
+        )
 
         for s in prange(n_students):  # type: ignore
             student_interaction_len = lengths[s]
@@ -785,8 +817,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 if norm == 0.0:
                     norm = 1e-15
                 p_smooth[s, t] = g1 / norm
+                p_correctness[s, t] = (
+                    p_smooth[s, t] * one_minus_p_s + (1.0 - p_smooth[s, t]) * p_g
+                )
 
-        return p_smooth
+        return p_smooth, p_correctness
 
     @staticmethod
     def _state_arrays_to_long_df(
@@ -1047,44 +1082,95 @@ class BKTModelBase(VerboseMixin, ABC):
         """
         pass
 
-    def predict_posterior(
+    def predict_posterior_stan(
         self,
-        data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[Mapping[str, str]] = None,
-        posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
-        output: PosteriorPredictionOutput = "default",
-        summary_quantiles: list[float] = [0.025, 0.975],
-    ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
-        self._check_predict_posterior_args(
-            data=data,
-            calling_method="predict_posterior",
-            posterior_draws=posterior_draws,
-            output=output,
+        data: pd.DataFrame,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
+    ) -> dict[str, csp.CmdStanGQ]:
+        """Run Stan generated quantities for posterior state prediction.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data. Must contain student ID, problem ID, and
+            correctness columns for the KCs of interest.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+
+        Returns
+        -------
+        dict[str, CmdStanGQ]
+            Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
+            ``predict_posterior_draws`` to obtain draw-level DataFrames.
+        """
+        self._fit_check(referrer="predict_posterior_stan")
+        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        kc_column_name = column_mapping[ColumnNames.KC_ID]
+        self.check_data_contains_fitted_kcs(
+            set(data[kc_column_name].astype(str).unique())
+        )
+        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
+        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
+
+        if self._hidden_states_model is None:
+            self._hidden_states_model = compile_stan_model(
+                self._stan_hidden_filename,
+                cpp_options=self.cpp_compile_kwargs,
+                stanc_options=self.stan_compile_kwargs,
+                print_fn=self.log,
+            )
+
+        return self._predict_generated_quantities(
+            data=data_cp,
+            gq_model=self._hidden_states_model,
+            column_mapping=column_mapping,
         )
 
-        if data is not None and posterior_draws is not None:
-            self.log(
-                "Both 'data' and 'posterior_draws' are provided. 'posterior_draws' will be used and 'data' will be ignored.",
-                level=VerbosityLevel.WARN,
-            )
-            data = None
+    def predict_posterior_draws(
+        self,
+        data: pd.DataFrame,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
+        stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
+    ) -> dict[str, pd.DataFrame]:
+        """Return draw-level posterior prediction DataFrames.
 
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data used to remap Stan indices to original IDs.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        stan_output : dict[str, CmdStanGQ], optional
+            Pre-computed output from ``predict_posterior_stan``.  When provided
+            the Stan generated-quantities step is skipped.
+
+        Returns
+        -------
+        dict[str, pd.DataFrame]
+            Mapping from KC ID to draw-level DataFrames.  Pass to
+            ``stanbkt.utils.posterior_summary`` to obtain summary statistics.
+        """
         column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        kc_column_name = column_mapping[ColumnNames.KC_ID]
+        self.check_data_contains_fitted_kcs(
+            set(data[kc_column_name].astype(str).unique())
+        )
+        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
+        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
 
-        if data is not None:
-            self._fit_check()
-            # ensure data contains fitted KCs and filter to just those with fits
-            kc_column_name = ColumnNames.KC_ID
-            self.check_data_contains_fitted_kcs(
-                set(data[kc_column_name].astype(str).unique())
-            )
-            overlapping_kcs = self.get_kcs_in_fitted_kcs(
-                set(data[kc_column_name].unique())
-            )
-            data = data.copy()
-            data: pd.DataFrame = data.loc[data[kc_column_name].isin(overlapping_kcs)]
-
-            # compile model if not already cached
+        if stan_output is None:
             if self._hidden_states_model is None:
                 self._hidden_states_model = compile_stan_model(
                     self._stan_hidden_filename,
@@ -1092,76 +1178,102 @@ class BKTModelBase(VerboseMixin, ABC):
                     stanc_options=self.stan_compile_kwargs,
                     print_fn=self.log,
                 )
-
-            posterior_draws_stan = self._predict_generated_quantities(
-                data=data,
+            stan_output = self._predict_generated_quantities(
+                data=data_cp,
                 gq_model=self._hidden_states_model,
                 column_mapping=column_mapping,
             )
 
-            if output == "stan":
-                return posterior_draws_stan
+        return self._process_predict_gq(stan_output, data_cp, column_mapping)
 
-            posterior_draws = self._process_predict_gq(
-                posterior_draws_stan, data, column_mapping
-            )
-
-        if posterior_draws is not None:
-            if output == "summary":
-                return self._summarize_gq_state_predictions(
-                    posterior_draws,
-                    column_mapping,
-                    quantiles=summary_quantiles,
-                )
-            return posterior_draws
-
-        raise ValueError(
-            "Either 'data' or 'posterior_draws' must be provided. "
-            "If you have precomputed posterior draws, pass them via 'posterior_draws'. "
-            "Otherwise, provide the input data to generate new predictions."
-        )
-
-    def predict_smoothed_posterior(
+    def predict_smoothed_posterior_stan(
         self,
-        data: Optional[pd.DataFrame] = None,
-        column_mapping: Optional[dict[str | ColumnNames, str]] = None,
-        posterior_draws: Optional[dict[str, pd.DataFrame]] = None,
-        output: PosteriorPredictionOutput = "default",
-        summary_quantiles: list[float] = [0.025, 0.975],
-    ) -> Union[pd.DataFrame, dict[str, pd.DataFrame], dict[str, csp.CmdStanGQ]]:
-        self._check_predict_posterior_args(
-            data=data,
-            calling_method="predict_smoothed_posterior",
-            posterior_draws=posterior_draws,
-            output=output,
+        data: pd.DataFrame,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
+    ) -> dict[str, csp.CmdStanGQ]:
+        """Run Stan generated quantities for smoothed posterior state prediction.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+
+        Returns
+        -------
+        dict[str, CmdStanGQ]
+            Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
+            ``predict_smoothed_posterior_draws`` to obtain draw-level DataFrames.
+        """
+        self._fit_check(referrer="predict_smoothed_posterior_stan")
+        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        kc_column_name = column_mapping[ColumnNames.KC_ID]
+        self.check_data_contains_fitted_kcs(
+            set(data[kc_column_name].astype(str).unique())
+        )
+        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
+        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
+
+        if self._smoothed_hidden_states_model is None:
+            self._smoothed_hidden_states_model = compile_stan_model(
+                self._stan_smoothed_hidden_filename,
+                cpp_options=self.cpp_compile_kwargs,
+                stanc_options=self.stan_compile_kwargs,
+                print_fn=self.log,
+            )
+
+        return self._predict_generated_quantities(
+            data=data_cp,
+            gq_model=self._smoothed_hidden_states_model,
+            column_mapping=column_mapping,
         )
 
-        if data is not None and posterior_draws is not None:
-            self.log(
-                "Both 'data' and 'posterior_draws' are provided. 'posterior_draws' will be used and 'data' will be ignored.",
-                level=VerbosityLevel.WARN,
-            )
-            data = None
+    def predict_smoothed_posterior_draws(
+        self,
+        data: pd.DataFrame,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
+        stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
+    ) -> dict[str, pd.DataFrame]:
+        """Return draw-level smoothed posterior prediction DataFrames.
 
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data used to remap Stan indices to original IDs.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        stan_output : dict[str, CmdStanGQ], optional
+            Pre-computed output from ``predict_smoothed_posterior_stan``.  When
+            provided the Stan generated-quantities step is skipped.
+
+        Returns
+        -------
+        dict[str, pd.DataFrame]
+            Mapping from KC ID to draw-level DataFrames.  Pass to
+            ``stanbkt.utils.posterior_summary`` to obtain summary statistics.
+        """
         column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        kc_column_name = column_mapping[ColumnNames.KC_ID]
+        self.check_data_contains_fitted_kcs(
+            set(data[kc_column_name].astype(str).unique())
+        )
+        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
+        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
 
-        if data is not None:
-            self._fit_check()
-            # ensure data contains fitted KCs and filter to just those with fits
-            kc_column_name = ColumnNames.KC_ID
-            if column_mapping and ColumnNames.KC_ID in column_mapping:
-                kc_column_name = column_mapping[ColumnNames.KC_ID]
-
-            self.check_data_contains_fitted_kcs(
-                set(data[kc_column_name].astype(str).unique())
-            )
-            overlapping_kcs = self.get_kcs_in_fitted_kcs(
-                set(data[kc_column_name].unique())
-            )
-            data = data.copy()
-            data: pd.DataFrame = data.loc[data[kc_column_name].isin(overlapping_kcs)]
-
-            # compile model if not already cached
+        if stan_output is None:
             if self._smoothed_hidden_states_model is None:
                 self._smoothed_hidden_states_model = compile_stan_model(
                     self._stan_smoothed_hidden_filename,
@@ -1169,47 +1281,45 @@ class BKTModelBase(VerboseMixin, ABC):
                     stanc_options=self.stan_compile_kwargs,
                     print_fn=self.log,
                 )
-
-            posterior_draws_stan = self._predict_generated_quantities(
-                data=data,
+            stan_output = self._predict_generated_quantities(
+                data=data_cp,
                 gq_model=self._smoothed_hidden_states_model,
                 column_mapping=column_mapping,
             )
 
-            if output == "stan":
-                return posterior_draws_stan
-
-            posterior_draws = self._process_predict_gq(
-                posterior_draws_stan, data, column_mapping
-            )
-
-        if posterior_draws is not None:
-            if output == "summary":
-                return self._summarize_gq_state_predictions(
-                    posterior_draws,
-                    column_mapping,
-                    quantiles=summary_quantiles,
-                    pCorrectness=False,
-                )
-            return posterior_draws
-
-        raise ValueError(
-            "Either 'data' or 'posterior_draws' must be provided. "
-            "If you have precomputed posterior draws, pass them via 'posterior_draws'. "
-            "Otherwise, provide the input data to generate new predictions."
-        )
+        return self._process_predict_gq(stan_output, data_cp, column_mapping)
 
     def _predict_generated_quantities(
         self,
         data: pd.DataFrame,
         gq_model: csp.CmdStanModel,
-        column_mapping: Optional[dict[str | ColumnNames, str]] = None,
+        priors: Optional[dict[str, PriorsBase] | PriorsBase] = None,
+        column_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
     ) -> dict[str, csp.CmdStanGQ]:
 
         if self.fits is None:
             raise RuntimeError(
                 "The fits container has not been initialized. Ensure the model has been "
                 "successfully fitted before calling prediction methods."
+            )
+
+        # validate priors
+        if priors is None:
+            # use default priors for all KCs
+            self.log(
+                "No priors provided, using default priors for all KCs.",
+                level=VerbosityLevel.DEBUG,
+            )
+            priors = self._default_priors()
+        else:
+            self._default_priors_class()._validate(
+                priors, type(self), self.init_knowledge_strategy
             )
 
         gq_kc_fit: dict[str, csp.CmdStanGQ] = {}
@@ -1225,10 +1335,20 @@ class BKTModelBase(VerboseMixin, ABC):
             if kc_fit_result is None:
                 continue
 
-            data_dict = self._build_stan_data_dict(kc_data)
+            # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
+            kc_priors = (
+                priors.get(
+                    str(kc_id), self._default_priors()
+                )  # ty:ignore[no-matching-overload]
+                if isinstance(priors, dict)
+                else priors
+            )
+
+            data_dict = self._build_stan_data_dict(kc_data, kc_priors)
+            # type ignore is needed since CmdStanGQ has incorrect type hints for .generate_quantities
             gq_fit = gq_model.generate_quantities(
                 data=data_dict,
-                previous_fit=kc_fit_result,
+                previous_fit=kc_fit_result,  # type: ignore[type-var]
             )
 
             gq_kc_fit[kc_id_str] = gq_fit
@@ -1242,205 +1362,12 @@ class BKTModelBase(VerboseMixin, ABC):
         col_mapping: dict[str, str],
     ) -> dict[str, pd.DataFrame]:
         """Post-process raw CmdStanGQ outputs into long-form DataFrames with remapped IDs."""
-        student_col = col_mapping[ColumnNames.STUDENT_ID]
-        problem_col = col_mapping[ColumnNames.PROBLEM_ID]
-        correctness_col = col_mapping[ColumnNames.CORRECTNESS]
-        kc_col = col_mapping[ColumnNames.KC_ID]
-        id_cols: list[str] | None = None
-        col_pat = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
-
-        posterior_draws: dict[str, pd.DataFrame] = {}
-        for kc_id, kc_data in iter_kc_data(
+        return gq_to_draws(
+            stan_output=posterior_draws_raw,
             data=data,
             col_mapping=col_mapping,
-            return_groups=False,
             print_fn=self.log,
-        ):
-            kc_id_str = str(kc_id)
-            gq_kc = posterior_draws_raw.get(kc_id_str)
-            # this if should not happen since we only generate GQ for KCs in the data.
-            if gq_kc is None:
-                self.log(
-                    f"No generated quantities found for KC '{kc_id_str}' when post processing predictions.",
-                    level=VerbosityLevel.WARN,
-                )
-                continue
-
-            draws_df = gq_kc.draws_pd()
-            if id_cols is None:
-                # we may be able to hard code these, but it may change based on the method.
-                id_cols = [c for c in draws_df.columns.astype(str) if c.endswith("__")]
-
-            # Parse column names once to bucket pKnow / pCorrectness by (student_idx, problem_idx).
-            # Sorting lexicographically matches Stan's column output order: [1,1], [1,2], ..., [2,1], ...
-            pknow_cols: dict[tuple[int, int], str] = {}
-            pcorr_cols: dict[tuple[int, int], str] = {}
-            for col in draws_df.columns:
-                m = col_pat.match(str(col))
-                if m:
-                    param, s, p = m.group(1), int(m.group(2)), int(m.group(3))
-                    if param == _PKNOW:
-                        pknow_cols[(s, p)] = col
-                    elif param == _PCORRECT:
-                        pcorr_cols[(s, p)] = col
-
-            n_draws = len(draws_df)
-
-            # Build per-observation metadata — filter to real (non-padded) observations only.
-            student_idx_to_id = list(kc_data.student_inter_dict.keys())
-            idx_to_problem_id: dict[tuple[int, int], str] = {
-                (i + 1, j + 1): pid
-                for i, (_, inter) in enumerate(kc_data.student_inter_dict.items())
-                for j, pid in enumerate(inter.problem_ids)
-            }
-            # obs_keys: only (s_idx, p_idx) pairs that correspond to real attempts,
-            # i.e. present in idx_to_problem_id (padding indices are absent).
-            obs_keys = sorted(k for k in pknow_cols if k in idx_to_problem_id)
-            n_obs = len(obs_keys)
-
-            obs_student_ids = np.fromiter(
-                (student_idx_to_id[s - 1] for s, _ in obs_keys),
-                dtype=object,
-                count=n_obs,
-            )
-            obs_problem_ids = np.fromiter(
-                (idx_to_problem_id[(s, p)] for s, p in obs_keys),
-                dtype=object,
-                count=n_obs,
-            )
-            obs_correctness = np.fromiter(
-                (kc_data.correctness[s - 1, p - 1] for s, p in obs_keys),
-                dtype=np.int8,
-                count=n_obs,
-            )
-
-            # Extract (n_draws, n_obs) value arrays and ravel row-major
-            # output row order: (draw_0, obs_0), (draw_0, obs_1), ..., (draw_1, obs_0), ...
-            pknow_values = (
-                draws_df[[pknow_cols[k] for k in obs_keys]].to_numpy().ravel()
-            )
-
-            # np.repeat broadcasts each draw's id fields across all n_obs observations;
-            # np.tile repeats the per-obs metadata for each of the n_draws draws.
-            result: dict[str, Any] = {
-                col: np.repeat(draws_df[col].to_numpy(), n_obs) for col in id_cols
-            }
-            result[kc_col] = np.repeat(kc_id_str, n_draws * n_obs)
-            result[student_col] = np.tile(obs_student_ids, n_draws)
-            result[problem_col] = np.tile(obs_problem_ids, n_draws)
-            result[correctness_col] = np.tile(obs_correctness, n_draws)
-            result[_PKNOW] = pknow_values
-            if pcorr_cols:
-                result[_PCORRECT] = (
-                    draws_df[[pcorr_cols[k] for k in obs_keys]].to_numpy().ravel()
-                )
-
-            posterior_draws[kc_id] = pd.DataFrame(result)
-        return posterior_draws
-
-    def _summarize_gq_state_predictions(
-        self,
-        gq_dict: dict[str, pd.DataFrame],
-        col_mapping: dict[str, str],
-        quantiles=(0.025, 0.975),
-        pCorrectness=True,
-    ) -> pd.DataFrame:
-        if not gq_dict:
-            raise ValueError("Input Dict is empty.")
-
-        if not all(0 <= q <= 1 for q in quantiles):
-            raise ValueError("Quantiles must be between 0 and 1.")
-
-        stat_fns: list[tuple[str, Any]] = [
-            ("mean", "mean"),
-            ("std", "std"),
-            ("median", "median"),
-        ] + [(f"{q * 100:.2f}%", (lambda s, q=q: s.quantile(q))) for q in quantiles]
-        summary_cols = [f"{_PKNOW}_{stat}" for stat, _ in stat_fns]
-        if pCorrectness:
-            summary_cols += [f"{_PCORRECT}_{stat}" for stat, _ in stat_fns]
-        param_id_cols = [
-            col_mapping.get(ColumnNames.STUDENT_ID),
-            col_mapping.get(ColumnNames.PROBLEM_ID),
-            col_mapping.get(ColumnNames.CORRECTNESS),
-        ]
-        result_frames: list[pd.DataFrame] = []
-        for kc, gq_kc_df in gq_dict.items():
-            if gq_kc_df.empty:
-                continue
-
-            agg_cols = [c for c in [_PKNOW, _PCORRECT] if c in gq_kc_df.columns]
-            agg_kwargs = {
-                f"{col}_{stat}": pd.NamedAgg(column=col, aggfunc=fn)
-                for col in agg_cols
-                for stat, fn in stat_fns
-            }
-            gq_kc_summary: pd.DataFrame = (
-                gq_kc_df.groupby(param_id_cols, sort=False)
-                .agg(**agg_kwargs)
-                .reset_index()
-            )
-            gq_kc_summary.sort_values(
-                by=param_id_cols, inplace=True, key=natsort_keygen()
-            )
-            gq_kc_summary.insert(0, "kc_id", str(kc))
-            result_frames.append(gq_kc_summary)
-
-        if not result_frames:
-            return pd.DataFrame(columns=["kc_id"] + param_id_cols + summary_cols)
-
-        return pd.concat(result_frames, ignore_index=True)
-
-    @staticmethod
-    def _check_predict_posterior_args(
-        data: Optional[pd.DataFrame],
-        calling_method: Literal["predict_posterior", "predict_smoothed_posterior"],
-        posterior_draws: Optional[dict[str, pd.DataFrame]],
-        output: PosteriorPredictionOutput,
-    ):
-        if output not in get_args(PosteriorPredictionOutput):
-            raise ValueError(
-                f"Invalid value for 'output': '{output}'. "
-                f"Expected one of {get_args(PosteriorPredictionOutput)}."
-            )
-
-        if posterior_draws is None:
-            return
-
-        if isinstance(posterior_draws, pd.DataFrame):
-            raise TypeError(
-                "Invalid type for 'posterior_draws': received a pd.DataFrame. "
-                "Expected a dict[str, DataFrame] mapping knowledge component IDs to "
-                "posterior draw DataFrames."
-            )
-        if not isinstance(posterior_draws, dict):
-            raise TypeError(
-                "'posterior_draws' must be a dict mapping knowledge component IDs to "
-                "pd.DataFrame or CmdStanGQ objects. Pass the return value of a previous "
-                "call as 'posterior_draws'."
-            )
-
-        if calling_method not in (
-            "predict_posterior",
-            "predict_smoothed_posterior",
-        ):
-            raise ValueError(
-                f"Invalid calling method: '{calling_method}'. "
-                "Expected 'predict_posterior' or 'predict_smoothed_posterior'."
-            )
-
-        if output == "stan":
-            raise TypeError(
-                "'posterior_draws' cannot be used when 'output' is 'stan'. "
-                "Precomputed posterior draws are incompatible with raw Stan output; "
-                "omit 'posterior_draws' or choose a different 'output' format."
-            )
-
-        if not dict_has_types(posterior_draws, str, pd.DataFrame):
-            raise TypeError(
-                "'posterior_draws' must be a dict[str, pd.DataFrame] when 'output' is 'default' or 'summary'. "
-                "Pass the DataFrame return value of a previous prediction call."
-            )
+        )
 
     @property
     @abstractmethod

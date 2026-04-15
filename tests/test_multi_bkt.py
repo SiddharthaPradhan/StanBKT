@@ -562,7 +562,7 @@ class TestPredict:
 
 
 # ---------------------------------------------------------------------------
-# predict_smoothed_states
+# predict_smoothed
 # ---------------------------------------------------------------------------
 
 
@@ -570,19 +570,19 @@ class TestPredictSmoothedStates:
     def test_raises_when_not_fitted(self):
         model = MultiBKT()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            model.predict_smoothed_states(_grouped_df())
+            model.predict_smoothed(_grouped_df())
 
     def test_raises_without_data(self, monkeypatch):
         model = MultiBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'data' must be provided"):
-            model.predict_smoothed_states()
+            model.predict_smoothed()
 
     def test_raises_invalid_point_estimate(self, monkeypatch):
         model = MultiBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'point_estimate' must be"):
-            model.predict_smoothed_states(data=_grouped_df(), point_estimate="garbage")
+            model.predict_smoothed(data=_grouped_df(), point_estimate="garbage")
 
     def test_returns_dataframe_with_correct_columns(self, monkeypatch):
         model = MultiBKT()
@@ -602,11 +602,16 @@ class TestPredictSmoothedStates:
                 np.full(n_students, 0.1),
             ),
         )
-        out = model.predict_smoothed_states(data=_grouped_df())
+        out = model.predict_smoothed(data=_grouped_df())
         assert isinstance(out, pd.DataFrame)
-        assert {"kc_id", "student_id", "problem_id", "pKnow", "correct"}.issubset(
-            set(out.columns)
-        )
+        assert {
+            "kc_id",
+            "student_id",
+            "problem_id",
+            "pKnow",
+            "pCorrectness",
+            "correct",
+        }.issubset(set(out.columns))
 
     def test_returns_empty_df_for_no_overlapping_kcs(self, monkeypatch):
         model = MultiBKT()
@@ -614,6 +619,6 @@ class TestPredictSmoothedStates:
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: set())
         model.fits = MagicMock()
-        out = model.predict_smoothed_states(data=_grouped_df())
+        out = model.predict_smoothed(data=_grouped_df())
         assert isinstance(out, pd.DataFrame)
         assert len(out) == 0

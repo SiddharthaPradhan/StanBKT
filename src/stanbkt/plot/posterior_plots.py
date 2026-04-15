@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from stanbkt.utils.data_utils import validate_data, _PCORRECT
 import natsort
 from stanbkt.utils.data_utils import format_kc_data, iter_kc_data, KCData, ColumnNames
@@ -6,7 +7,7 @@ from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.core.base import FitBase
 import matplotlib.pyplot as plt
 import pandas as pd
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 import numpy as np
 import numpy.typing as npt
 
@@ -22,7 +23,11 @@ def plot_posterior_correctness(
     problem_ids: Optional[list[str]] = None,
     trajectory: bool = False,
     frac=1.0,
-    col_mapping: dict[str, str] = {},
+    column_mapping: Union[
+        Mapping[ColumnNames, str],
+        Mapping[str, str],
+        Mapping[ColumnNames | str, str],
+    ] = {},
     offset: float = 0,
 ) -> plt.Axes:
     """Plot posterior predictions of correctness for a given KC.
@@ -60,8 +65,11 @@ def plot_posterior_correctness(
     """
     if kc not in posterior_preds:
         raise ValueError(f"KC '{kc}' not found in posterior predictions.")
-    col_mapping = ColumnNames.apply_default_mapping(col_mapping)
-    if kc not in data[col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)].unique():
+    column_mapping = ColumnNames.apply_default_mapping(column_mapping)
+    if (
+        kc
+        not in data[column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)].unique()
+    ):
         raise ValueError(f"KC '{kc}' not found in input data.")
     if point_estimate not in ["mean", "median", "mode"]:
         raise ValueError("point_estimate must be 'mean', 'median', or 'mode'.")
@@ -79,17 +87,17 @@ def plot_posterior_correctness(
         "Prob/Prop of Correctness" if type == "probs" else "Proportion Correct"
     )
 
-    validate_data(data, col_mapping)
+    validate_data(data, column_mapping)
 
     # subset data to the kc
-    data_kc: pd.DataFrame = data[data[col_mapping[ColumnNames.KC_ID]] == kc]
+    data_kc: pd.DataFrame = data[data[column_mapping[ColumnNames.KC_ID]] == kc]
     # subset to requested problems if provided
     if problem_ids is not None:
         data_kc = data_kc[
-            data_kc[col_mapping[ColumnNames.PROBLEM_ID]].isin(problem_ids)
+            data_kc[column_mapping[ColumnNames.PROBLEM_ID]].isin(problem_ids)
         ]
     correctness_by_problem, problem_ids = _point_estimate_correctness_per_problem(
-        data_kc, col_mapping, point_estimate, frac
+        data_kc, column_mapping, point_estimate, frac
     )
     posterior_kc = posterior_preds[kc]
 
@@ -179,31 +187,33 @@ def plot_posterior_correctness(
 
 def _point_estimate_correctness_per_problem(
     data: pd.DataFrame,
-    col_mapping: dict[str, str],
-    agg_func: Literal["mean", "median"] = "mean",
+    column_mapping: dict[str, str],
+    agg_func: Literal["mean", "median", "mode"] = "mean",
     frac: float = 1.0,
 ) -> tuple[npt.NDArray[np.float64], list[str]]:
     """Helper function to compute average correctness per problem for a given data."""
     data = data.copy()
-    if data[col_mapping[ColumnNames.KC_ID]].nunique() > 1:
+    if data[column_mapping[ColumnNames.KC_ID]].nunique() > 1:
         raise ValueError("Data contains multiple KCs. Please subset to a single KC.")
-    data[col_mapping[ColumnNames.PROBLEM_ID]] = data[
-        col_mapping[ColumnNames.PROBLEM_ID]
+    data[column_mapping[ColumnNames.PROBLEM_ID]] = data[
+        column_mapping[ColumnNames.PROBLEM_ID]
     ].astype(str)
+    problem_ids: pd.Series = (
+        data[column_mapping[ColumnNames.PROBLEM_ID]].unique().tolist()
+    )
+    problem_ids.sort(key=natsort.natsort_keygen())
+    problems_to_plot = problem_ids
     if frac < 1.0:
-        problem_ids: pd.Series = (
-            data[col_mapping[ColumnNames.PROBLEM_ID]].unique().tolist()
-        )
-        problem_ids.sort(key=natsort.natsort_keygen())
+
         num_problems_to_plot = max(2, int(len(problem_ids) * frac))
         problems_to_plot = np.linspace(
             0, len(problem_ids) - 1, num_problems_to_plot, dtype=int
         )
         problems_to_plot = [problem_ids[i] for i in problems_to_plot]
-        data = data[data[col_mapping[ColumnNames.PROBLEM_ID]].isin(problems_to_plot)]
+        data = data[data[column_mapping[ColumnNames.PROBLEM_ID]].isin(problems_to_plot)]
     correctness_by_problem: pd.Series = (
-        data[col_mapping[ColumnNames.CORRECTNESS]]
-        .groupby(data[col_mapping[ColumnNames.PROBLEM_ID]])
+        data[column_mapping[ColumnNames.CORRECTNESS]]
+        .groupby(data[column_mapping[ColumnNames.PROBLEM_ID]])
         .agg(agg_func)
     )[problems_to_plot]
     return correctness_by_problem.values, problems_to_plot

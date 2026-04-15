@@ -10,7 +10,8 @@ generated quantities {
     {
         for (studentIdx in 1:nStudents) {
             int studentGroupIdx = groups[studentIdx];
-            real studentInit = pi_know[studentGroupIdx];  // initial probability of knowing
+            // initial probability of knowing
+            real studentInit = pi_know[individual_pi_know == 1 ? studentIdx : studentGroupIdx]; 
             real studentLearn = learn[studentGroupIdx];   // transition probability of learning
             real studentGuess = guess[studentGroupIdx];   // emission probability of guessing
             real studentSlip = slip[studentGroupIdx];     // emission probability of slipping

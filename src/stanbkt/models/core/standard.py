@@ -100,6 +100,7 @@ class StandardBKT(BKTModelBase):
         str
             Path to BKT_model.stan.
         """
+        # TODO: this depends on init_knowledge_strategy
         return str(files("stanbkt").joinpath("stan_code", "BKT", "BKT_model.stan"))
 
     @property
@@ -160,6 +161,7 @@ class StandardBKT(BKTModelBase):
             "interaction_lengths": kc_data.lengths,
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
+            "individual_pi_know": int(self.individual_initial_knowledge),
         }
         if priors is not None:
             for prior_param_key, value in priors.to_dict(

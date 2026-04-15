@@ -216,7 +216,7 @@ class TestEvaluate:
 
 
 # ---------------------------------------------------------------------------
-# predict / predict_smoothed_states
+# predict / predict_smoothed
 # ---------------------------------------------------------------------------
 
 
@@ -273,19 +273,19 @@ class TestPredict:
     def test_predict_smoothed_states_raises_when_not_fitted(self):
         model = StandardBKT()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            model.predict_smoothed_states(_minimal_df())
+            model.predict_smoothed(_minimal_df())
 
     def test_predict_smoothed_states_requires_data(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'data' must be provided"):
-            model.predict_smoothed_states()
+            model.predict_smoothed()
 
     def test_predict_smoothed_states_rejects_invalid_point_estimate(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         with pytest.raises(ValueError, match="'point_estimate' must be"):
-            model.predict_smoothed_states(data=_minimal_df(), point_estimate="garbage")
+            model.predict_smoothed(data=_minimal_df(), point_estimate="garbage")
 
     def test_predict_smoothed_states_returns_dataframe(self, monkeypatch):
         model = StandardBKT()
@@ -308,13 +308,14 @@ class TestPredict:
             ),
         )
 
-        out = model.predict_smoothed_states(data=_minimal_df())
+        out = model.predict_smoothed(data=_minimal_df())
         assert isinstance(out, pd.DataFrame)
         assert set(out.columns) == {
             "kc_id",
             "student_id",
             "problem_id",
             "pKnow",
+            "pCorrectness",
             "correct",
         }
         assert set(out["kc_id"]) == {"default_kc"}
@@ -350,7 +351,7 @@ class TestPredict:
             }
         )
 
-        out = model.predict_smoothed_states(data=multi_kc_df)
+        out = model.predict_smoothed(data=multi_kc_df)
         assert set(out["kc_id"]) == {"kc_a", "kc_b"}
 
     def test_predict_uses_original_ids_and_masks_padded_positions(self, monkeypatch):
@@ -405,7 +406,7 @@ class TestPredict:
 
 
 # ---------------------------------------------------------------------------
-# predict / predict_smoothed_states — parallel and fast_math options
+# predict / predict_smoothed — parallel and fast_math options
 # ---------------------------------------------------------------------------
 
 _MOCK_PARAMS = lambda fit, n_students, point_estimate="mean": (  # noqa: E731
@@ -454,10 +455,16 @@ class TestPredictNumbaOptions:
         self, monkeypatch, parallel, fast_math
     ):
         model = _make_predict_model(monkeypatch)
-        out = model.predict_smoothed_states(
+        out = model.predict_smoothed(
             data=_SPARSE_DF, parallel=parallel, fast_math=fast_math
         )
         assert isinstance(out, pd.DataFrame)
+        assert set(out.columns) >= {
+            "student_id",
+            "problem_id",
+            "pKnow",
+            "pCorrectness",
+        }
 
     def test_predict_parallel_false_matches_parallel_true(self, monkeypatch):
         model = _make_predict_model(monkeypatch)
@@ -472,10 +479,10 @@ class TestPredictNumbaOptions:
 
     def test_predict_smoothed_parallel_false_matches_parallel_true(self, monkeypatch):
         model = _make_predict_model(monkeypatch)
-        out_parallel = model.predict_smoothed_states(
+        out_parallel = model.predict_smoothed(
             data=_SPARSE_DF, parallel=True, fast_math=False
         )
-        out_serial = model.predict_smoothed_states(
+        out_serial = model.predict_smoothed(
             data=_SPARSE_DF, parallel=False, fast_math=False
         )
         pd.testing.assert_frame_equal(
@@ -498,82 +505,102 @@ class TestPredictNumbaOptions:
 
 
 # ---------------------------------------------------------------------------
-# predict_posterior / predict_smoothed_states_posterior — fit_check
+# predict_posterior_stan / predict_smoothed_posterior_stan — fit_check
 # ---------------------------------------------------------------------------
 
 
 class TestPredictPosteriorUnfitted:
-    def test_predict_posterior_raises_when_not_fitted(self):
+    def test_predict_posterior_stan_raises_when_not_fitted(self):
         model = StandardBKT()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            model.predict_posterior(pd.DataFrame())
+            model.predict_posterior_stan(pd.DataFrame())
 
-    def test_predict_smoothed_states_posterior_raises_when_not_fitted(self):
+    def test_predict_smoothed_posterior_stan_raises_when_not_fitted(self):
         model = StandardBKT()
         with pytest.raises(RuntimeError, match="must be fitted"):
-            model.predict_smoothed_posterior(pd.DataFrame())
+            model.predict_smoothed_posterior_stan(pd.DataFrame())
 
 
-class TestPredictSmoothedStatesPosteriorApi:
-    def test_raises_when_data_and_posterior_draws_missing(self):
+class TestPredictPosteriorDrawsApi:
+    """Tests for the _draws methods' stan_output shortcut."""
+
+    def test_predict_posterior_draws_skips_stan_when_stan_output_provided(
+        self, monkeypatch
+    ):
         model = StandardBKT()
-        with pytest.raises(ValueError, match="Either 'data' or 'posterior_draws'"):
-            model.predict_smoothed_posterior()
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
-    def test_returns_posterior_draws_for_default_output(self):
-        model = StandardBKT()
-        posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
-        out = model.predict_smoothed_posterior(posterior_draws=posterior_draws)
-        assert out == posterior_draws
+        precomputed_stan = {"kc_1": MagicMock()}
+        expected = {"kc_1": pd.DataFrame({"student_id": ["s1"]})}
+        data = pd.DataFrame(
+            {
+                "student_id": ["s1"],
+                "problem_id": ["p1"],
+                "correct": [1],
+                "kc_id": ["kc_1"],
+                "timestamp": [1],
+            }
+        )
 
-    def test_returns_summary_when_output_summary(self, monkeypatch):
-        model = StandardBKT()
-        posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
-        expected_summary = pd.DataFrame({"kc_id": ["kc_1"], "mean": [0.15]})
+        stan_call_count = {"count": 0}
 
-        def _fake_summarize(
-            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
-        ):
-            assert draws == posterior_draws
-            assert quantiles == [0.05, 0.95]
-            return expected_summary
+        def _fake_gq(*args, **kwargs):
+            stan_call_count["count"] += 1
+            return precomputed_stan
 
+        monkeypatch.setattr(model, "_predict_generated_quantities", _fake_gq)
         monkeypatch.setattr(
-            StandardBKT, "_summarize_gq_state_predictions", _fake_summarize
+            StandardBKT,
+            "_process_predict_gq",
+            lambda self_arg, gq_dict, data, col_mapping: expected,
         )
 
-        out = model.predict_smoothed_posterior(
-            posterior_draws=posterior_draws,
-            output="summary",
-            summary_quantiles=[0.05, 0.95],
-        )
-        pd.testing.assert_frame_equal(out, expected_summary)
+        out = model.predict_posterior_draws(data=data, stan_output=precomputed_stan)
+        assert stan_call_count["count"] == 0
+        assert out == expected
 
-    def test_raises_when_output_stan_and_posterior_draws_provided(self):
+    def test_predict_smoothed_posterior_draws_skips_stan_when_stan_output_provided(
+        self, monkeypatch
+    ):
         model = StandardBKT()
-        posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
-        with pytest.raises(TypeError, match="cannot be used when 'output' is 'stan'"):
-            model.predict_smoothed_posterior(
-                posterior_draws=posterior_draws,
-                output="stan",
-            )
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
 
-    def test_prefers_posterior_draws_when_both_inputs_are_provided(self):
-        model = StandardBKT()
-        posterior_draws = {"kc_1": pd.DataFrame({"draw": [0.1, 0.2]})}
-
-        out = model.predict_smoothed_posterior(
-            data=_minimal_df(),
-            posterior_draws=posterior_draws,
+        precomputed_stan = {"kc_1": MagicMock()}
+        expected = {"kc_1": pd.DataFrame({"student_id": ["s1"]})}
+        data = pd.DataFrame(
+            {
+                "student_id": ["s1"],
+                "problem_id": ["p1"],
+                "correct": [1],
+                "kc_id": ["kc_1"],
+                "timestamp": [1],
+            }
         )
 
-        assert out == posterior_draws
+        stan_call_count = {"count": 0}
+
+        def _fake_gq(*args, **kwargs):
+            stan_call_count["count"] += 1
+            return precomputed_stan
+
+        monkeypatch.setattr(model, "_predict_generated_quantities", _fake_gq)
+        monkeypatch.setattr(
+            StandardBKT,
+            "_process_predict_gq",
+            lambda self_arg, gq_dict, data, col_mapping: expected,
+        )
+
+        out = model.predict_smoothed_posterior_draws(
+            data=data, stan_output=precomputed_stan
+        )
+        assert stan_call_count["count"] == 0
+        assert out == expected
 
 
 class TestPredictPosteriorDataPath:
-    def test_predict_posterior_uses_process_helper_for_default_output(
-        self, monkeypatch
-    ):
+    def test_predict_posterior_draws_uses_process_helper(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
@@ -612,68 +639,10 @@ class TestPredictPosteriorDataPath:
             lambda self_arg, gq_dict, data, col_mapping: expected,
         )
 
-        out = model.predict_posterior(data=data_with_kc, output="default")
+        out = model.predict_posterior_draws(data=data_with_kc)
         assert out == expected
 
-    def test_predict_posterior_uses_summary_helper(self, monkeypatch):
-        model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
-        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
-        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
-        model._hidden_states_model = object()
-
-        fake_stan = {"kc_1": MagicMock()}
-        processed = {
-            "kc_1": pd.DataFrame(
-                {
-                    "student_id": ["s1"],
-                    "problem_id": ["p1"],
-                    "correct": [1],
-                    "pKnow": [0.5],
-                }
-            )
-        }
-        expected_summary = pd.DataFrame({"kc_id": ["kc_1"], "mean": [0.5]})
-
-        data_with_kc = pd.DataFrame(
-            {
-                "student_id": ["s1", "s1", "s2", "s2"],
-                "problem_id": ["p1", "p2", "p1", "p2"],
-                "correct": [1, 0, 0, 1],
-                "kc_id": ["kc_1", "kc_1", "kc_1", "kc_1"],
-            }
-        )
-
-        monkeypatch.setattr(
-            model,
-            "_predict_generated_quantities",
-            lambda data, gq_model, column_mapping=None, **kwargs: fake_stan,
-        )
-        monkeypatch.setattr(
-            StandardBKT,
-            "_process_predict_gq",
-            lambda self_arg, gq_dict, data, col_mapping: processed,
-        )
-
-        def _fake_summary(
-            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
-        ):
-            assert draws == processed
-            assert quantiles == [0.1, 0.9]
-            return expected_summary
-
-        monkeypatch.setattr(
-            StandardBKT, "_summarize_gq_state_predictions", _fake_summary
-        )
-
-        out = model.predict_posterior(
-            data=data_with_kc,
-            output="summary",
-            summary_quantiles=[0.1, 0.9],
-        )
-        pd.testing.assert_frame_equal(out, expected_summary)
-
-    def test_predict_posterior_uses_original_ids_and_masks_padded_positions(
+    def test_predict_posterior_draws_uses_original_ids_and_masks_padded_positions(
         self, monkeypatch
     ):
         model = StandardBKT()
@@ -721,7 +690,7 @@ class TestPredictPosteriorDataPath:
             },
         )
 
-        out = model.predict_posterior(data=sparse_df, output="default")
+        out = model.predict_posterior_draws(data=sparse_df)
         kc_df = out["default_kc"]
 
         # Only real observations — no padded rows
@@ -737,7 +706,9 @@ class TestPredictPosteriorDataPath:
         assert s1_rows["correct"].tolist() == [1, 0]
         assert s2_rows["correct"].tolist() == [1]
 
-    def test_predict_posterior_summary_includes_true_correctness(self, monkeypatch):
+    def test_posterior_summary_from_draws_includes_true_correctness(self, monkeypatch):
+        from stanbkt.utils import posterior_summary
+
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
@@ -782,7 +753,8 @@ class TestPredictPosteriorDataPath:
             },
         )
 
-        out = model.predict_posterior(data=sparse_df, output="summary")
+        draws = model.predict_posterior_draws(data=sparse_df)
+        out = posterior_summary(draws)
 
         # Summary has one row per (student_id, problem_id, correct) — only real obs
         assert set(out["kc_id"]) == {"default_kc"}
@@ -800,9 +772,66 @@ class TestPredictPosteriorDataPath:
         assert correct_vals.loc["s1", "p30"] == 0
         assert correct_vals.loc["s2", "p20"] == 1
 
+    def test_posterior_summary_from_stan_output_includes_true_correctness(
+        self, monkeypatch
+    ):
+        from stanbkt.utils import posterior_summary
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0, 1.0],
+                "pKnow[1,1]": [0.1, 0.3],
+                "pKnow[1,2]": [0.2, 0.4],
+                "pKnow[1,3]": [0.3, 0.5],  # padding
+                "pKnow[2,1]": [0.4, 0.6],
+                "pKnow[2,2]": [0.5, 0.7],  # padding
+                "pKnow[2,3]": [0.6, 0.8],  # padding
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        stan_output = {"default_kc": _FakeGQ(gq_draws)}
+        out = posterior_summary(stan_output, data=sparse_df)
+
+        assert set(out["kc_id"]) == {"default_kc"}
+        assert set(out.columns) >= {
+            "kc_id",
+            "student_id",
+            "problem_id",
+            "correct",
+            "pKnow_mean",
+        }
+        assert len(out) == 3
+        correct_vals = out.set_index(["student_id", "problem_id"])["correct"]
+        assert correct_vals.loc["s1", "p10"] == 1
+        assert correct_vals.loc["s1", "p30"] == 0
+        assert correct_vals.loc["s2", "p20"] == 1
+
 
 class TestPredictSmoothedPosteriorDataPath:
-    def test_predict_smoothed_uses_process_helper_for_default_output(self, monkeypatch):
+    def test_predict_smoothed_draws_uses_process_helper(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
@@ -841,68 +870,12 @@ class TestPredictSmoothedPosteriorDataPath:
             lambda self_arg, gq_dict, data, col_mapping: expected,
         )
 
-        out = model.predict_smoothed_posterior(data=data_with_kc, output="default")
+        out = model.predict_smoothed_posterior_draws(data=data_with_kc)
         assert out == expected
 
-    def test_predict_smoothed_uses_summary_helper(self, monkeypatch):
-        model = StandardBKT()
-        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
-        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
-        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
-        model._smoothed_hidden_states_model = object()
-
-        fake_stan = {"kc_1": MagicMock()}
-        processed = {
-            "kc_1": pd.DataFrame(
-                {
-                    "student_id": ["s1"],
-                    "problem_id": ["p1"],
-                    "correct": [1],
-                    "pKnow": [0.4],
-                }
-            )
-        }
-        expected_summary = pd.DataFrame({"kc_id": ["kc_1"], "mean": [0.4]})
-
-        data_with_kc = pd.DataFrame(
-            {
-                "student_id": ["s1", "s1", "s2", "s2"],
-                "problem_id": ["p1", "p2", "p1", "p2"],
-                "correct": [1, 0, 0, 1],
-                "kc_id": ["kc_1", "kc_1", "kc_1", "kc_1"],
-            }
-        )
-
-        monkeypatch.setattr(
-            model,
-            "_predict_generated_quantities",
-            lambda data, gq_model, column_mapping=None, **kwargs: fake_stan,
-        )
-        monkeypatch.setattr(
-            StandardBKT,
-            "_process_predict_gq",
-            lambda self_arg, gq_dict, data, col_mapping: processed,
-        )
-
-        def _fake_summary(
-            self_arg, draws, col_mapping, quantiles=(0.025, 0.975), pCorrectness=True
-        ):
-            assert draws == processed
-            assert quantiles == [0.2, 0.8]
-            return expected_summary
-
-        monkeypatch.setattr(
-            StandardBKT, "_summarize_gq_state_predictions", _fake_summary
-        )
-
-        out = model.predict_smoothed_posterior(
-            data=data_with_kc,
-            output="summary",
-            summary_quantiles=[0.2, 0.8],
-        )
-        pd.testing.assert_frame_equal(out, expected_summary)
-
-    def test_predict_smoothed_summary_includes_true_correctness(self, monkeypatch):
+    def test_predict_smoothed_draws_uses_original_ids_and_masks_padded_positions(
+        self, monkeypatch
+    ):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
@@ -916,7 +889,64 @@ class TestPredictSmoothedPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
-        # 2 draws, 2 students × 3 padded problems
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0],
+                "pKnow[1,1]": [0.1],
+                "pKnow[1,2]": [0.2],
+                "pKnow[1,3]": [0.3],  # padding
+                "pKnow[2,1]": [0.4],
+                "pKnow[2,2]": [0.5],  # padding
+                "pKnow[2,3]": [0.6],  # padding
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        monkeypatch.setattr(
+            model,
+            "_predict_generated_quantities",
+            lambda data, gq_model, column_mapping=None, **kwargs: {
+                "default_kc": _FakeGQ(gq_draws)
+            },
+        )
+
+        out = model.predict_smoothed_posterior_draws(data=sparse_df)
+        kc_df = out["default_kc"]
+
+        assert len(kc_df) == 3
+        assert set(kc_df.columns) >= {"student_id", "problem_id", "correct", "pKnow"}
+        s1_rows = kc_df[kc_df["student_id"] == "s1"].reset_index(drop=True)
+        s2_rows = kc_df[kc_df["student_id"] == "s2"].reset_index(drop=True)
+        assert s1_rows["problem_id"].tolist() == ["p10", "p30"]
+        assert s2_rows["problem_id"].tolist() == ["p20"]
+
+    def test_posterior_summary_from_smoothed_draws_includes_true_correctness(
+        self, monkeypatch
+    ):
+        from stanbkt.utils import posterior_summary
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._smoothed_hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
@@ -947,12 +977,9 @@ class TestPredictSmoothedPosteriorDataPath:
             },
         )
 
-        out = model.predict_smoothed_posterior(
-            data=sparse_df,
-            output="summary",
-        )
+        draws = model.predict_smoothed_posterior_draws(data=sparse_df)
+        out = posterior_summary(draws)
 
-        # Summary has one row per (student_id, problem_id, correct) — only real obs
         assert set(out["kc_id"]) == {"default_kc"}
         assert set(out.columns) >= {
             "kc_id",
@@ -961,19 +988,18 @@ class TestPredictSmoothedPosteriorDataPath:
             "correct",
             "pKnow_mean",
         }
-        assert len(out) == 3  # 3 real observations
-        # Correctness values are preserved in the summary
+        assert len(out) == 3
         correct_vals = out.set_index(["student_id", "problem_id"])["correct"]
         assert correct_vals.loc["s1", "p10"] == 1
         assert correct_vals.loc["s1", "p30"] == 0
         assert correct_vals.loc["s2", "p20"] == 1
 
 
-class TestSummarizeStatePredictionsHelper:
-    def test_summarize_gq_state_predictions_includes_all_kcs(self):
+class TestPosteriorSummaryUtil:
+    def test_posterior_summary_includes_all_kcs(self):
+        from stanbkt.utils import posterior_summary
         from stanbkt.utils.data_utils import ColumnNames
 
-        model = StandardBKT()
         col_mapping = ColumnNames.apply_default_mapping(None)
         posterior_draws = {
             "kc_1": pd.DataFrame(
@@ -994,14 +1020,17 @@ class TestSummarizeStatePredictionsHelper:
             ),
         }
 
-        out = model._summarize_gq_state_predictions(
-            posterior_draws,
-            col_mapping,
-            quantiles=[0.025, 0.975],
-        )
+        out = posterior_summary(posterior_draws, col_mapping=col_mapping)
 
         assert set(out["kc_id"]) == {"kc_1", "kc_2"}
         assert {"pKnow_2.50%", "pKnow_97.50%"}.issubset(set(out.columns))
+
+    def test_posterior_summary_requires_data_for_gq_input(self):
+        from stanbkt.utils import posterior_summary
+
+        fake_gq = {"kc_1": MagicMock(spec=["draws_pd"])}
+        with pytest.raises(ValueError, match="'data' must be provided"):
+            posterior_summary(fake_gq)
 
 
 # ---------------------------------------------------------------------------

@@ -40,9 +40,9 @@ class InitKnowledgeStrategy(StrEnum):
 
 
 # if PosteriorPredictionOutput is changed update `_check_predict_posterior_args`.
-PosteriorPredictionOutput = Literal["default", "summary", "stan"]
+PosteriorPredictionOutput = Literal["draws", "summary", "stan"]
 """Type alias for the output format of posterior predictions. 
-- 'default': Dictionary  mapping each KC to cleaned up DataFrames of posterior predictions (point estimate for MAP else draws)
+- 'draws': Dictionary  mapping each KC to cleaned up DataFrames of posterior predictions (point estimate for MAP else draws)
 - 'summary': Single DataFrame summarizing the fit results for each KC. 
 - 'stan': Dictionary mapping each KC to the raw CmdStanGQ fit objects
 the generated quantities predictions."""

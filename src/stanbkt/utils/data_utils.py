@@ -61,7 +61,13 @@ class ColumnNames(StrEnum):
 
     @staticmethod
     def apply_default_mapping(
-        col_mapping: Optional[Mapping[str, str]],
+        col_mapping: Optional[
+            Union[
+                Mapping[ColumnNames, str],
+                Mapping[str, str],
+                Mapping[ColumnNames | str, str],
+            ]
+        ] = None,
     ) -> dict[str, str]:
         """Apply default mapping to fill missing column name mappings.
 
@@ -78,7 +84,9 @@ class ColumnNames(StrEnum):
         dict[str | ColumnNames, str]
             Complete column mapping with defaults applied.
         """
-        result: dict[str, str] = dict(col_mapping) if col_mapping else {}
+        result: dict[str, str] = (
+            dict(col_mapping) if col_mapping else {}  # ty:ignore[no-matching-overload]
+        )
         default_mapping = ColumnNames.get_default_mapping()
         for key in default_mapping.keys():
             result.setdefault(key, default_mapping[key])
@@ -233,7 +241,13 @@ def format_kc_data(
 
 def iter_kc_data(
     data: pd.DataFrame,
-    col_mapping: Optional[Mapping[str, str]] = None,
+    col_mapping: Optional[
+        Union[
+            Mapping[ColumnNames, str],
+            Mapping[str, str],
+            Mapping[ColumnNames | str, str],
+        ]
+    ] = None,
     return_groups: bool = False,
     print_fn: Optional[Callable] = None,
 ) -> Iterator[tuple[str, KCData]]:

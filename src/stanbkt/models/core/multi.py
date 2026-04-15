@@ -488,7 +488,7 @@ class MultiBKT(BKTModelBase):
 
         return pd.concat(predictions, ignore_index=True)
 
-    def predict_smoothed_states(
+    def predict_smoothed(
         self,
         data: Optional[pd.DataFrame] = None,
         column_mapping: Optional[Mapping[str, str]] = None,
@@ -519,7 +519,7 @@ class MultiBKT(BKTModelBase):
         pd.DataFrame
             Long-format smoothed hidden-state estimates.
         """
-        self._fit_check(referrer="predict_smoothed_states")
+        self._fit_check(referrer="predict_smoothed")
 
         if data is None:
             raise ValueError("'data' must be provided for point-estimate prediction.")
@@ -581,7 +581,7 @@ class MultiBKT(BKTModelBase):
                 point_estimate=point_estimate,
                 groups=kc_data.groups,
             )
-            p_smooth = njit_predict_smoothed_numba(
+            p_smooth, p_correctness = njit_predict_smoothed_numba(
                 correctness=kc_data.correctness,
                 prior=prior,
                 learn=learn,
@@ -591,8 +591,9 @@ class MultiBKT(BKTModelBase):
                 lengths=kc_data.lengths,
             )
             kc_predictions = self._state_arrays_to_long_df(
-                p_smooth,
-                kc_data,
+                p_know=p_smooth,
+                kc_data=kc_data,
+                p_correctness=p_correctness,
                 correctness_col_name=column_mapping.get(
                     ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS
                 ),

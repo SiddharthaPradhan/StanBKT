@@ -14,6 +14,7 @@ from stanbkt.utils.verbose import VerbosityLevel
 from stanbkt.utils.sim import sim_simple_BKT
 from stanbkt.utils.model_archive import pack_model_directory, unpack_model_archive
 from stanbkt.utils.metrics import accuracy, rmse, auc
+from stanbkt.utils.posterior_utils import posterior_summary, gq_to_draws
 
 # add RTools to PATH
 if is_sys_windows():
@@ -46,4 +47,7 @@ __all__ = [
     "accuracy",
     "rmse",
     "auc",
+    # Posterior utilities
+    "posterior_summary",
+    "gq_to_draws",
 ]
