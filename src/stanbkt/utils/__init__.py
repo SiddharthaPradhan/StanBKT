@@ -11,7 +11,7 @@ from stanbkt.utils.compilation import (
 )
 from stanbkt.utils.data_utils import ColumnNames, KCData, validate_data, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
-from stanbkt.utils.sim import sim_simple_BKT
+from stanbkt.utils.sim import sim_simple_BKT, sim_grouped_BKT
 from stanbkt.utils.model_archive import pack_model_directory, unpack_model_archive
 from stanbkt.utils.metrics import accuracy, rmse, auc
 from stanbkt.utils.posterior_utils import posterior_summary, gq_to_draws
@@ -41,6 +41,7 @@ __all__ = [
     "VerbosityLevel",
     # Simulation
     "sim_simple_BKT",
+    "sim_grouped_BKT",
     # CmdStanPy setup
     "setup_cmdstanpy",
     # Metrics

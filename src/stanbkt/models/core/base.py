@@ -108,6 +108,8 @@ class BKTModelBase(VerboseMixin, ABC):
         self.cpp_compile_kwargs: dict[str, Any] = cpp_compile_kwargs or {}
         self.individual_initial_knowledge: bool = individual_initial_knowledge
         self.init_knowledge_strategy: InitKnowledgeStrategy = init_knowledge_strategy
+        # Flag to control whether the model uses group-specific parameters
+        self._use_groups: bool = False
         # Model is instantiated lazily during first fit and cached
         self._stan_model: Optional[csp.CmdStanModel] = None
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
@@ -244,7 +246,7 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
-            return_groups=False,
+            return_groups=self._use_groups,
             print_fn=self.log,
         ):
             if self.fits.has_kc(str(kc_id)):
@@ -506,7 +508,7 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=filtered_data,
             col_mapping=column_mapping,
-            return_groups=False,
+            return_groups=self._use_groups,
             print_fn=self.log,
         ):
             kc_fit = self.fits.get_fit(kc_id)
@@ -514,6 +516,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
                 point_estimate=point_estimate,
+                groups=kc_data.groups if self._use_groups else None,
             )
             p_know, p_correctness = njit_predict_numba(
                 correctness=kc_data.correctness,
@@ -617,7 +620,7 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=filtered_data,
             col_mapping=column_mapping,
-            return_groups=False,
+            return_groups=self._use_groups,
             print_fn=self.log,
         ):
             kc_fit = self.fits.get_fit(kc_id)
@@ -625,6 +628,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
                 point_estimate=point_estimate,
+                groups=kc_data.groups if self._use_groups else None,
             )
             p_smooth, p_correctness = njit_predict_smoothed_numba(
                 correctness=kc_data.correctness,
@@ -949,6 +953,7 @@ class BKTModelBase(VerboseMixin, ABC):
         fit: CmdStanFit,
         n_students: int,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
+        groups: Optional[npt.NDArray[np.int32]] = None,
     ) -> tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
@@ -1326,7 +1331,7 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
-            return_groups=False,
+            return_groups=self._use_groups,
             print_fn=self.log,
         ):
             kc_id_str = str(kc_id)

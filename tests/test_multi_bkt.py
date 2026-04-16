@@ -236,8 +236,15 @@ class TestBuildStanDataDict:
             "interaction_lengths",
             "nGroups",
             "groups",
+            "individual_pi_know",
         ):
             assert key in result, f"Missing key: {key}"
+
+    def test_individual_pi_know_matches_model_setting(self):
+        model = MultiBKT()
+        kc_data = _kc_data_with_groups(4, 3, 2)
+        result = model._build_stan_data_dict(kc_data)
+        assert result["individual_pi_know"] == int(model.individual_initial_knowledge)
 
     def test_n_groups_matches_group_2_index(self):
         model = MultiBKT()

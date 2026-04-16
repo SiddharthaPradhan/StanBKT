@@ -190,6 +190,7 @@ class StandardBKT(BKTModelBase):
         fit,
         n_students: int,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
+        groups: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Extract BKT parameters from a fitted Stan model.
 
@@ -204,6 +205,8 @@ class StandardBKT(BKTModelBase):
             Number of students (used to broadcast scalar parameters to array form).
         point_estimate : Literal["mean", "median", "mode"], default "mean"
             Which point estimate to use (posterior mean or median).
+        groups : np.ndarray, optional
+            Group indices (unused for StandardBKT, only for MultiBKT).
 
         Returns
         -------

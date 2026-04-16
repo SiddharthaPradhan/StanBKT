@@ -249,7 +249,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean": (
+            lambda fit, n_students, point_estimate="mean", groups=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -299,7 +299,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean": (
+            lambda fit, n_students, point_estimate="mean", groups=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -332,7 +332,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean": (
+            lambda fit, n_students, point_estimate="mean", groups=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -366,7 +366,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean": (
+            lambda fit, n_students, point_estimate="mean", groups=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -409,12 +409,14 @@ class TestPredict:
 # predict / predict_smoothed — parallel and fast_math options
 # ---------------------------------------------------------------------------
 
-_MOCK_PARAMS = lambda fit, n_students, point_estimate="mean": (  # noqa: E731
-    np.full(n_students, 0.2),
-    np.full(n_students, 0.3),
-    np.full(n_students, 0.1),
-    np.full(n_students, 0.2),
-    np.full(n_students, 0.1),
+_MOCK_PARAMS = (
+    lambda fit, n_students, point_estimate="mean", groups=None: (  # noqa: E731
+        np.full(n_students, 0.2),
+        np.full(n_students, 0.3),
+        np.full(n_students, 0.1),
+        np.full(n_students, 0.2),
+        np.full(n_students, 0.1),
+    )
 )
 
 _SPARSE_DF = pd.DataFrame(

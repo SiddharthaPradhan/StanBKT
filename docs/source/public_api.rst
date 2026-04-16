@@ -37,6 +37,7 @@ Example Usage:
 
     BKTModelBase
     StandardBKT
+    MultiBKT
 
 Bayesian Priors
 ^^^^^^^^^^^^^^^
@@ -154,6 +155,19 @@ They are typically not used directly by users, however they can be used to acces
    VBFit
    PathfinderFit
 
+Plotting (``stanbkt.plot``)
+---------------------------
+
+Posterior visualization of model correctness, including:
+- Posterior predictive distributions of the probability of correctness
+- Predictions sampled from the posterior predictive distribution
+
+.. autosummary::
+   :signatures: long
+   :caption: Posterior Visualization Functions
+   :toctree: generated
+   
+   plot_posterior_predictive_correctness
 
 Utilities (``stanbkt.utils``)
 -----------------------------
