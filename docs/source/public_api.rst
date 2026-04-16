@@ -27,7 +27,7 @@ Example Usage:
    from stanbkt.models import StandardBKT
 
    # Create an instance of the StandardBKT model
-   # by default models will use MCMC for estimation. See :
+   # By default, models use MCMC for estimation.
    model = StandardBKT()
 
 .. autosummary::
@@ -39,6 +39,31 @@ Example Usage:
     StandardBKT
     MultiBKT
 
+Initial Knowledge Strategy
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Strategy enum for modeling initial knowledge behavior.
+
+Example Usage:
+
+.. code-block:: python
+   :emphasize-lines: 1,5
+
+   from stanbkt.models import StandardBKT, InitKnowledgeStrategy
+
+   # instantiate a model that jointly estimates initial knowledge using student level pretest and correctess data
+   model = StandardBKT(
+       individual_initial_knowledge=True,
+       init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+   )
+
+.. autosummary::
+   :signatures: long
+   :caption: Initial Knowledge Strategy
+   :toctree: generated
+
+   InitKnowledgeStrategy
+
 Bayesian Priors
 ^^^^^^^^^^^^^^^
 
@@ -49,17 +74,15 @@ Example Usage:
 .. code-block:: python
    :emphasize-lines: 5,7,11,15
 
-   from stanbkt.models import StandardBKT, StandardPriors, InitKnowledgeStrategy
+   from stanbkt.models import StandardBKT, StandardPriors
    from stanbkt.fits import FitMethod
 
-   # select FIXME prior estimation method
-   est_type = InitKnowledgeStrategy.FIXME
    # create a model with the specified estimation method
-   model = StandardBKT(FitMethod.MCMC, prior_estimation_type=est_type)
+   model = StandardBKT(FitMethod.MCMC)
    
    # change the prior for pi_know (i.e. probability of knowing the skill at the start) to have 
    # a mean of 0.2 and a sd of 0.1 on the logit scale.
-   priors = BayesianPriors(pi_know_mu=0.2, pi_know_sigma=0.1)
+   priors = StandardPriors(pi_know_mu=0.2, pi_know_sigma=0.1)
    # Fit the model to the data
    # Note: Passing a single prior object will apply the same prior to all KCs in the data.
    #       To apply different priors to different KCs, pass a dict mapping KC ID to a prior object instead. 
@@ -72,8 +95,7 @@ Example Usage:
     :caption: Bayesian Priors
     :toctree: generated
    
-    InitKnowledgeStrategy
-    BayesianPriors
+   StandardPriors
 
 Fits (``stanbkt.fits``)
 -----------------------
@@ -149,7 +171,7 @@ They are typically not used directly by users, however they can be used to acces
    :toctree: generated
    
 
-   BaseFit
+   FitBase
    MCMCFit
    MLEFit
    VBFit
@@ -158,16 +180,18 @@ They are typically not used directly by users, however they can be used to acces
 Plotting (``stanbkt.plot``)
 ---------------------------
 
+.. currentmodule:: stanbkt.plot
+
 Posterior visualization of model correctness, including:
-- Posterior predictive distributions of the probability of correctness
-- Predictions sampled from the posterior predictive distribution
+   - Posterior predictive distributions of the probability of correctness
+   - Predictions sampled from the posterior predictive distribution
 
 .. autosummary::
    :signatures: long
    :caption: Posterior Visualization Functions
    :toctree: generated
    
-   plot_posterior_predictive_correctness
+   plot_posterior_correctness
 
 Utilities (``stanbkt.utils``)
 -----------------------------

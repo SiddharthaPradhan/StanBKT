@@ -15,7 +15,7 @@ copyright = "2026, Siddhartha Pradhan"
 author = "Siddhartha Pradhan"
 release = stanbkt.__version__
 
-GITHUB_ROOT_URL = "https://github.com/SiddharthaPradhan/stanbkt"
+GITHUB_ROOT_URL = "https://github.com/SiddharthaPradhan/stanbkt/blob/main"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -108,7 +108,7 @@ html_show_sourcelink = False
 
 # nbsphinx (notebook) config
 nbsphinx_prolog = f"""
-Download this notebook from {GITHUB_ROOT_URL}/docs/{{{{ env.doc2path(env.docname, base=None) }}}}
+Download this notebook from {GITHUB_ROOT_URL}/docs/source/{{{{ env.doc2path(env.docname, base=None) }}}}
 """
 
 # Application Events
