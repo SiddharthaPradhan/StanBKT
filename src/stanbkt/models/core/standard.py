@@ -33,6 +33,12 @@ class StandardBKT(BKTModelBase):
         - FitMethod.MLE: Maximum Likelihood Estimation for point estimates of parameters.
         - FitMethod.VB: Variational Bayes for faster approximate inference.
         - FitMethod.PATHFINDER: Pathfinder variational approximation for fast inference.
+    individual_initial_knowledge : bool, default False
+        Whether to estimate individualized initial knowledge parameters for each student (True) or a single population-level initial knowledge parameter (False).
+    init_knowledge_strategy : InitKnowledgeStrategy, default=InitKnowledgeStrategy.CORRECTNESS_ONLY
+        Strategy for estimating initial knowledge when `individual_initial_knowledge` is True. This determines how the initial knowledge parameters are informed by the data:
+        - InitKnowledgeStrategy.CORRECTNESS_ONLY: Initial knowledge is informed solely by the correctness of the first interaction for each student.
+        - InitKnowledgeStrategy.JOINT: Initial knowledge is informed by both the correctness
     verbose : VerbosityLevel, default=VerbosityLevel.INFO
         Verbosity level for logging during fitting and prediction.
     stan_compile_kwargs : dict, optional
@@ -41,6 +47,8 @@ class StandardBKT(BKTModelBase):
     cpp_compile_kwargs : dict, optional
         Additional C++ compile options forwarded as ``cpp_options`` to
         :external+cmdstanpy:py:class:`cmdstanpy.CmdStanModel`.
+    low_memory : bool, default True
+        Whether to use low memory mode, which may reduce memory usage at the cost of some performance
 
     Attributes
     ----------
@@ -56,6 +64,7 @@ class StandardBKT(BKTModelBase):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
+        low_memory: bool = True,
     ):
         """Initialize a StandardBKT model instance.
 
@@ -78,8 +87,8 @@ class StandardBKT(BKTModelBase):
             Additional keyword arguments for Stan model compilation.
         cpp_compile_kwargs : dict
             Additional keyword arguments for C++ compilation of the Stan model.
-        fits : Optional[BaseFit]
-            Object to store fitted model results for each KC.
+        low_memory : bool
+            Whether to use low memory mode, which may reduce memory usage at the cost of some performance
         """
 
         super().__init__(
@@ -89,6 +98,7 @@ class StandardBKT(BKTModelBase):
             init_knowledge_strategy=init_knowledge_strategy,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
+            low_memory=low_memory,
         )
 
     @property

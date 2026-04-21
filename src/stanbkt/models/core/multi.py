@@ -55,6 +55,8 @@ class MultiBKT(BKTModelBase):
         Additional Stan compilation options.
     cpp_compile_kwargs : dict | None, optional
         Additional C++ compilation options.
+    low_memory : bool, default True
+        Whether to use low memory mode, which may reduce memory usage at the cost of some performance
     """
 
     def __init__(
@@ -63,12 +65,14 @@ class MultiBKT(BKTModelBase):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
+        low_memory: bool = True,
     ):
         super().__init__(
             verbose=verbose,
             fit_method=fit_method,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
+            low_memory=low_memory,
         )
         self._use_groups = True
 

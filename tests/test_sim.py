@@ -101,7 +101,7 @@ def test_sim_grouped_bkt_uses_per_group_list_parameters() -> None:
 
 def test_sim_grouped_bkt_raises_on_invalid_parameter_list_length() -> None:
     """Test that invalid parameter list lengths raise appropriate errors."""
-    with pytest.raises(ValueError, match="prior must be scalar, shape \(n_groups,\),"):
+    with pytest.raises(ValueError, match=r"prior must be scalar, shape \(n_groups,\),"):
         sim_grouped_BKT(n_groups=3, prior=[0.1, 0.2], rng_seed=1)
 
 

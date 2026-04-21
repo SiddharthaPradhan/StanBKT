@@ -188,6 +188,41 @@ class TestFitMethodGuards:
         with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.MCMC)
 
+    def test_low_memory_mode_evicts_in_memory_fit_objects(self, monkeypatch):
+        model = StandardBKT(low_memory=True)
+
+        monkeypatch.setattr(
+            model,
+            "_compile_model",
+            lambda _: setattr(model, "_stan_model", object()),
+        )
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+                with open(
+                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
+                ) as f:
+                    f.write("lp__\n0\n")
+
+        monkeypatch.setattr(
+            model,
+            "_fit_stan_model_using_method",
+            lambda data_dict, fit_options: _DummySavedFit(),
+        )
+        monkeypatch.setattr(
+            FitMethod,
+            "infer_fit_method_from_stan_fit",
+            staticmethod(lambda _: FitMethod.MCMC),
+        )
+
+        model.fit(_minimal_df())
+
+        assert model.fits is not None
+        assert model.fits.num_fitted_kcs == 1
+        assert model.fits.has_kc("default_kc")
+        assert "default_kc" not in model.fits.stan_fits
+
 
 # ---------------------------------------------------------------------------
 # _fit_using_method — raises for unimplemented methods

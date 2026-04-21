@@ -71,8 +71,8 @@ class BKTModelBase(VerboseMixin, ABC):
         Additional keyword arguments for Stan model compilation.
     cpp_compile_kwargs : dict
         Additional keyword arguments for C++ compilation of the Stan model.
-    fits : Optional[BaseFit]
-        Object to store fitted model results for each KC.
+    low_memory : bool, default True
+        Whether to use low memory mode, which may reduce memory usage at the cost of some performance.
     """
 
     def __init__(
@@ -83,6 +83,7 @@ class BKTModelBase(VerboseMixin, ABC):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
+        low_memory: bool = True,
     ):
 
         # verify if initial_knowledge_strategy is valid given the individual_initial_knowledge setting
@@ -116,6 +117,8 @@ class BKTModelBase(VerboseMixin, ABC):
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
         self.fits: Optional[BaseFit] = None
         self._is_fitted: bool = False
+        self.low_memory: bool = low_memory
+        self._fit_artifact_tmpdir: tempfile.TemporaryDirectory[str] | None = None
 
     def __str__(self) -> str:
         """Return a user-friendly string representation of the model."""
@@ -142,6 +145,7 @@ class BKTModelBase(VerboseMixin, ABC):
             f"{class_name}("
             f"fit_method={self._fit_method!r}, "
             f"verbose={self.verbose!r}, "
+            f"low_memory={self.low_memory!r}, "
             f"is_fitted={self._is_fitted})"
         )
 
@@ -203,6 +207,12 @@ class BKTModelBase(VerboseMixin, ABC):
         # Intialize new fits object if not already initialized.
         if self.fits is None:
             self.fits = self.fit_class()
+        if self.low_memory:
+            if self._fit_artifact_tmpdir is None:
+                self._fit_artifact_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="stanbkt_fit_cache_"
+                )
+            self.fits.set_fit_artifact_base_location(self._fit_artifact_tmpdir.name)
 
         if self._stan_model is None:
             self._compile_model(self._stan_model_filename)
@@ -270,6 +280,8 @@ class BKTModelBase(VerboseMixin, ABC):
                 data_dict=data_dict, fit_options=stan_fit_options
             )
             self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
+            if self.low_memory:
+                self.fits.release_fit_from_memory(str(kc_id))
             self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
             self._is_fitted = True
         return self
@@ -372,6 +384,7 @@ class BKTModelBase(VerboseMixin, ABC):
             "verbose": int(self.verbose),
             "stan_compile_kwargs": self.stan_compile_kwargs,
             "cpp_compile_kwargs": self.cpp_compile_kwargs,
+            "low_memory": self.low_memory,
         }
 
     def save(self, save_base_location: str | os.PathLike[str]) -> None:
@@ -417,7 +430,7 @@ class BKTModelBase(VerboseMixin, ABC):
         Raises an error if data contains KCs that were not fitted.
         """
         self._fit_check()
-        fitted_kcs: set[str] = set(self.fits.stan_fits.keys()) if self.fits else set()
+        fitted_kcs: set[str] = self.fits.get_fitted_kcs() if self.fits else set()
         if not len(self.get_kcs_in_fitted_kcs(kcs)) > 0:
             raise ValueError(
                 f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
@@ -436,7 +449,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def get_kcs_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
         """Return the set of KCs in the data that were fitted previously."""
         self._fit_check()
-        fitted_kcs: set[str] = set(self.fits.stan_fits.keys()) if self.fits else set()
+        fitted_kcs: set[str] = self.fits.get_fitted_kcs() if self.fits else set()
         return kcs.intersection(fitted_kcs)
 
     def predict(

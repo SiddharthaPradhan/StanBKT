@@ -75,10 +75,10 @@ class MCMCFit(FitBase):
         if isinstance(kcs, str):
             kcs_set = set([kcs])
         elif kcs is None:
-            kcs_set = set(self.stan_fits.keys())
+            kcs_set = self.get_fitted_kcs()
         else:
             kcs_set = set(kcs)
-        available_kcs = set(self.stan_fits.keys())
+        available_kcs = self.get_fitted_kcs()
         if len(kcs_set - available_kcs) > 0:
             self.log(
                 f"Warning: The following KCs were requested for summary but have not been fitted: {kcs_set - available_kcs}. Skipping these KCs in the summary.",
@@ -91,10 +91,9 @@ class MCMCFit(FitBase):
         # only keep KCs that have been fitted and are available in stan_fits
         kcs_set = kcs_set.intersection(available_kcs)
         summary_frames: list[pd.DataFrame] = []
-        for kc, kc_stan_fit in self.stan_fits.items():
+        for kc in sorted(kcs_set):
             # skip KCs that were not requested
-            if kc not in kcs_set:
-                continue
+            kc_stan_fit = self.get_fit(kc)
             if kc_stan_fit is None:
                 raise ValueError(
                     f"Stan fit for KC '{kc}' is not available. Failed to generate summary."
