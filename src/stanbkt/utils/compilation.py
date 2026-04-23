@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Optional, Callable
 import platform
@@ -375,9 +376,14 @@ def compile_stan_model(
 
     Notes
     -----
-    The package Stan source files remain in place and are not copied into the
-    cache. Only the compiled executable is stored under the platform cache
-    directory.
+    Compilation is performed inside a temporary directory so the exe is never
+    written into the installed package tree (e.g. site-packages inside a venv).
+    Only the compiled executable is stored in the platform cache directory;
+    Stan source files are not cached.
+
+    CmdStanPy mutates the ``stanc_options`` / ``cpp_options`` dicts it receives
+    (adding ``include-paths`` based on the Stan file location).  This function
+    always passes shallow copies so the caller's dicts are never modified.
     """
     # stan path resolution
     resolved_stan_file = _as_path(stan_file)
@@ -399,38 +405,49 @@ def compile_stan_model(
         return csp.CmdStanModel(
             stan_file=str(resolved_stan_file),
             exe_file=str(cached_exe_file),
-            stanc_options=stanc_options,
-            cpp_options=cpp_options,
+            stanc_options=dict(stanc_options) if stanc_options else None,
+            cpp_options=dict(cpp_options) if cpp_options else None,
         )
 
     if print_fn is not None:
         print_fn(
-            f"Compiling Stan model. This may take a while. Subsequent calls for the same model and compile options will use cached executable.",
+            "Compiling Stan model. This may take a while. Subsequent calls for the same model and compile options will use cached executable.",
             level=VerbosityLevel.INFO,
         )
 
-    compiled_model = csp.CmdStanModel(
-        stan_file=str(resolved_stan_file),
-        stanc_options=stanc_options,
-        cpp_options=cpp_options,
-        force_compile=True,
-    )
+    # Compile inside a temporary directory so the exe is never written into
+    # the installed package tree (e.g. site-packages inside a venv).
+    # Source files are mirrored there only for the duration of compilation
+    # and deleted automatically when the temp dir is cleaned up.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        source_paths = _collect_stan_sources(resolved_stan_file)
+        source_root = _get_source_root(source_paths)
+        for source_path in source_paths:
+            dest = tmp_path / source_path.relative_to(source_root)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, dest)
 
-    if compiled_model.exe_file is None:
-        raise RuntimeError(
-            "CmdStanPy failed to produce a compiled executable. Perhaps reconfigure and/or reinstall CmdStanPy?"
+        tmp_entry = tmp_path / resolved_stan_file.relative_to(source_root)
+        compiled_model = csp.CmdStanModel(
+            stan_file=str(tmp_entry),
+            stanc_options=dict(stanc_options) if stanc_options else None,
+            cpp_options=dict(cpp_options) if cpp_options else None,
+            force_compile=True,
         )
 
-    compiled_exe_file = Path(compiled_model.exe_file)
-    shutil.copy2(compiled_exe_file, cached_exe_file)
-    if compiled_exe_file != cached_exe_file and compiled_exe_file.exists():
-        compiled_exe_file.unlink()
+        if compiled_model.exe_file is None:
+            raise RuntimeError(
+                "CmdStanPy failed to produce a compiled executable. Perhaps reconfigure and/or reinstall CmdStanPy?"
+            )
+
+        shutil.move(str(compiled_model.exe_file), cached_exe_file)
 
     return csp.CmdStanModel(
         stan_file=str(resolved_stan_file),
         exe_file=str(cached_exe_file),
-        stanc_options=stanc_options,
-        cpp_options=cpp_options,
+        stanc_options=dict(stanc_options) if stanc_options else None,
+        cpp_options=dict(cpp_options) if cpp_options else None,
     )
 
 

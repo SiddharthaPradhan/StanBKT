@@ -37,12 +37,3 @@ class InitKnowledgeStrategy(StrEnum):
 
     JOINT = "joint"
     CORRECTNESS_ONLY = "correctness_only"
-
-
-# if PosteriorPredictionOutput is changed update `_check_predict_posterior_args`.
-PosteriorPredictionOutput = Literal["draws", "summary", "stan"]
-"""Type alias for the output format of posterior predictions. 
-- 'draws': Dictionary  mapping each KC to cleaned up DataFrames of posterior predictions (point estimate for MAP else draws)
-- 'summary': Single DataFrame summarizing the fit results for each KC. 
-- 'stan': Dictionary mapping each KC to the raw CmdStanGQ fit objects
-the generated quantities predictions."""

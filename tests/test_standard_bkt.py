@@ -188,41 +188,6 @@ class TestFitMethodGuards:
         with pytest.raises(TypeError, match="unexpected keyword argument 'method'"):
             model.fit(_minimal_df(), method=FitMethod.MCMC)
 
-    def test_low_memory_mode_evicts_in_memory_fit_objects(self, monkeypatch):
-        model = StandardBKT(low_memory=True)
-
-        monkeypatch.setattr(
-            model,
-            "_compile_model",
-            lambda _: setattr(model, "_stan_model", object()),
-        )
-
-        class _DummySavedFit:
-            def save_csvfiles(self, folder: str) -> None:
-                os.makedirs(folder, exist_ok=True)
-                with open(
-                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
-                ) as f:
-                    f.write("lp__\n0\n")
-
-        monkeypatch.setattr(
-            model,
-            "_fit_stan_model_using_method",
-            lambda data_dict, fit_options: _DummySavedFit(),
-        )
-        monkeypatch.setattr(
-            FitMethod,
-            "infer_fit_method_from_stan_fit",
-            staticmethod(lambda _: FitMethod.MCMC),
-        )
-
-        model.fit(_minimal_df())
-
-        assert model.fits is not None
-        assert model.fits.num_fitted_kcs == 1
-        assert model.fits.has_kc("default_kc")
-        assert "default_kc" not in model.fits.stan_fits
-
 
 # ---------------------------------------------------------------------------
 # _fit_using_method — raises for unimplemented methods
@@ -827,6 +792,13 @@ class TestPredictPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
@@ -865,6 +837,197 @@ class TestPredictPosteriorDataPath:
         assert correct_vals.loc["s1", "p10"] == 1
         assert correct_vals.loc["s1", "p30"] == 0
         assert correct_vals.loc["s2", "p20"] == 1
+
+    def test_predict_posterior_summary_matches_draws_summary(self, monkeypatch):
+        from stanbkt.utils import posterior_summary
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0, 1.0],
+                "pKnow[1,1]": [0.1, 0.3],
+                "pKnow[1,2]": [0.2, 0.4],
+                "pKnow[1,3]": [0.3, 0.5],
+                "pKnow[2,1]": [0.4, 0.6],
+                "pKnow[2,2]": [0.5, 0.7],
+                "pKnow[2,3]": [0.6, 0.8],
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        stan_output = {"default_kc": _FakeGQ(gq_draws)}
+
+        streaming_summary = model.predict_posterior_summary(
+            data=sparse_df, stan_output=stan_output
+        )
+        draws_summary = posterior_summary(stan_output, data=sparse_df)
+
+        cols = sorted(set(streaming_summary.columns).union(set(draws_summary.columns)))
+        pd.testing.assert_frame_equal(
+            streaming_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            draws_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_predict_posterior_summary_streams_one_kc_at_a_time(self, monkeypatch):
+        from stanbkt.utils import posterior_summary
+        from stanbkt.utils.data_utils import iter_kc_data
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0, 1.0],
+                "pKnow[1,1]": [0.1, 0.3],
+                "pKnow[1,2]": [0.2, 0.4],
+                "pKnow[1,3]": [0.3, 0.5],
+                "pKnow[2,1]": [0.4, 0.6],
+                "pKnow[2,2]": [0.5, 0.7],
+                "pKnow[2,3]": [0.6, 0.8],
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        callback_calls: list[str] = []
+
+        def _fake_predict_generated_quantities(
+            data, gq_model, column_mapping=None, _per_kc_callback=None, **kwargs
+        ):
+            assert _per_kc_callback is not None
+            for kc_id, kc_data in iter_kc_data(
+                data=data,
+                col_mapping=column_mapping,
+                return_groups=False,
+                print_fn=None,
+            ):
+                callback_calls.append(str(kc_id))
+                _per_kc_callback(str(kc_id), _FakeGQ(gq_draws), kc_data)
+            return {}
+
+        monkeypatch.setattr(
+            model,
+            "_predict_generated_quantities",
+            _fake_predict_generated_quantities,
+        )
+
+        streaming_summary = model.predict_posterior_summary(data=sparse_df)
+        draws_summary = posterior_summary(
+            {"default_kc": _FakeGQ(gq_draws)}, data=sparse_df
+        )
+
+        assert callback_calls == ["default_kc"]
+        cols = sorted(set(streaming_summary.columns).union(set(draws_summary.columns)))
+        pd.testing.assert_frame_equal(
+            streaming_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            draws_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_predict_posterior_summary_uses_all_available_cores_for_minus_one(
+        self, monkeypatch
+    ):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        observed: dict[str, int] = {}
+
+        def _fake_process_predict_summary_gq(
+            posterior_summary_raw, data, col_mapping, quantiles, n_cores
+        ):
+            observed["n_cores"] = n_cores
+            return pd.DataFrame()
+
+        monkeypatch.setattr(
+            model, "_process_predict_summary_gq", _fake_process_predict_summary_gq
+        )
+        monkeypatch.setattr(os, "cpu_count", lambda: 4)
+
+        model.predict_posterior_summary(
+            data=sparse_df,
+            stan_output={"default_kc": MagicMock()},
+            n_cores=-1,
+        )
+
+        assert observed["n_cores"] == 4
 
 
 class TestPredictSmoothedPosteriorDataPath:
@@ -1030,6 +1193,201 @@ class TestPredictSmoothedPosteriorDataPath:
         assert correct_vals.loc["s1", "p10"] == 1
         assert correct_vals.loc["s1", "p30"] == 0
         assert correct_vals.loc["s2", "p20"] == 1
+
+    def test_predict_smoothed_posterior_summary_matches_draws_summary(
+        self, monkeypatch
+    ):
+        from stanbkt.utils import posterior_summary
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._smoothed_hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0, 1.0],
+                "pKnow[1,1]": [0.1, 0.3],
+                "pKnow[1,2]": [0.2, 0.4],
+                "pKnow[1,3]": [0.3, 0.5],
+                "pKnow[2,1]": [0.4, 0.6],
+                "pKnow[2,2]": [0.5, 0.7],
+                "pKnow[2,3]": [0.6, 0.8],
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        stan_output = {"default_kc": _FakeGQ(gq_draws)}
+
+        streaming_summary = model.predict_smoothed_posterior_summary(
+            data=sparse_df, stan_output=stan_output
+        )
+        draws_summary = posterior_summary(stan_output, data=sparse_df)
+
+        cols = sorted(set(streaming_summary.columns).union(set(draws_summary.columns)))
+        pd.testing.assert_frame_equal(
+            streaming_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            draws_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_predict_smoothed_posterior_summary_streams_one_kc_at_a_time(
+        self, monkeypatch
+    ):
+        from stanbkt.utils import posterior_summary
+        from stanbkt.utils.data_utils import iter_kc_data
+
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model._smoothed_hidden_states_model = object()
+
+        class _FakeGQ:
+            def __init__(self, draws_df: pd.DataFrame):
+                self._draws_df = draws_df
+
+            def draws_pd(self) -> pd.DataFrame:
+                return self._draws_df
+
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        gq_draws = pd.DataFrame(
+            {
+                "lp__": [0.0, 1.0],
+                "pKnow[1,1]": [0.1, 0.3],
+                "pKnow[1,2]": [0.2, 0.4],
+                "pKnow[1,3]": [0.3, 0.5],
+                "pKnow[2,1]": [0.4, 0.6],
+                "pKnow[2,2]": [0.5, 0.7],
+                "pKnow[2,3]": [0.6, 0.8],
+            }
+        )
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        callback_calls: list[str] = []
+
+        def _fake_predict_generated_quantities(
+            data, gq_model, column_mapping=None, _per_kc_callback=None, **kwargs
+        ):
+            assert _per_kc_callback is not None
+            for kc_id, kc_data in iter_kc_data(
+                data=data,
+                col_mapping=column_mapping,
+                return_groups=False,
+                print_fn=None,
+            ):
+                callback_calls.append(str(kc_id))
+                _per_kc_callback(str(kc_id), _FakeGQ(gq_draws), kc_data)
+            return {}
+
+        monkeypatch.setattr(
+            model,
+            "_predict_generated_quantities",
+            _fake_predict_generated_quantities,
+        )
+
+        streaming_summary = model.predict_smoothed_posterior_summary(data=sparse_df)
+        draws_summary = posterior_summary(
+            {"default_kc": _FakeGQ(gq_draws)}, data=sparse_df
+        )
+
+        assert callback_calls == ["default_kc"]
+        cols = sorted(set(streaming_summary.columns).union(set(draws_summary.columns)))
+        pd.testing.assert_frame_equal(
+            streaming_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            draws_summary[cols]
+            .sort_values(by=["kc_id", "student_id", "problem_id"])
+            .reset_index(drop=True),
+            check_exact=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_predict_smoothed_posterior_summary_uses_all_available_cores_for_minus_one(
+        self, monkeypatch
+    ):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        observed: dict[str, int] = {}
+
+        def _fake_process_predict_summary_gq(
+            posterior_summary_raw, data, col_mapping, quantiles, n_cores
+        ):
+            observed["n_cores"] = n_cores
+            return pd.DataFrame()
+
+        monkeypatch.setattr(
+            model, "_process_predict_summary_gq", _fake_process_predict_summary_gq
+        )
+        monkeypatch.setattr(os, "cpu_count", lambda: 4)
+
+        model.predict_smoothed_posterior_summary(
+            data=sparse_df,
+            stan_output={"default_kc": MagicMock()},
+            n_cores=-1,
+        )
+
+        assert observed["n_cores"] == 4
 
 
 class TestPosteriorSummaryUtil:

@@ -24,25 +24,23 @@ def _base_grouped_data() -> pd.DataFrame:
     )
 
 
-def _base_posterior_draws() -> dict[str, pd.DataFrame]:
-    return {
-        "kc_a": pd.DataFrame(
-            {
-                "draw__": [1, 1, 1, 1, 2, 2, 2, 2],
-                "student_id": ["s1", "s1", "s2", "s2"] * 2,
-                "problem_id": ["p1", "p2", "p1", "p2"] * 2,
-                "pCorrectness": [0.8, 0.7, 0.3, 0.4, 0.9, 0.6, 0.2, 0.5],
-            }
-        )
-    }
+def _base_posterior_draws() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "draw__": [1, 1, 1, 1, 2, 2, 2, 2],
+            "student_id": ["s1", "s1", "s2", "s2"] * 2,
+            "problem_id": ["p1", "p2", "p1", "p2"] * 2,
+            "pCorrectness": [0.8, 0.7, 0.3, 0.4, 0.9, 0.6, 0.2, 0.5],
+        }
+    )
 
 
 def test_plot_posterior_correctness_grouped_uses_single_figure_legend() -> None:
     data = _base_grouped_data()
-    posterior_preds = _base_posterior_draws()
+    posterior_pred_kc = _base_posterior_draws()
 
     axes = plot_posterior_correctness(
-        posterior_preds=posterior_preds,
+        posterior_pred_kc=posterior_pred_kc,
         data=data,
         kc="kc_a",
         grouped=True,
@@ -74,11 +72,9 @@ def test_plot_posterior_correctness_grouped_respects_group_mapping() -> None:
             "group_id": "cohort",
         }
     )
-    posterior_preds = {
-        "kc_a": _base_posterior_draws()["kc_a"].rename(
-            columns={"student_id": "sid", "problem_id": "pid"}
-        )
-    }
+    posterior_pred_kc = _base_posterior_draws().rename(
+        columns={"student_id": "sid", "problem_id": "pid"}
+    )
     col_mapping = {
         ColumnNames.STUDENT_ID: "sid",
         ColumnNames.PROBLEM_ID: "pid",
@@ -89,7 +85,7 @@ def test_plot_posterior_correctness_grouped_respects_group_mapping() -> None:
     }
 
     axes = plot_posterior_correctness(
-        posterior_preds=posterior_preds,
+        posterior_pred_kc=posterior_pred_kc,
         data=data,
         kc="kc_a",
         grouped=True,
@@ -107,11 +103,11 @@ def test_plot_posterior_correctness_grouped_respects_group_mapping() -> None:
 
 def test_plot_posterior_correctness_grouped_true_requires_group_column() -> None:
     data = _base_grouped_data().drop(columns=["group_id"])
-    posterior_preds = _base_posterior_draws()
+    posterior_pred_kc = _base_posterior_draws()
 
     with pytest.raises(ValueError, match="Missing required columns"):
         plot_posterior_correctness(
-            posterior_preds=posterior_preds,
+            posterior_pred_kc=posterior_pred_kc,
             data=data,
             kc="kc_a",
             grouped=True,
@@ -121,10 +117,10 @@ def test_plot_posterior_correctness_grouped_true_requires_group_column() -> None
 
 def test_plot_posterior_correctness_grouped_false_ignores_group_column() -> None:
     data = _base_grouped_data()
-    posterior_preds = _base_posterior_draws()
+    posterior_pred_kc = _base_posterior_draws()
 
     ax = plot_posterior_correctness(
-        posterior_preds=posterior_preds,
+        posterior_pred_kc=posterior_pred_kc,
         data=data,
         kc="kc_a",
         grouped=False,

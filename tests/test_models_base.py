@@ -109,14 +109,6 @@ class TestBKTModelBaseInit:
         m = _ConcreteModel()
         assert m.cpp_compile_kwargs == {}
 
-    def test_low_memory_default_true(self):
-        m = _ConcreteModel()
-        assert m.low_memory is True
-
-    def test_low_memory_can_be_disabled(self):
-        m = _ConcreteModel(low_memory=False)
-        assert m.low_memory is False
-
     def test_stan_model_is_none(self):
         m = _ConcreteModel()
         assert m._stan_model is None
@@ -275,7 +267,6 @@ class TestSave:
             "verbose": int(VerbosityLevel.DEBUG),
             "stan_compile_kwargs": {"stanc": True},
             "cpp_compile_kwargs": {"threads": 4},
-            "low_memory": True,
         }
 
 

@@ -13,7 +13,7 @@ import numpy.typing as npt
 
 
 def plot_posterior_correctness(
-    posterior_preds: dict[str, pd.DataFrame],
+    posterior_pred_kc: pd.DataFrame,
     data: pd.DataFrame,
     kc: str,
     grouped: bool = False,
@@ -35,8 +35,8 @@ def plot_posterior_correctness(
 
     Parameters
     ----------
-    posterior_preds : dict[str, pd.DataFrame]
-        Dictionary containing posterior predictions for each KC.
+    posterior_pred_kc : pandas.DataFrame
+        Posterior predictions for the selected KC.
     data : pandas.DataFrame
         Input data containing student interactions.
     kc : str
@@ -69,8 +69,6 @@ def plot_posterior_correctness(
         A single axis for ungrouped data, or an array of subplot axes (one per group)
         when grouped data is provided.
     """
-    if kc not in posterior_preds:
-        raise ValueError(f"KC '{kc}' not found in posterior predictions.")
     column_mapping = ColumnNames.apply_default_mapping(column_mapping)
     if (
         kc
@@ -106,7 +104,7 @@ def plot_posterior_correctness(
             data_kc[column_mapping[ColumnNames.PROBLEM_ID]].isin(problem_ids)
         ]
     grouped_plot = grouped
-    posterior_kc = posterior_preds[kc].copy()
+    posterior_kc = posterior_pred_kc.copy()
 
     if type == "preds":
         posterior_kc[_PCORRECT] = np.random.binomial(
@@ -143,7 +141,7 @@ def plot_posterior_correctness(
         )
         if posterior_kc[group_col].isna().any():
             raise ValueError(
-                f"Could not map all posterior rows to '{group_col}'. Ensure posterior predictions include '{posterior_student_col}'."
+                f"Could not map all posterior rows to '{group_col}'. Ensure posterior prediction rows include '{posterior_student_col}'."
             )
 
         posterior_grouped = (

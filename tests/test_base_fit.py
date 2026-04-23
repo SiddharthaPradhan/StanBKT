@@ -7,7 +7,6 @@ import pandas as pd
 import pytest
 
 import stanbkt.fits.persistence.fit_io as persistence_io
-import stanbkt.fits.core.base as fit_base_module
 from stanbkt.fits.persistence.fit_io import (
     FitMetadata,
     FitSaveFolder,
@@ -244,47 +243,6 @@ class TestSaveLoadRoundTrip:
         assert (save_dir / FIT_SAVE_FOLDER / CACHE_SAVE_FOLDER / cache_file).exists()
         assert saved_metadata.summary_cache_available is True
 
-    def test_load_can_defer_fit_objects_until_first_access(self, tmp_path, monkeypatch):
-        save_dir = tmp_path / "fit_saves"
-        fit = _ConcreteFit()
-
-        class _DummySavedFit:
-            def save_csvfiles(self, folder: str) -> None:
-                os.makedirs(folder, exist_ok=True)
-                with open(
-                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
-                ) as f:
-                    f.write("lp__\n0\n")
-
-        class _DummyLoadedFit:
-            pass
-
-        loaded_fit_obj = _DummyLoadedFit()
-        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
-        fit._save(str(save_dir))
-
-        calls: list[str] = []
-
-        monkeypatch.setattr(persistence_io, "CmdStanFit", (_DummyLoadedFit,))
-
-        def _fake_from_csv(path: str):
-            calls.append(path)
-            return loaded_fit_obj
-
-        monkeypatch.setattr(fit_base_module, "cmdstan_from_csv", _fake_from_csv)
-
-        loaded = _ConcreteFit._load(str(save_dir), lazy=True)
-
-        assert loaded.stan_fits == {}
-        assert loaded.num_fitted_kcs == 1
-        assert calls == []
-
-        reloaded_fit = loaded.get_fit("kc_a")
-
-        assert reloaded_fit is loaded_fit_obj
-        assert len(calls) == 1
-        assert "kc_a" in loaded.stan_fits
-
     def test_summary_percentiles_persisted_through_save_load(
         self, tmp_path, monkeypatch
     ):
@@ -352,34 +310,6 @@ class TestSaveLoadRoundTrip:
 
         with pytest.raises(ValueError, match="expecting method 'vb'"):
             _VBConcreteFit._load(str(save_dir))
-
-
-class TestMemoryRelease:
-    def test_release_fit_from_memory_persists_and_allows_lazy_reload(
-        self, tmp_path, monkeypatch
-    ):
-        fit = _ConcreteFit(fit_artifact_base_location=str(tmp_path))
-
-        class _DummySavedFit:
-            def save_csvfiles(self, folder: str) -> None:
-                os.makedirs(folder, exist_ok=True)
-                with open(
-                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
-                ) as f:
-                    f.write("lp__\n0\n")
-
-        loaded_fit_obj = object()
-        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
-        fit.release_fit_from_memory("kc_a")
-
-        assert "kc_a" not in fit.stan_fits
-        assert fit.has_kc("kc_a")
-        assert fit.num_fitted_kcs == 1
-
-        monkeypatch.setattr(
-            "stanbkt.fits.core.base.cmdstan_from_csv", lambda _: loaded_fit_obj
-        )
-        assert fit.get_fit("kc_a") is loaded_fit_obj
 
 
 # ---------------------------------------------------------------------------

@@ -128,7 +128,6 @@ def _copy_fit_csvfiles_if_available(fit: CmdStanFit, target_dir: str) -> bool:
 def load_fit_artifacts(
     base_save_location: str,
     expected_fit_method: FitMethod,
-    lazy: bool = False,
 ) -> tuple[FitMetadata, dict[str, CmdStanFit], dict[str, pd.DataFrame]]:
     """Load fit, metadata, and cache artifacts from disk.
 
@@ -138,8 +137,6 @@ def load_fit_artifacts(
         Root path containing fit artifacts.
     expected_fit_method : FitMethod
         Fit method expected by caller.
-    lazy : bool, default False
-        Whether to defer loading CmdStan fit objects until they are requested.
 
     Returns
     -------
@@ -195,32 +192,31 @@ def load_fit_artifacts(
             error_kcs.add(fit_save.kc)
             continue
 
-        if not lazy:
-            try:
-                loaded_fit = cmdstan_from_csv(kc_fit_save_folder)
-            except Exception as exc:
-                warnings.warn(
-                    (
-                        f"Failed to load saved fit for KC '{fit_save.kc}' from "
-                        f"'{kc_fit_save_folder}': {exc}. Skipping this KC during load."
-                    ),
-                    stacklevel=2,
-                )
-                error_kcs.add(fit_save.kc)
-                continue
+        try:
+            loaded_fit = cmdstan_from_csv(kc_fit_save_folder)
+        except Exception as exc:
+            warnings.warn(
+                (
+                    f"Failed to load saved fit for KC '{fit_save.kc}' from "
+                    f"'{kc_fit_save_folder}': {exc}. Skipping this KC during load."
+                ),
+                stacklevel=2,
+            )
+            error_kcs.add(fit_save.kc)
+            continue
 
-            if not isinstance(loaded_fit, CmdStanFit):
-                warnings.warn(
-                    (
-                        f"Encountered unsupported Fit type '{type(loaded_fit).__name__}' "
-                        f"for KC '{fit_save.kc}'. Skipping this KC during load."
-                    ),
-                    stacklevel=2,
-                )
-                error_kcs.add(fit_save.kc)
-                continue
+        if not isinstance(loaded_fit, CmdStanFit):
+            warnings.warn(
+                (
+                    f"Encountered unsupported Fit type '{type(loaded_fit).__name__}' "
+                    f"for KC '{fit_save.kc}'. Skipping this KC during load."
+                ),
+                stacklevel=2,
+            )
+            error_kcs.add(fit_save.kc)
+            continue
 
-            fits[fit_save.kc] = loaded_fit
+        fits[fit_save.kc] = loaded_fit
 
         if fit_save.summary_cache_available:
             cache_file_path = os.path.join(

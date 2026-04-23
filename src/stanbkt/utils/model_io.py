@@ -106,7 +106,6 @@ def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
     verbose_raw = raw_kwargs.get("verbose")
     stan_compile_kwargs_raw = raw_kwargs.get("stan_compile_kwargs")
     cpp_compile_kwargs_raw = raw_kwargs.get("cpp_compile_kwargs")
-    low_memory_raw = raw_kwargs.get("low_memory", False)
 
     if not isinstance(fit_method_raw, str):
         raise ValueError(
@@ -124,15 +123,12 @@ def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "Saved model init kwargs must include object field 'cpp_compile_kwargs'."
         )
-    if not isinstance(low_memory_raw, bool):
-        raise ValueError("Saved model init kwargs field 'low_memory' must be boolean.")
 
     parsed_kwargs: dict[str, Any] = dict(raw_kwargs)
     parsed_kwargs["fit_method"] = FitMethod(fit_method_raw)
     parsed_kwargs["verbose"] = VerbosityLevel(verbose_raw)
     parsed_kwargs["stan_compile_kwargs"] = dict(stan_compile_kwargs_raw)
     parsed_kwargs["cpp_compile_kwargs"] = dict(cpp_compile_kwargs_raw)
-    parsed_kwargs["low_memory"] = low_memory_raw
     return parsed_kwargs
 
 
@@ -185,7 +181,7 @@ def load_model(
             )
 
         model = resolved_model_class(**parsed_init_kwargs)
-        model.fits = model.fit_class._load(extracted_path, lazy=model.low_memory)
+        model.fits = model.fit_class._load(extracted_path)
         model._is_fitted = model.fits.num_fitted_kcs > 0
 
         # Keep extracted files alive because CmdStan fit objects store CSV paths and

@@ -120,7 +120,9 @@ class FitFactory:
 
     @staticmethod
     def verify_fit_options_compatibility(
-        fit_options: StanFitOptions, fit_method: FitMethod
+        fit_options: StanFitOptions,
+        fit_method: FitMethod,
+        cpp_compile_kwargs: dict = {},
     ) -> None:
         """Verify that provided fit options are compatible with the specified fit method.
 
@@ -130,6 +132,8 @@ class FitFactory:
             Fit options to verify.
         fit_method : FitMethod
             Fit method for which to verify compatibility.
+        cpp_compile_kwargs : dict, optional
+            C++ compile kwargs to check for compatibility with fit options (e.g. for MCMC multi-threading), by default {}
 
         Raises
         ------
@@ -143,6 +147,17 @@ class FitFactory:
             if not isinstance(fit_options, fit_option_class):
                 raise TypeError(
                     f"Incompatible fit options type {type(fit_options).__name__} for fit method '{fit_method}'. Expected {fit_option_class.__name__}."
+                )
+            if (
+                isinstance(fit_options, MCMCFitOptions)  # if MCMC
+                and fit_options.threads_per_chain > 1  # multi threading is enabled
+                and not cpp_compile_kwargs.get(
+                    "STAN_THREADS", False
+                )  # check if STAN_THREADS is True in cpp_compile_kwargs
+            ):
+                raise ValueError(
+                    f"{fit_options.threads_per_chain} threads per chain specified, but `'STAN_THREADS': "
+                    f"{cpp_compile_kwargs.get('STAN_THREADS', None)}` given in cpp_compile_kwargs."
                 )
         except KeyError:
             raise ValueError(

@@ -33,10 +33,9 @@ class _LoadedFit(FitBase):
 
 class _FakeFitClass:
     @classmethod
-    def _load(cls, base_save_location: str, lazy: bool = False):
+    def _load(cls, base_save_location: str):
         loaded = _LoadedFit()
-        if not lazy:
-            loaded.stan_fits = {"kc_1": object()}  # ty:ignore[invalid-assignment]
+        loaded.stan_fits = {"kc_1": object()}  # ty:ignore[invalid-assignment]
         loaded._fit_metadata.fit_saves = {"kc_1": object()}  # ty:ignore[assignment]
         loaded.num_fitted_kcs = 1
         return loaded
@@ -99,7 +98,6 @@ def _write_model_metadata(
     verbose: VerbosityLevel = VerbosityLevel.INFO,
     stan_compile_kwargs: dict[str, object] | None = None,
     cpp_compile_kwargs: dict[str, object] | None = None,
-    low_memory: bool = True,
 ) -> None:
     model_metadata = {
         "model_module": model_class.__module__,
@@ -110,7 +108,6 @@ def _write_model_metadata(
             "verbose": int(verbose),
             "stan_compile_kwargs": stan_compile_kwargs or {},
             "cpp_compile_kwargs": cpp_compile_kwargs or {},
-            "low_memory": low_memory,
         },
     }
     model_metadata_path = os.path.join(base_path, MODEL_METADATA_SAVE_FILE)
@@ -154,26 +151,8 @@ class TestLoadModel:
         assert model._is_fitted is True
         assert model.fits is not None
         assert model.fits.num_fitted_kcs == 1
-        assert model.fits.stan_fits == {}
-        assert hasattr(model, "_loaded_artifact_dir")
-
-    def test_load_model_eagerly_loads_fits_when_low_memory_disabled(self, tmp_path):
-        artifact_dir = tmp_path / "artifact"
-        artifact_dir.mkdir()
-        _write_metadata(str(artifact_dir), fit_method=FitMethod.MCMC)
-        _write_model_metadata(
-            str(artifact_dir),
-            _FakeModel,
-            fit_method=FitMethod.MCMC,
-            low_memory=False,
-        )
-        artifact_path = tmp_path / f"model{MODEL_ARCHIVE_SUFFIX}"
-        _pack_archive(str(artifact_dir), str(artifact_path))
-
-        model = load_model(load_base_location=artifact_path)
-
-        assert model.fits is not None
         assert set(model.fits.stan_fits.keys()) == {"kc_1"}
+        assert hasattr(model, "_loaded_artifact_dir")
 
     def test_load_model_raises_for_missing_archive(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="missing.stanbktmod"):

@@ -30,6 +30,8 @@ extensions = [
     "sphinx_autodoc_typehints",
     "sphinx.ext.coverage",
     "sphinx_design",
+    "sphinx_copybutton",
+    # "sphinx_gallery.gen_gallery",
     "nbsphinx",
 ]
 
@@ -71,6 +73,11 @@ nitpick_ignore = []
 # Suppress cross-reference warnings that arise from symbols being
 suppress_warnings = ["ref.python"]
 
+# sphinx_gallery config
+sphinx_gallery_conf = {
+    "examples_dirs": "examples",
+    "gallery_dirs": "auto_examples",
+}
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
