@@ -1,10 +1,9 @@
 """Typed fit-option dataclasses for CmdStanPy fit methods.
 
-This module defines a small set of strongly-typed, commonly used fitting options
-for Stan workflows in this project. These options are intentionally conservative:
-only frequently used arguments are exposed as explicit dataclass fields, while
+This module defines a small set of strongly-typed, commonly used fitting options.
+These options are intentionally conservative: only frequently used arguments are exposed as explicit dataclass fields, while
 less-common (or future) CmdStanPy keyword arguments can still be passed via
-``extra_kwargs``. It also defines the default options for each fit method.
+``extra_kwargs``. It also defines the default options for each fit method usually None.
 """
 
 from __future__ import annotations
@@ -122,7 +121,7 @@ class MCMCFitOptions(BaseFitOptions):
     iter_warmup: int = 1000
     iter_sampling: int = 1000
     save_warmup: bool | None = None
-    thin: int = 1
+    thin: int | None = None
     seed: int | list[int] | None = None
     adapt_delta: float | None = None
     max_treedepth: int | None = None
@@ -146,7 +145,7 @@ class VBFitOptions(BaseFitOptions):
         Number of Monte Carlo ELBO samples.
     eta : float
         Stepsize scaling parameter.
-    output_samples : int
+    draws : int
         Number of approximate posterior draws to save.
     seed : int | None
         RNG seed.
@@ -154,10 +153,11 @@ class VBFitOptions(BaseFitOptions):
 
     algorithm: str = "meanfield"
     iter: int = 10000
-    grad_samples: int = 1
-    elbo_samples: int = 100
-    eta: float = 1.0
-    output_samples: int = 1000
+    grad_samples: int | None = 1
+    elbo_samples: int | None = None
+    eta: float | None = None
+    draws: int | None = None
+    require_converged: bool = True
 
 
 @dataclass
@@ -170,16 +170,36 @@ class MLEFitOptions(BaseFitOptions):
         Optimization algorithm (for example, ``"lbfgs"``, ``"bfgs"``,
         or ``"newton"``).
     iter : int
-        Maximum optimization iterations.
-    seed : int | None
-        RNG seed.
+        Maximum number of optimization iterations.
     jacobian : bool
-        Whether to include Jacobian adjustment.
+        Whether to include Jacobian adjustment for constrained parameters.
+    tol_obj : float | None
+        Convergence tolerance on changes in objective function value.
+    tol_rel_obj : float | None
+        Convergence tolerance on relative changes in objective function value.
+    tol_grad : float | None
+        Convergence tolerance on the norm of the gradient.
+    tol_rel_grad : float | None
+        Convergence tolerance on the relative norm of the gradient.
+    tol_param : float | None
+        Convergence tolerance on changes in parameter value.
+    history_size : int | None
+        History size for the L-BFGS Hessian approximation. Values of 5–10
+        are usually sufficient; must be less than the parameter-space
+        dimensionality.
+    seed : int | None
+        RNG seed for reproducibility.
     """
 
     algorithm: str = "lbfgs"
     iter: int = 2000
     jacobian: bool = False
+    tol_obj: float | None = None
+    tol_rel_obj: float | None = None
+    tol_grad: float | None = None
+    tol_rel_grad: float | None = None
+    tol_param: float | None = None
+    history_size: int | None = None
 
 
 @dataclass

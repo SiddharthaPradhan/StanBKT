@@ -18,13 +18,12 @@ from stanbkt.utils.data_utils import (
     iter_kc_data,
 )
 
-
 _COL_PAT = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
 
 
 @njit(parallel=True, cache=True)
 def _compute_posterior_stats(
-    arr: np.ndarray,  # (n_obs, n_draws), float64, C-contiguous rows
+    arr: np.ndarray,  # (n_obs, n_draws), float64,
     quantile_fracs: np.ndarray,  # (n_q,), float64
 ) -> tuple:
     """Compute mean, std, median, and quantiles over draws for each observation in parallel."""
@@ -36,7 +35,7 @@ def _compute_posterior_stats(
     medians = np.empty(n_obs, np.float64)
     quants = np.empty((n_obs, n_q), np.float64)
 
-    for i in prange(n_obs):
+    for i in prange(n_obs):  # ty:ignore[not-iterable]
         buf = arr[i].copy()
 
         # mean
@@ -63,7 +62,7 @@ def _compute_posterior_stats(
         else:
             medians[i] = 0.5 * (buf[half - 1] + buf[half])
 
-        # quantiles (linear interpolation, matches numpy's default method)
+        # quantiles
         for qi in range(n_q):
             virtual = quantile_fracs[qi] * (n_draws - 1)
             lo = int(virtual)
@@ -283,7 +282,7 @@ def _summarize_single_kc_draws(
 
 def _summarize_single_kc_gq(
     kc_id_str: str,
-    gq_kc: Any,  # duck-typed: needs .column_names and .draws(concat_chains=True)
+    gq_kc: Any,
     kc_data: KCData,
     col_mapping: dict[str, str],
     quantiles: list[float],
@@ -298,7 +297,6 @@ def _summarize_single_kc_gq(
     problem_col = col_mapping[ColumnNames.PROBLEM_ID]
     correctness_col = col_mapping[ColumnNames.CORRECTNESS]
 
-    # Parse column indices from the lightweight column_names tuple — no DataFrame needed
     col_names: tuple[str, ...] = gq_kc.column_names
     pknow_col_indices: dict[tuple[int, int], int] = {}
     pcorr_col_indices: dict[tuple[int, int], int] = {}
@@ -340,10 +338,9 @@ def _summarize_single_kc_gq(
     if not obs_keys:
         return pd.DataFrame()
 
-    # Raw numpy draws: (n_draws, n_all_cols) — avoids pandas DataFrame construction
     raw_draws = gq_kc.draws(concat_chains=True)
 
-    # Extract pKnow columns and transpose to (n_obs, n_draws) for cache-friendly Numba
+    # extract pKnow columns and transpose to (n_obs, n_draws) for cache-friendly Numba
     pknow_idx_arr = np.asarray(pknow_raw_col_indices, dtype=np.intp)
     pknow_arr = np.ascontiguousarray(
         raw_draws[:, pknow_idx_arr].T, dtype=np.float64

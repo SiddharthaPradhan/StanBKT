@@ -87,6 +87,14 @@ def plot_posterior_correctness(
         raise ValueError(
             f"First percentile must be less than second percentile. Got {percentiles}."
         )
+    # # keep only the problem ids that are present in both the data and posterior
+    # common_problem_ids = set(data_kc[problem_col]).intersection(
+    #     posterior_pred_kc[posterior_problem_col]
+    # )
+    # data_kc = data_kc[data_kc[problem_col].isin(common_problem_ids)]
+    # posterior_pred_kc = posterior_pred_kc[
+    #     posterior_pred_kc[posterior_problem_col].isin(common_problem_ids)
+    # ]
     y_axis_label = (
         "Prob/Prop of Correctness" if type == "probs" else "Proportion Correct"
     )
@@ -188,40 +196,26 @@ def plot_posterior_correctness(
                 problem_ids
             )
 
-            if trajectory:
-                ax.plot(
-                    x_positions - offset,
-                    group_correctness.values,
-                    marker="x",
-                    color=color,
-                    label="Proportion Correct (Data)",
-                    zorder=3,
-                    linestyle=":",
-                )
-                ax.plot(
-                    x_positions,
-                    group_posterior["pe"].values,
-                    marker="o",
-                    color=color,
-                    linestyle="--",
-                    zorder=2,
-                )
-            else:
-                ax.scatter(
-                    x_positions - offset,
-                    group_correctness.values,
-                    marker="x",
-                    color=color,
-                    label="Proportion Correct (Data)",
-                    zorder=3,
-                )
-                ax.scatter(
-                    x_positions,
-                    group_posterior["pe"].values,
-                    marker="o",
-                    color=color,
-                    zorder=2,
-                )
+            data_line_style = ":" if trajectory else None
+            pe_line_style = "--" if trajectory else None
+
+            ax.plot(
+                x_positions - offset,
+                group_correctness.values,
+                marker="x",
+                color=color,
+                label="Proportion Correct (Data)",
+                zorder=3,
+                linestyle=data_line_style,
+            )
+            ax.plot(
+                x_positions,
+                group_posterior["pe"].values,
+                marker="o",
+                color=color,
+                linestyle=pe_line_style,
+                zorder=2,
+            )
 
             yerr = np.array(
                 [
@@ -278,43 +272,29 @@ def plot_posterior_correctness(
             upper=lambda x: x.quantile(percentiles[1] / 100),
         )
         posterior_kc = posterior_kc.reindex(problem_ids)
-
+        print(posterior_kc)
         x_positions = np.arange(len(problem_ids))
 
-        if trajectory:
-            ax.plot(
-                x_positions - offset,
-                correctness_by_problem,
-                marker="x",
-                color="black",
-                label="Proportion Correct (Data)",
-                zorder=3,
-                linestyle=":",
-            )
-            ax.plot(
-                x_positions,
-                posterior_kc["pe"].values,
-                marker="o",
-                color="steelblue",
-                linestyle="--",
-                zorder=2,
-            )
-        else:
-            ax.scatter(
-                x_positions - offset,
-                correctness_by_problem,
-                marker="x",
-                color="black",
-                label="Proportion Correct (Data)",
-                zorder=3,
-            )
-            ax.scatter(
-                x_positions,
-                posterior_kc["pe"].values,
-                marker="o",
-                color="steelblue",
-                zorder=2,
-            )
+        data_line_style = ":" if trajectory else None
+        pe_line_style = "--" if trajectory else None
+
+        ax.plot(
+            x_positions - offset,
+            correctness_by_problem,
+            marker="x",
+            color="black",
+            label="Proportion Correct (Data)",
+            zorder=3,
+            linestyle=data_line_style,
+        )
+        ax.plot(
+            x_positions,
+            posterior_kc["pe"].values,
+            marker="o",
+            color="steelblue",
+            linestyle=pe_line_style,
+            zorder=2,
+        )
 
         yerr = np.array(
             [
@@ -367,20 +347,19 @@ def _point_estimate_correctness_per_problem(
     data[column_mapping[ColumnNames.PROBLEM_ID]] = data[
         column_mapping[ColumnNames.PROBLEM_ID]
     ].astype(str)
-    problem_ids: pd.Series = (
+    problem_ids: list[str] = (
         data[column_mapping[ColumnNames.PROBLEM_ID]].unique().tolist()
     )
     problem_ids.sort(key=natsort.natsort_keygen())
     problems_to_plot = problem_ids
     if frac < 1.0:
-
         num_problems_to_plot = max(2, int(len(problem_ids) * frac))
         problems_to_plot = np.linspace(
             0, len(problem_ids) - 1, num_problems_to_plot, dtype=int
         )
         problems_to_plot = [problem_ids[i] for i in problems_to_plot]
         data = data[data[column_mapping[ColumnNames.PROBLEM_ID]].isin(problems_to_plot)]
-    correctness_by_problem: pd.Series = (
+    correctness_by_problem: pd.Series[np.float64] = (
         data[column_mapping[ColumnNames.CORRECTNESS]]
         .groupby(data[column_mapping[ColumnNames.PROBLEM_ID]])
         .agg(agg_func)

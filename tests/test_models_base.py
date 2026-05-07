@@ -16,7 +16,6 @@ from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX
 from stanbkt.utils.verbose import VerbosityLevel
 from stanbkt.utils.model_io import MODEL_METADATA_SAVE_FILE
 
-
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass — only satisfies the abstract interface
 # ---------------------------------------------------------------------------
@@ -177,10 +176,11 @@ class TestFitCheck:
         with pytest.raises(RuntimeError, match="must be fitted"):
             m._fit_check()
 
-    def test_raises_when_fitsis_none_even_if_is_fitted_true(self):
+    def test_raises_when_empty_fits_even_if_is_fitted_true(self):
         m = _ConcreteModel()
         m._is_fitted = True
-        m.fits = None
+        m.fits = DummyFit()
+        m.fits.num_fitted_kcs = 0
         with pytest.raises(RuntimeError, match="must be fitted"):
             m._fit_check()
 

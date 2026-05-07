@@ -7,6 +7,7 @@ should inherit from.
 """
 
 from __future__ import annotations
+import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from natsort import natsort_keygen
 import re
@@ -117,7 +118,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self._stan_model: Optional[csp.CmdStanModel] = None
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
-        self.fits: Optional[BaseFit] = None
+        self.fits: BaseFit = self.fit_class()
         self._is_fitted: bool = False
         self._fit_artifact_tmpdir: tempfile.TemporaryDirectory[str] | None = None
 
@@ -125,7 +126,7 @@ class BKTModelBase(VerboseMixin, ABC):
         """Return a user-friendly string representation of the model."""
         class_name = self.__class__.__name__
         fit_status = "fitted" if self._is_fitted else "not fitted"
-        num_kcs = self.fits.num_fitted_kcs if self._is_fitted and self.fits else 0
+        num_kcs = self.fits.num_fitted_kcs if self._is_fitted else 0
 
         lines = [
             f"{class_name}(",
@@ -203,10 +204,6 @@ class BKTModelBase(VerboseMixin, ABC):
         ValueError
             If data validation fails or incompatible cpp_compile_kwargs and stan_fit_options.
         """
-
-        # Intialize new fits object if not already initialized.
-        if self.fits is None:
-            self.fits = self.fit_class()
 
         if self._stan_model is None:
             self._compile_model(self._stan_model_filename)
@@ -328,8 +325,9 @@ class BKTModelBase(VerboseMixin, ABC):
             List of parameters to summarize. If None, summarizes all.
         percentiles : tuple of float, default=(2.5, 97.5)
             Percentiles to include in summary. Values should be in range [1, 99].
-        refresh_cache : bool, default=False
-            Whether to refresh the cached summary.
+            Ignored when the fit method is MLE, MLE produces a point estimate only.
+        clear_cache : bool, default=False
+            Whether to refresh the cached summaries.
 
         Returns
         -------
@@ -342,8 +340,12 @@ class BKTModelBase(VerboseMixin, ABC):
             If model has not been fitted yet.
         """
         self._fit_check("summary")
-        if self.fits is None:
-            raise RuntimeError("Model must be fitted before calling summary()")
+        if self._fit_method == FitMethod.MLE and percentiles != (2.5, 97.5):
+            warnings.warn(
+                "percentiles is ignored for MLE fits. MLE produces a point estimate only.",
+                UserWarning,
+                stacklevel=2,
+            )
         if clear_cache:
             self.fits._clear_summary_cache_if_stale(percentiles, force=True)
 
@@ -366,7 +368,7 @@ class BKTModelBase(VerboseMixin, ABC):
 
     def _fit_check(self, referrer: Optional[str] = None) -> None:
         """Check if model has been fitted."""
-        if not self._is_fitted or self.fits is None or self.fits.num_fitted_kcs == 0:
+        if not self._is_fitted or self.fits.num_fitted_kcs == 0:
             raise RuntimeError(
                 f"Model must be fitted before calling {referrer + '()' if referrer else 'this method'}"
             )
@@ -394,11 +396,6 @@ class BKTModelBase(VerboseMixin, ABC):
             If model has not been fitted yet.
         """
         self._fit_check()
-        if self.fits is None:
-            raise RuntimeError(
-                "The fits container has not been initialized. Ensure the model has been "
-                "successfully fitted before calling save()."
-            )
         archive_path = os.fspath(save_base_location)
 
         with tempfile.TemporaryDirectory(prefix="stanbkt_save_") as temp_dir:
@@ -423,7 +420,7 @@ class BKTModelBase(VerboseMixin, ABC):
         Raises an error if data contains KCs that were not fitted.
         """
         self._fit_check()
-        fitted_kcs: set[str] = self.fits.get_fitted_kcs() if self.fits else set()
+        fitted_kcs: set[str] = self.fits.get_fitted_kcs()
         if not len(self.get_kcs_in_fitted_kcs(kcs)) > 0:
             raise ValueError(
                 f"Data contains no KCs that were previously fitted. Given KCs: {kcs}, fitted KCs: {fitted_kcs}"
@@ -442,7 +439,7 @@ class BKTModelBase(VerboseMixin, ABC):
     def get_kcs_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
         """Return the set of KCs in the data that were fitted previously."""
         self._fit_check()
-        fitted_kcs: set[str] = self.fits.get_fitted_kcs() if self.fits else set()
+        fitted_kcs: set[str] = self.fits.get_fitted_kcs()
         return kcs.intersection(fitted_kcs)
 
     @staticmethod
@@ -491,12 +488,6 @@ class BKTModelBase(VerboseMixin, ABC):
             working_data[kc_column_name].isin(overlapping_kcs)
         ].copy()
 
-        if self.fits is None:
-            raise RuntimeError(
-                "The fits container has not been initialized. Ensure the model has been "
-                "successfully fitted before calling prediction methods."
-            )
-
         return filtered_data, resolved_mapping
 
     def _predict_point_estimate_common(
@@ -537,8 +528,7 @@ class BKTModelBase(VerboseMixin, ABC):
             return_groups=self._use_groups,
             print_fn=self.log,
         ):
-            # unresolved type: self.fits is checked to be not None in _fit_check, hence the ignore
-            kc_fit = self.fits.get_fit(kc_id)  # ty:ignore[unresolved-attribute]
+            kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
@@ -1400,10 +1390,6 @@ class BKTModelBase(VerboseMixin, ABC):
             data=data_dict,
             previous_fit=kc_fit_result,  # type: ignore[type-var]
         )
-        # Eagerly parse the output CSV while still in the worker thread.
-        # For n_cores > 1 this overlaps CSV I/O with the next KC's GQ subprocess.
-        # Subsequent draws() calls hit the cached result immediately.
-        gq_fit._assemble_generated_quantities()
         return kc_id_str, gq_fit, kc_data
 
     def _predict_generated_quantities(
@@ -1421,13 +1407,6 @@ class BKTModelBase(VerboseMixin, ABC):
         _per_kc_callback: Optional[Callable[[str, Any, KCData], None]] = None,
         n_cores: int = 1,
     ) -> dict[str, csp.CmdStanGQ]:
-
-        if self.fits is None:
-            raise RuntimeError(
-                "The fits container has not been initialized. Ensure the model has been "
-                "successfully fitted before calling prediction methods."
-            )
-
         # validate priors
         if priors is None:
             # use default priors for all KCs

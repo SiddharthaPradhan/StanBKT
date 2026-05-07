@@ -326,38 +326,49 @@ def iter_kc_data(
                 "Ensure values are comparable."
             ) from exc
 
-        student_inter_dict: dict[str, StudentInteraction] = {}
         student_ids: list[str] = sorted(
             subset[student_col].unique().tolist(), key=natsort_keygen()
         )
 
-        student_sequences: list[npt.NDArray[np.int8]] = []
+        observed_subset = subset.loc[subset[correctness_col].notna()]
+        observed_by_student: dict[str, pd.DataFrame] = {
+            str(student_id): student_rows
+            for student_id, student_rows in observed_subset.groupby(
+                student_col, sort=False, observed=True
+            )
+        }
+
+        student_inter_dict: dict[str, StudentInteraction] = {}
+        sequences_with_lens: list[tuple[np.ndarray, int]] = []
         max_len = 0
         for student_id in student_ids:
-            student_rows = subset.loc[subset[student_col] == student_id]
-            # ignore null correctness values
-            observed_rows = student_rows.loc[student_rows[correctness_col].notna()]
-            sequence = observed_rows[correctness_col].astype(np.int8).to_numpy()
-            student_sequences.append(sequence)
+            observed_rows = observed_by_student.get(student_id)
+            if observed_rows is None:
+                sequence = np.empty(0, dtype=np.int8)
+                attempted_problem_ids: list[str] = []
+                seq_len = 0
+            else:
+                sequence = observed_rows[correctness_col].to_numpy(dtype=np.int8)
+                attempted_problem_ids = observed_rows[problem_col].astype(str).tolist()
+                seq_len = len(attempted_problem_ids)
 
-            attempted_problem_ids = observed_rows[problem_col].astype(str).tolist()
+            sequences_with_lens.append((sequence, seq_len))
             student_inter_dict[student_id] = StudentInteraction(
                 problem_ids=attempted_problem_ids,
-                length=len(attempted_problem_ids),
+                length=seq_len,
             )
-            max_len = max(max_len, len(attempted_problem_ids))
+            if seq_len > max_len:
+                max_len = seq_len
 
         correctness_array = np.full(
             (len(student_ids), max_len), _NA_FILL_VALUE, dtype=np.int8
         )
-        for i, sequence in enumerate(student_sequences):
-            if sequence.size:
-                correctness_array[i, : sequence.size] = sequence
+        for i, (sequence, seq_len) in enumerate(sequences_with_lens):
+            if seq_len:
+                correctness_array[i, :seq_len] = sequence
 
-        lengths: npt.NDArray[np.int32] = np.fromiter(
-            (s.length for s in student_inter_dict.values()),
-            dtype=np.int32,
-            count=len(student_inter_dict),
+        lengths: npt.NDArray[np.int32] = np.array(
+            [seq_len for _, seq_len in sequences_with_lens], dtype=np.int32
         )
 
         problem_ids: list[str] = [str(i) for i in range(1, max_len + 1)]

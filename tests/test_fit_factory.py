@@ -16,7 +16,6 @@ from stanbkt.fits.core.mle import MLEFit
 from stanbkt.fits.core.vb import VBFit
 from stanbkt.fits.core.pf import PathfinderFit
 
-
 # ---------------------------------------------------------------------------
 # get_fit_class_from_method
 # ---------------------------------------------------------------------------
@@ -61,12 +60,14 @@ class TestCreateDefaultFitOptions:
         result = FitFactory.create_default_fit_options(FitMethod.VB)
         assert isinstance(result, VBFitOptions)
         assert result.algorithm == "meanfield"  # default value
-        assert result.iter == 10000  # default value
+        assert result.iter is None  # None lets CmdStanPy choose
 
     def test_returns_mle_options_for_mle_method(self):
         result = FitFactory.create_default_fit_options(FitMethod.MLE)
         assert isinstance(result, MLEFitOptions)
-        assert result.algorithm == "lbfgs"  # default value
+        assert (
+            result.algorithm is None
+        )  # None lets CmdStanPy choose (defaults to lbfgs)
         assert result.iter == 2000  # default value
 
     def test_returns_pf_options_for_pathfinder_method(self):

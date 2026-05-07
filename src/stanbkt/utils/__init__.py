@@ -15,6 +15,7 @@ from stanbkt.utils.sim import sim_simple_BKT, sim_grouped_BKT
 from stanbkt.utils.model_archive import pack_model_directory, unpack_model_archive
 from stanbkt.utils.metrics import accuracy, rmse, auc
 from stanbkt.utils.posterior_utils import posterior_summary, gq_to_draws
+from stanbkt.utils.summary_utils import summarize_draws, summary_parameter_names
 
 # add RTools to PATH
 if is_sys_windows():
@@ -51,4 +52,7 @@ __all__ = [
     # Posterior utilities
     "posterior_summary",
     "gq_to_draws",
+    # Summary utilities
+    "summarize_draws",
+    "summary_parameter_names",
 ]

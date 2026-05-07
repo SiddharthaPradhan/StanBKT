@@ -14,7 +14,6 @@ from stanbkt.models.priors import MultiPriors
 from stanbkt.utils.data_utils import KCData
 from stanbkt.utils.verbose import VerbosityLevel
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -161,8 +160,10 @@ class TestMultiBKTInit:
     def test_is_fitted_false_on_init(self):
         assert MultiBKT()._is_fitted is False
 
-    def test_fits_is_none_on_init(self):
-        assert MultiBKT().fits is None
+    def test_fits_is_initialized_on_init(self):
+        model = MultiBKT()
+        assert model.fits is not None
+        assert model.fits.num_fitted_kcs == 0
 
     def test_stan_model_is_none_on_init(self):
         assert MultiBKT()._stan_model is None

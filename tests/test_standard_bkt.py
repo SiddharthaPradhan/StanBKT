@@ -10,7 +10,6 @@ from stanbkt.models.core.standard import StandardBKT
 from stanbkt.utils.data_utils import KCData, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -62,9 +61,10 @@ class TestStandardBKTInit:
         model = StandardBKT()
         assert model._is_fitted is False
 
-    def test_fits_is_none(self):
+    def test_fits_is_initialized(self):
         model = StandardBKT()
-        assert model.fits is None
+        assert model.fits is not None
+        assert model.fits.num_fitted_kcs == 0
 
     def test_default_verbose(self):
         model = StandardBKT()
