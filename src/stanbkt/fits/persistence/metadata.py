@@ -3,7 +3,7 @@
 from __future__ import annotations
 import natsort
 import json
-from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveFolder, FitSaves
+from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveEntry, FitSaves
 
 
 def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
@@ -36,6 +36,16 @@ def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
                 "kc": fit_save.kc,
                 "save_folder": str(fit_save.save_folder),
                 "summary_cache_available": fit_save.summary_cache_available,
+                **(
+                    {"group2index": fit_save.group2index}
+                    if fit_save.group2index not in (None, {})
+                    else {}
+                ),
+                **(
+                    {"groups": natsort.natsorted(list(fit_save.groups))}
+                    if fit_save.groups not in (None, set())
+                    else {}
+                ),
             }
             for fit_save in natsort.natsorted(
                 fit_metadata.fit_saves.values(),
@@ -126,10 +136,40 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
                 f"Error parsing fit metadata: metadata for KC '{kc}' must include boolean field 'summary_cache_available' when provided."
             )
 
-        parsed_fit_saves[kc] = FitSaveFolder(
+        group2index_raw = entry.get("group2index", None)
+        if group2index_raw is None:
+            parsed_group2index: dict[str, int] | None = None
+        else:
+            if not isinstance(group2index_raw, dict):
+                raise ValueError(
+                    f"Error parsing fit metadata: metadata for KC '{kc}' field 'group2index' must be an object when provided."
+                )
+            parsed_group2index = {}
+            for group_name, index in group2index_raw.items():
+                if not isinstance(group_name, str) or not isinstance(index, int):
+                    raise ValueError(
+                        f"Error parsing fit metadata: metadata for KC '{kc}' field 'group2index' must map string group IDs to integer indices."
+                    )
+                parsed_group2index[group_name] = index
+
+        groups_raw = entry.get("groups", None)
+        if groups_raw is None:
+            parsed_groups: set[str] | None = None
+        else:
+            if not isinstance(groups_raw, list) or not all(
+                isinstance(group_name, str) for group_name in groups_raw
+            ):
+                raise ValueError(
+                    f"Error parsing fit metadata: metadata for KC '{kc}' field 'groups' must be an array of strings when provided."
+                )
+            parsed_groups = {str(group_name) for group_name in groups_raw}
+
+        parsed_fit_saves[kc] = FitSaveEntry(
             kc=kc,
             save_folder=save_folder,
             summary_cache_available=summary_cache_available,
+            group2index=parsed_group2index,
+            groups=parsed_groups,
         )
 
     return FitMetadata(

@@ -116,8 +116,8 @@ def _resolve_var_names(idata: Any, params: Sequence[str] | None) -> list[str]:
         indexed_matches = [
             candidate
             for candidate in available
-            if _INDEXED_NAME_PATTERN.match(candidate)
-            and _INDEXED_NAME_PATTERN.match(candidate).group("base") == name
+            if (match := _INDEXED_NAME_PATTERN.match(candidate))
+            and match.group("base") == name
         ]
         if indexed_matches:
             resolved.extend(indexed_matches)

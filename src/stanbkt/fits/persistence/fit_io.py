@@ -15,7 +15,7 @@ from stanbkt.fits.fit_types import (
     CmdStanFit,
     FitMetadata,
     FitMethod,
-    FitSaveFolder,
+    FitSaveEntry,
     FitSaves,
 )
 from stanbkt.fits.persistence.metadata import (
@@ -174,7 +174,7 @@ def load_fit_artifacts(
     fits: dict[str, CmdStanFit] = {}
     summary_cache: dict[str, pd.DataFrame] = {}
     error_kcs: set[str] = set()
-    error_cache: set[FitSaveFolder] = set()
+    error_cache: set[FitSaveEntry] = set()
 
     fits_base_location = os.path.join(base_save_location, FIT_SAVE_FOLDER)
     cache_base_location = os.path.join(fits_base_location, CACHE_SAVE_FOLDER)
@@ -311,10 +311,14 @@ def save_fit_artifacts(
                 os.remove(cache_file_path)
             cache_available = False
 
-        updated_fit_saves[kc_name] = FitSaveFolder(
+        updated_fit_saves[kc_name] = FitSaveEntry(
             kc=kc_name,
             save_folder=fit_save.save_folder,
             summary_cache_available=cache_available,
+            group2index=(
+                dict(fit_save.group2index) if fit_save.group2index is not None else None
+            ),
+            groups=(set(fit_save.groups) if fit_save.groups is not None else None),
         )
 
     fit_metadata.fit_saves = updated_fit_saves

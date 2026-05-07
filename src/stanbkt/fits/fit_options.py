@@ -152,7 +152,7 @@ class VBFitOptions(BaseFitOptions):
     """
 
     algorithm: str = "meanfield"
-    iter: int = 10000
+    iter: int | None = None
     grad_samples: int | None = 1
     elbo_samples: int | None = None
     eta: float | None = None
@@ -191,7 +191,7 @@ class MLEFitOptions(BaseFitOptions):
         RNG seed for reproducibility.
     """
 
-    algorithm: str = "lbfgs"
+    algorithm: str | None = None
     iter: int = 2000
     jacobian: bool = False
     tol_obj: float | None = None

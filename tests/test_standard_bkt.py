@@ -600,8 +600,148 @@ class TestPredictPosteriorDrawsApi:
         assert stan_call_count["count"] == 0
         assert out == expected
 
+    def test_predict_posterior_draws_numba_backend(self, monkeypatch):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        class _FakeFit:
+            def stan_variable(self, name: str) -> np.ndarray:
+                params = {
+                    "pi_know": np.array([0.2, 0.8], dtype=np.float64),
+                    "learn": np.array([0.3, 0.3], dtype=np.float64),
+                    "forget": np.array([0.1, 0.1], dtype=np.float64),
+                    "guess": np.array([0.2, 0.2], dtype=np.float64),
+                    "slip": np.array([0.1, 0.1], dtype=np.float64),
+                }
+                return params[name]
+
+        monkeypatch.setattr(model.fits, "get_fit", lambda kc_id: _FakeFit())
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        out = model.predict_posterior_draws(data=sparse_df, backend="numba")
+        kc_df = out["default_kc"]
+
+        assert set(kc_df.columns) >= {
+            "draw__",
+            "student_id",
+            "problem_id",
+            "correct",
+            "pKnow",
+            "pCorrectness",
+        }
+        assert kc_df["draw__"].nunique() == 2
+        assert len(kc_df) == 6
+
+    def test_predict_smoothed_posterior_draws_numba_backend(self, monkeypatch):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        class _FakeFit:
+            def stan_variable(self, name: str) -> np.ndarray:
+                params = {
+                    "pi_know": np.array([0.4, 0.6], dtype=np.float64),
+                    "learn": np.array([0.2, 0.2], dtype=np.float64),
+                    "forget": np.array([0.1, 0.1], dtype=np.float64),
+                    "guess": np.array([0.25, 0.25], dtype=np.float64),
+                    "slip": np.array([0.15, 0.15], dtype=np.float64),
+                }
+                return params[name]
+
+        monkeypatch.setattr(model.fits, "get_fit", lambda kc_id: _FakeFit())
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        out = model.predict_smoothed_posterior_draws(data=sparse_df, backend="numba")
+        kc_df = out["default_kc"]
+
+        assert kc_df["draw__"].nunique() == 2
+        assert len(kc_df) == 6
+
+    def test_predict_posterior_draws_numba_backend_rejects_stan_output(
+        self, monkeypatch
+    ):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1"],
+                "problem_id": ["p1"],
+                "correct": [1],
+                "kc_id": ["default_kc"],
+            }
+        )
+
+        with pytest.raises(ValueError, match="stan_output"):
+            model.predict_posterior_draws(
+                data=sparse_df,
+                backend="numba",
+                stan_output={"default_kc": MagicMock()},
+            )
+
 
 class TestPredictPosteriorDataPath:
+    def test_predict_posterior_summary_numba_backend(self, monkeypatch):
+        model = StandardBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+
+        class _FakeFit:
+            def stan_variable(self, name: str) -> np.ndarray:
+                params = {
+                    "pi_know": np.array([0.2, 0.8], dtype=np.float64),
+                    "learn": np.array([0.3, 0.3], dtype=np.float64),
+                    "forget": np.array([0.1, 0.1], dtype=np.float64),
+                    "guess": np.array([0.2, 0.2], dtype=np.float64),
+                    "slip": np.array([0.1, 0.1], dtype=np.float64),
+                }
+                return params[name]
+
+        monkeypatch.setattr(model.fits, "get_fit", lambda kc_id: _FakeFit())
+
+        sparse_df = pd.DataFrame(
+            {
+                "student_id": ["s1", "s1", "s2"],
+                "problem_id": ["p10", "p30", "p20"],
+                "correct": [1, 0, 1],
+                "kc_id": ["default_kc", "default_kc", "default_kc"],
+                "timestamp": [1, 2, 1],
+            }
+        )
+
+        out = model.predict_posterior_summary(data=sparse_df, backend="numba")
+
+        assert len(out) == 3
+        assert set(out.columns) >= {
+            "kc_id",
+            "student_id",
+            "problem_id",
+            "correct",
+            "pKnow_mean",
+            "pCorrectness_mean",
+        }
+
     def test_predict_posterior_draws_uses_process_helper(self, monkeypatch):
         model = StandardBKT()
         monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)

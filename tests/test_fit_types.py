@@ -1,7 +1,7 @@
 import pytest
 from typing import no_type_check
 import stanbkt.fits.fit_types as fit_types
-from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveFolder
+from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveEntry
 
 # Some tests check for unsupported fit types, hence the no_type_check to avoid type errors
 # from the dummy fit classes.
@@ -43,21 +43,21 @@ class TestFitMethodResolution:
 
 class TestFitMetadataTypes:
     def test_fit_save_folder_default_cache_flag_is_false(self):
-        entry = FitSaveFolder(kc="kc_a", save_folder="kc_a_12345678")
+        entry = FitSaveEntry(kc="kc_a", save_folder="kc_a_12345678")
         assert entry.summary_cache_available is False
 
     def test_fit_save_folder_is_hashable_for_set_usage(self):
-        first = FitSaveFolder(
+        first = FitSaveEntry(
             kc="kc_a", save_folder="folder", summary_cache_available=True
         )
-        second = FitSaveFolder(
+        second = FitSaveEntry(
             kc="kc_a", save_folder="folder", summary_cache_available=True
         )
         assert {first, second} == {first}
 
     def test_fit_metadata_can_hold_multiple_entries(self):
-        entry_a = FitSaveFolder(kc="kc_a", save_folder="a")
-        entry_b = FitSaveFolder(kc="kc_b", save_folder="b")
+        entry_a = FitSaveEntry(kc="kc_a", save_folder="a")
+        entry_b = FitSaveEntry(kc="kc_b", save_folder="b")
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC, fit_saves={"kc_a": entry_a, "kc_b": entry_b}
         )

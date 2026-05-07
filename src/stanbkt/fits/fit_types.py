@@ -13,7 +13,6 @@ from typing import Union, TypeAlias
 
 from cmdstanpy import CmdStanMCMC, CmdStanMLE, CmdStanPathfinder, CmdStanVB
 
-
 CmdStanFit: TypeAlias = Union[CmdStanMCMC, CmdStanMLE, CmdStanVB, CmdStanPathfinder]
 """Alias for supported CmdStan fit result objects."""
 
@@ -71,7 +70,7 @@ class FitMethod(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class FitSaveFolder:
+class FitSaveEntry:
     """Mapping from a knowledge component to a fit save folder.
 
     Attributes
@@ -82,15 +81,43 @@ class FitSaveFolder:
         Folder name under fit root for this KC's fit files.
     summary_cache_available : bool, default=False
         Whether summary cache CSV exists for this KC.
+    group2index : dict[str, int] | None, default=None
+        Optional mapping from group identifiers to integer indices used in the fit.
+    groups : set[str] | None, default=None
+        Optional set of group identifiers included in the fit.
     """
 
     kc: str
     save_folder: Union[os.PathLike, str]
     summary_cache_available: bool = False
+    group2index: Union[dict[str, int], None] = None
+    groups: Union[set[str], None] = None
+
+    def __hash__(self) -> int:
+        """Compute a stable hash even when optional mapping/set fields are present."""
+        group2index_hashable = (
+            None
+            if self.group2index is None
+            else frozenset((str(k), int(v)) for k, v in self.group2index.items())
+        )
+        groups_hashable = (
+            None
+            if self.groups is None
+            else frozenset(str(group_name) for group_name in self.groups)
+        )
+        return hash(
+            (
+                self.kc,
+                str(self.save_folder),
+                self.summary_cache_available,
+                group2index_hashable,
+                groups_hashable,
+            )
+        )
 
 
-FitSaves: TypeAlias = dict[str, FitSaveFolder]
-"""Dict mapping knowledge component identifiers to fit save folder metadata entries."""
+FitSaves: TypeAlias = dict[str, FitSaveEntry]
+"""Dict mapping knowledge component identifiers to fit save entries."""
 
 
 @dataclass

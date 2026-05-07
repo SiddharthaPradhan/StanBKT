@@ -13,7 +13,7 @@ from stanbkt.models.core.standard import StandardBKT
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.model_types import ModelType, InitKnowledgeStrategy
 from stanbkt.models.priors import MultiPriors, StandardPriors
-
+from stanbkt.models.predictions import predict_posterior
 
 __all__ = [
     # Core models
@@ -26,4 +26,5 @@ __all__ = [
     "InitKnowledgeStrategy",
     "MultiPriors",
     "StandardPriors",
+    "predict_posterior",
 ]

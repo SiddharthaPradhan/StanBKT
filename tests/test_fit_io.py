@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 import stanbkt.fits.persistence.fit_io as fit_io
-from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveFolder
+from stanbkt.fits.fit_types import FitMetadata, FitMethod, FitSaveEntry
 
 
 class _DummySavedFit:
@@ -36,10 +36,8 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                "kc_with_fit": FitSaveFolder(
-                    kc="kc_with_fit", save_folder="fit_folder"
-                ),
-                "kc_without_fit": FitSaveFolder(
+                "kc_with_fit": FitSaveEntry(kc="kc_with_fit", save_folder="fit_folder"),
+                "kc_without_fit": FitSaveEntry(
                     kc="kc_without_fit", save_folder="missing_folder"
                 ),
             },
@@ -67,7 +65,7 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                kc: FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
+                kc: FitSaveEntry(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
             },
         )
 
@@ -79,6 +77,31 @@ class TestSaveFitArtifacts:
         )
 
         assert not cache_file.exists()
+
+    def test_save_fit_artifacts_preserves_group_mapping(self, tmp_path):
+        save_dir = tmp_path / "fit_saves"
+        kc = "kc_a"
+        metadata = FitMetadata(
+            fit_method=FitMethod.MCMC,
+            fit_saves={
+                kc: FitSaveEntry(
+                    kc=kc,
+                    save_folder=fit_io.get_fit_save_folder(kc),
+                    group2index={"g1": 1, "g2": 2},
+                    groups={"g1", "g2"},
+                )
+            },
+        )
+
+        updated = fit_io.save_fit_artifacts(
+            base_save_location=str(save_dir),
+            fits={kc: _DummySavedFit()},  # ty:ignore[invalid-argument-type]
+            fit_metadata=metadata,
+            summary_cache={},
+        )
+
+        assert updated.fit_saves[kc].group2index == {"g1": 1, "g2": 2}
+        assert updated.fit_saves[kc].groups == {"g1", "g2"}
 
     def test_save_fit_artifacts_copies_existing_csvfiles_without_mutating_fit(
         self, tmp_path
@@ -93,7 +116,7 @@ class TestSaveFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                kc: FitSaveFolder(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
+                kc: FitSaveEntry(kc=kc, save_folder=fit_io.get_fit_save_folder(kc))
             },
         )
 
@@ -127,7 +150,7 @@ class TestLoadFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                kc: FitSaveFolder(
+                kc: FitSaveEntry(
                     kc=kc,
                     save_folder=folder,
                     summary_cache_available=False,
@@ -164,7 +187,7 @@ class TestLoadFitArtifacts:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                kc: FitSaveFolder(
+                kc: FitSaveEntry(
                     kc=kc,
                     save_folder=folder,
                     summary_cache_available=True,

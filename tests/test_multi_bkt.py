@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stanbkt.fits.fit_types import FitMethod
+from stanbkt.fits.fit_types import FitMethod, FitSaveEntry
 from stanbkt.models.core.multi import MultiBKT, _is_all_none
 from stanbkt.models.priors import MultiPriors
 from stanbkt.utils.data_utils import KCData
@@ -567,6 +567,68 @@ class TestPredict:
         # because their pi_know differs (0.3 vs 0.6)
         unique_pknow = out.groupby("student_id")["pKnow"].first()
         assert unique_pknow.nunique() > 1
+
+    def test_predict_remaps_group_indices_using_fit_metadata(self, monkeypatch):
+        model = MultiBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model.fits = MagicMock()
+        model.fits.get_fit.return_value = _mock_fit_mle(n_groups=2)
+        model.fits.get_fit_save_entry.return_value = FitSaveEntry(
+            kc="default_kc",
+            save_folder="default_kc_abcd1234",
+            group2index={"group1": 1, "group2": 2},
+            groups={"group1", "group2"},
+        )
+
+        # Keep group2 students first so per-KC factorization maps group2 -> 1, group1 -> 2.
+        # Prediction should still remap back to the fitted mapping above.
+        data = pd.DataFrame(
+            {
+                "student_id": ["a1", "a1", "a2", "a2", "b1", "b1", "b2", "b2"],
+                "problem_id": ["p1", "p2", "p1", "p2", "p1", "p2", "p1", "p2"],
+                "correct": [0, 1, 1, 0, 0, 1, 1, 0],
+                "group_id": [
+                    "group2",
+                    "group2",
+                    "group2",
+                    "group2",
+                    "group1",
+                    "group1",
+                    "group1",
+                    "group1",
+                ],
+                "timestamp": [1, 2, 1, 2, 1, 2, 1, 2],
+            }
+        )
+
+        out = model.predict(data=data)
+        by_student = out.groupby("student_id")["pKnow"].first()
+        assert by_student["b1"] == pytest.approx(0.3)
+        assert by_student["b2"] == pytest.approx(0.3)
+        assert by_student["a1"] == pytest.approx(0.6)
+        assert by_student["a2"] == pytest.approx(0.6)
+
+    def test_predict_raises_for_unseen_group_in_fit_metadata(self, monkeypatch):
+        model = MultiBKT()
+        monkeypatch.setattr(model, "_fit_check", lambda **kwargs: None)
+        monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
+        monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
+        model.fits = MagicMock()
+        model.fits.get_fit.return_value = _mock_fit_mle(n_groups=2)
+        model.fits.get_fit_save_entry.return_value = FitSaveEntry(
+            kc="default_kc",
+            save_folder="default_kc_abcd1234",
+            group2index={"group1": 1, "group2": 2},
+            groups={"group1", "group2"},
+        )
+
+        data = _grouped_df(n_groups=2).copy()
+        data.loc[data["group_id"] == "group2", "group_id"] = "group3"
+
+        with pytest.raises(ValueError, match="unseen groups"):
+            model.predict(data=data)
 
 
 # ---------------------------------------------------------------------------

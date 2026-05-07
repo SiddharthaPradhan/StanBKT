@@ -8,7 +8,7 @@ from typing import Union
 
 import pandas as pd
 
-from stanbkt.fits.fit_types import CmdStanFit, FitMetadata, FitMethod, FitSaveFolder
+from stanbkt.fits.fit_types import CmdStanFit, FitMetadata, FitMethod, FitSaveEntry
 from stanbkt.fits.persistence.fit_io import (
     CACHE_SAVE_FOLDER,
     FIT_SAVE_FOLDER,
@@ -125,7 +125,14 @@ class FitBase(VerboseMixin, ABC):
             f"verbose={self.verbose!r})"
         )
 
-    def add_fit(self, kc: str, fit: CmdStanFit, overwrite_kcs: bool = False) -> None:
+    def add_fit(
+        self,
+        kc: str,
+        fit: CmdStanFit,
+        overwrite_kcs: bool = False,
+        group2index: dict[str, int] | None = None,
+        groups: set[str] | None = None,
+    ) -> None:
         """Add a fit for a knowledge component to the model's fit state.
 
         Parameters
@@ -136,6 +143,10 @@ class FitBase(VerboseMixin, ABC):
             CmdStan fit object to add for the KC.
         overwrite_kcs : bool, default=False
             Whether to overwrite existing fits for KCs that are being added again.
+        group2index : dict[str, int] | None, optional
+            Optional mapping from group ID to 1-based index used for this KC's fit.
+        groups : set[str] | None, optional
+            Optional set of group IDs used for this KC's fit.
 
         Raises
         ------
@@ -174,12 +185,18 @@ class FitBase(VerboseMixin, ABC):
         # unique, and the KC will be sanitized to be filesystem safe.
         # Collisions will be handled by appending a hash suffix to the folder name.
         self._fit_metadata.fit_saves.pop(kc, None)
-        self._fit_metadata.fit_saves[kc] = FitSaveFolder(
+        self._fit_metadata.fit_saves[kc] = FitSaveEntry(
             kc=kc,
             save_folder=get_fit_save_folder(kc),
             summary_cache_available=False,
+            group2index=(dict(group2index) if group2index is not None else None),
+            groups=(set(groups) if groups is not None else None),
         )
         self.num_fitted_kcs = len(self.get_fitted_kcs())
+
+    def get_fit_save_entry(self, kc: str) -> FitSaveEntry | None:
+        """Return persisted fit metadata entry for a KC, if available."""
+        return self._fit_metadata.fit_saves.get(kc)
 
     def get_fitted_kcs(self) -> set[str]:
         """Return all known fitted KCs."""
@@ -255,7 +272,7 @@ class FitBase(VerboseMixin, ABC):
                 level=VerbosityLevel.DEBUG,
             )
         if kc not in self._fit_metadata.fit_saves:
-            fit_save_entry = FitSaveFolder(
+            fit_save_entry = FitSaveEntry(
                 kc=kc,
                 save_folder=get_fit_save_folder(kc),
                 summary_cache_available=True,

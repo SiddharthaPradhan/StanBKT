@@ -9,7 +9,7 @@ import pytest
 import stanbkt.fits.persistence.fit_io as persistence_io
 from stanbkt.fits.persistence.fit_io import (
     FitMetadata,
-    FitSaveFolder,
+    FitSaveEntry,
     FitMethod,
     CACHE_SAVE_FOLDER,
     FIT_SAVE_FOLDER,
@@ -25,7 +25,6 @@ from stanbkt.fits.persistence.metadata import (
 )
 from stanbkt.fits.core.base import FitBase
 from stanbkt.utils.verbose import VerbosityLevel
-
 
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass — only satisfies abstract interface
@@ -418,7 +417,7 @@ class TestFitMetadataToJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                "kc_a": FitSaveFolder(
+                "kc_a": FitSaveEntry(
                     kc="kc_a",
                     save_folder="kc_a_abc12345",
                     summary_cache_available=True,
@@ -438,7 +437,7 @@ class TestFitMetadataToJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MLE,
             fit_saves={
-                "kc_a": FitSaveFolder(
+                "kc_a": FitSaveEntry(
                     kc="kc_a",
                     save_folder="folder_abc",
                     summary_cache_available=False,
@@ -476,8 +475,8 @@ class TestFitMetadataFromJson:
         metadata = FitMetadata(
             fit_method=FitMethod.MCMC,
             fit_saves={
-                "kc_a": FitSaveFolder(kc="kc_a", save_folder="kc_a_abc12345"),
-                "kc_b": FitSaveFolder(kc="kc_b", save_folder="kc_b_def67890"),
+                "kc_a": FitSaveEntry(kc="kc_a", save_folder="kc_a_abc12345"),
+                "kc_b": FitSaveEntry(kc="kc_b", save_folder="kc_b_def67890"),
             },
         )
         raw = fit_metadata_to_json(metadata)
@@ -588,6 +587,23 @@ class TestFitMetadataFromJson:
         raw = json.dumps({"fit_method": "mcmc", "fit_saves": []})
         loaded = fit_metadata_from_json(raw)
         assert loaded.summary_percentiles == (2.5, 97.5)
+
+    def test_group_mapping_round_trips(self):
+        metadata = FitMetadata(
+            fit_method=FitMethod.MCMC,
+            fit_saves={
+                "kc_a": FitSaveEntry(
+                    kc="kc_a",
+                    save_folder="kc_a_abc12345",
+                    group2index={"g1": 1, "g2": 2},
+                    groups={"g1", "g2"},
+                )
+            },
+        )
+        raw = fit_metadata_to_json(metadata)
+        loaded = fit_metadata_from_json(raw)
+        assert loaded.fit_saves["kc_a"].group2index == {"g1": 1, "g2": 2}
+        assert loaded.fit_saves["kc_a"].groups == {"g1", "g2"}
 
     def test_raises_when_summary_percentiles_is_wrong_length(self):
         raw = json.dumps(

@@ -8,6 +8,7 @@ should inherit from.
 
 from __future__ import annotations
 import warnings
+from dataclasses import replace
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from natsort import natsort_keygen
 import re
@@ -26,7 +27,7 @@ import tempfile
 from numba import njit, prange
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 from stanbkt.fits.fit_options import StanFitOptions
-from stanbkt.fits.fit_types import CmdStanFit
+from stanbkt.fits.fit_types import CmdStanFit, FitSaveEntry
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.core.base import FitBase as BaseFit
 from stanbkt.models.model_types import (
@@ -35,6 +36,7 @@ from stanbkt.models.model_types import (
 )
 from stanbkt.models.error import FitMethodMismatchError
 from stanbkt.models.priors import PriorsBase
+from stanbkt.models.predictions import predict_posterior
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
@@ -272,10 +274,87 @@ class BKTModelBase(VerboseMixin, ABC):
             fit_result = self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
-            self.fits.add_fit(str(kc_id), fit_result, overwrite_kcs=overwrite_kcs)
+            self.fits.add_fit(
+                str(kc_id),
+                fit_result,
+                overwrite_kcs=overwrite_kcs,
+                group2index=kc_data.group_2_index,
+                groups=(
+                    set(kc_data.group_2_index.keys())
+                    if kc_data.group_2_index is not None
+                    else None
+                ),
+            )
             self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
             self._is_fitted = True
         return self
+
+    def _get_fit_save_entry(self, kc_id: str) -> FitSaveEntry | None:
+        get_entry_fn = getattr(self.fits, "get_fit_save_entry", None)
+        if not callable(get_entry_fn):
+            return None
+        fit_save_entry = get_entry_fn(kc_id)
+        if isinstance(fit_save_entry, FitSaveEntry):
+            return fit_save_entry
+        return None
+
+    def _align_kc_group_indices_with_fit_metadata(
+        self, kc_id: str, kc_data: KCData
+    ) -> KCData:
+        if not self._use_groups:
+            return kc_data
+
+        fit_save_entry = self._get_fit_save_entry(str(kc_id))
+        if fit_save_entry is None or fit_save_entry.group2index in (None, {}):
+            return kc_data
+
+        if kc_data.groups is None or kc_data.group_2_index is None:
+            raise ValueError(
+                f"KC '{kc_id}' requires group data for prediction because fit metadata contains group indices."
+            )
+
+        fit_group2index = {
+            str(group_name): int(index)
+            for group_name, index in fit_save_entry.group2index.items()
+        }
+        trained_groups = (
+            {str(group_name) for group_name in fit_save_entry.groups}
+            if fit_save_entry.groups not in (None, set())
+            else set(fit_group2index.keys())
+        )
+        incoming_groups = {
+            str(group_name) for group_name in kc_data.group_2_index.keys()
+        }
+
+        unknown_groups = incoming_groups - trained_groups
+        if unknown_groups:
+            raise ValueError(
+                f"Prediction data for KC '{kc_id}' contains unseen groups: {sorted(unknown_groups)}. "
+                f"Expected groups from fit metadata: {sorted(trained_groups)}."
+            )
+
+        index2group = {
+            int(index): str(group_name)
+            for group_name, index in kc_data.group_2_index.items()
+        }
+        aligned_groups = np.empty(kc_data.groups.shape, dtype=np.int32)
+        for i, group_index in enumerate(kc_data.groups):
+            group_name = index2group.get(int(group_index))
+            if group_name is None:
+                raise ValueError(
+                    f"Prediction data for KC '{kc_id}' has group index '{int(group_index)}' with no group mapping."
+                )
+            if group_name not in fit_group2index:
+                raise ValueError(
+                    f"Prediction data for KC '{kc_id}' contains unseen group '{group_name}'."
+                )
+            aligned_groups[i] = fit_group2index[group_name]
+
+        return replace(
+            kc_data,
+            groups=aligned_groups,
+            group_2_index=dict(fit_group2index),
+        )
 
     @abstractmethod
     def _default_priors(self) -> PriorsBase:
@@ -528,6 +607,9 @@ class BKTModelBase(VerboseMixin, ABC):
             return_groups=self._use_groups,
             print_fn=self.log,
         ):
+            kc_data = self._align_kc_group_indices_with_fit_metadata(
+                str(kc_id), kc_data
+            )
             kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
                 kc_fit,
@@ -1034,27 +1116,12 @@ class BKTModelBase(VerboseMixin, ABC):
             Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
             ``predict_posterior_draws`` to obtain draw-level DataFrames.
         """
-        self._fit_check(referrer="predict_posterior_stan")
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
-        )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if self._hidden_states_model is None:
-            self._hidden_states_model = compile_stan_model(
-                self._stan_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self.log,
-            )
-
-        return self._predict_generated_quantities(
-            data=data_cp,
-            gq_model=self._hidden_states_model,
+        return predict_posterior(
+            model=self,
+            data=data,
             column_mapping=column_mapping,
+            smoothed=False,
+            output="stan",
         )
 
     def predict_posterior_draws(
@@ -1068,6 +1135,7 @@ class BKTModelBase(VerboseMixin, ABC):
             ]
         ] = None,
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
+        backend: Literal["stan", "numba"] = "stan",
     ) -> dict[str, pd.DataFrame]:
         """Return draw-level posterior prediction DataFrames.
 
@@ -1080,6 +1148,10 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_output : dict[str, CmdStanGQ], optional
             Pre-computed output from ``predict_posterior_stan``.  When provided
             the Stan generated-quantities step is skipped.
+        backend : {"stan", "numba"}, default="stan"
+            Backend used to produce posterior draws.
+            - ``stan``: use Stan generated quantities output (current behavior).
+            - ``numba``: run deterministic hidden-state recursion for each posterior parameter draw.
 
         Returns
         -------
@@ -1087,29 +1159,15 @@ class BKTModelBase(VerboseMixin, ABC):
             Mapping from KC ID to draw-level DataFrames.  Pass to
             ``stanbkt.utils.posterior_summary`` to obtain summary statistics.
         """
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
+        return predict_posterior(
+            model=self,
+            data=data,
+            column_mapping=column_mapping,
+            smoothed=False,
+            backend=backend,
+            output="draws",
+            stan_output=stan_output,
         )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if stan_output is None:
-            if self._hidden_states_model is None:
-                self._hidden_states_model = compile_stan_model(
-                    self._stan_hidden_filename,
-                    cpp_options=self.cpp_compile_kwargs,
-                    stanc_options=self.stan_compile_kwargs,
-                    print_fn=self.log,
-                )
-            stan_output = self._predict_generated_quantities(
-                data=data_cp,
-                gq_model=self._hidden_states_model,
-                column_mapping=column_mapping,
-            )
-
-        return self._process_predict_gq(stan_output, data_cp, column_mapping)
 
     def predict_smoothed_posterior_stan(
         self,
@@ -1137,27 +1195,12 @@ class BKTModelBase(VerboseMixin, ABC):
             Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
             ``predict_smoothed_posterior_draws`` to obtain draw-level DataFrames.
         """
-        self._fit_check(referrer="predict_smoothed_posterior_stan")
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
-        )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if self._smoothed_hidden_states_model is None:
-            self._smoothed_hidden_states_model = compile_stan_model(
-                self._stan_smoothed_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self.log,
-            )
-
-        return self._predict_generated_quantities(
-            data=data_cp,
-            gq_model=self._smoothed_hidden_states_model,
+        return predict_posterior(
+            model=self,
+            data=data,
             column_mapping=column_mapping,
+            smoothed=True,
+            output="stan",
         )
 
     def predict_smoothed_posterior_draws(
@@ -1171,6 +1214,7 @@ class BKTModelBase(VerboseMixin, ABC):
             ]
         ] = None,
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
+        backend: Literal["stan", "numba"] = "stan",
     ) -> dict[str, pd.DataFrame]:
         """Return draw-level smoothed posterior prediction DataFrames.
 
@@ -1183,6 +1227,10 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_output : dict[str, CmdStanGQ], optional
             Pre-computed output from ``predict_smoothed_posterior_stan``.  When
             provided the Stan generated-quantities step is skipped.
+        backend : {"stan", "numba"}, default="stan"
+            Backend used to produce posterior draws.
+            - ``stan``: use Stan generated quantities output (current behavior).
+            - ``numba``: run deterministic hidden-state recursion for each posterior parameter draw.
 
         Returns
         -------
@@ -1190,29 +1238,15 @@ class BKTModelBase(VerboseMixin, ABC):
             Mapping from KC ID to draw-level DataFrames.  Pass to
             ``stanbkt.utils.posterior_summary`` to obtain summary statistics.
         """
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
+        return predict_posterior(
+            model=self,
+            data=data,
+            column_mapping=column_mapping,
+            smoothed=True,
+            backend=backend,
+            output="draws",
+            stan_output=stan_output,
         )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if stan_output is None:
-            if self._smoothed_hidden_states_model is None:
-                self._smoothed_hidden_states_model = compile_stan_model(
-                    self._stan_smoothed_hidden_filename,
-                    cpp_options=self.cpp_compile_kwargs,
-                    stanc_options=self.stan_compile_kwargs,
-                    print_fn=self.log,
-                )
-            stan_output = self._predict_generated_quantities(
-                data=data_cp,
-                gq_model=self._smoothed_hidden_states_model,
-                column_mapping=column_mapping,
-            )
-
-        return self._process_predict_gq(stan_output, data_cp, column_mapping)
 
     def predict_posterior_summary(
         self,
@@ -1227,6 +1261,7 @@ class BKTModelBase(VerboseMixin, ABC):
         quantiles: list[float] = [0.025, 0.975],
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         n_cores: int = 1,
+        backend: Literal["stan", "numba"] = "stan",
     ) -> pd.DataFrame:
         """Return per-observation posterior summaries without materializing all draws.
 
@@ -1244,6 +1279,10 @@ class BKTModelBase(VerboseMixin, ABC):
         n_cores : int, default=1
             Number of concurrent KC jobs to run. Use ``-1`` to use all available CPU
             cores.
+        backend : {"stan", "numba"}, default="stan"
+            Backend used to produce posterior summaries.
+            - ``stan``: summarize Stan generated quantities output.
+            - ``numba``: generate draw-level predictions via numba and summarize them.
 
         Returns
         -------
@@ -1256,42 +1295,15 @@ class BKTModelBase(VerboseMixin, ABC):
         increase peak memory usage and will most likely cause out-of-memory failures
         when the dataset is large.
         """
-        self._fit_check(referrer="predict_posterior_summary")
-
-        if not all(0 <= q <= 1 for q in quantiles):
-            raise ValueError("Quantiles must be between 0 and 1.")
-        n_cores = self._resolve_n_cores(n_cores)
-
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
-        )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if stan_output is not None:
-            return self._process_predict_summary_gq(
-                posterior_summary_raw=stan_output,
-                data=data_cp,
-                col_mapping=column_mapping,
-                quantiles=quantiles,
-                n_cores=n_cores,
-            )
-
-        if self._hidden_states_model is None:
-            self._hidden_states_model = compile_stan_model(
-                self._stan_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self.log,
-            )
-
-        return self._predict_summary_streaming(
-            data=data_cp,
-            gq_model=self._hidden_states_model,
+        return predict_posterior(
+            model=self,
+            data=data,
             column_mapping=column_mapping,
+            smoothed=False,
+            backend=backend,
+            output="summary",
             quantiles=quantiles,
+            stan_output=stan_output,
             n_cores=n_cores,
         )
 
@@ -1308,6 +1320,7 @@ class BKTModelBase(VerboseMixin, ABC):
         quantiles: list[float] = [0.025, 0.975],
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         n_cores: int = 1,
+        backend: Literal["stan", "numba"] = "stan",
     ) -> pd.DataFrame:
         """Return per-observation smoothed posterior summaries without materializing all draws.
 
@@ -1325,6 +1338,10 @@ class BKTModelBase(VerboseMixin, ABC):
         n_cores : int, default=1
             Number of concurrent KC jobs to run. Use ``-1`` to use all available CPU
             cores.
+        backend : {"stan", "numba"}, default="stan"
+            Backend used to produce posterior summaries.
+            - ``stan``: summarize Stan generated quantities output.
+            - ``numba``: generate draw-level predictions via numba and summarize them.
 
         Returns
         -------
@@ -1338,42 +1355,15 @@ class BKTModelBase(VerboseMixin, ABC):
         increase peak memory usage and will most likely cause out-of-memory failures
         when the dataset is large.
         """
-        self._fit_check(referrer="predict_smoothed_posterior_summary")
-
-        if not all(0 <= q <= 1 for q in quantiles):
-            raise ValueError("Quantiles must be between 0 and 1.")
-        n_cores = self._resolve_n_cores(n_cores)
-
-        column_mapping = ColumnNames.apply_default_mapping(column_mapping)
-        kc_column_name = column_mapping[ColumnNames.KC_ID]
-        self.check_data_contains_fitted_kcs(
-            set(data[kc_column_name].astype(str).unique())
-        )
-        overlapping_kcs = self.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-        data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
-
-        if stan_output is not None:
-            return self._process_predict_summary_gq(
-                posterior_summary_raw=stan_output,
-                data=data_cp,
-                col_mapping=column_mapping,
-                quantiles=quantiles,
-                n_cores=n_cores,
-            )
-
-        if self._smoothed_hidden_states_model is None:
-            self._smoothed_hidden_states_model = compile_stan_model(
-                self._stan_smoothed_hidden_filename,
-                cpp_options=self.cpp_compile_kwargs,
-                stanc_options=self.stan_compile_kwargs,
-                print_fn=self.log,
-            )
-
-        return self._predict_summary_streaming(
-            data=data_cp,
-            gq_model=self._smoothed_hidden_states_model,
+        return predict_posterior(
+            model=self,
+            data=data,
             column_mapping=column_mapping,
+            smoothed=True,
+            backend=backend,
+            output="summary",
             quantiles=quantiles,
+            stan_output=stan_output,
             n_cores=n_cores,
         )
 
@@ -1441,6 +1431,9 @@ class BKTModelBase(VerboseMixin, ABC):
                 print_fn=self.log,
             ):
                 kc_id_str = str(kc_id)
+                kc_data = self._align_kc_group_indices_with_fit_metadata(
+                    kc_id_str, kc_data
+                )
 
                 kc_fit_result = self.fits.get_fit(kc_id_str)
                 if kc_fit_result is None:
@@ -1476,6 +1469,9 @@ class BKTModelBase(VerboseMixin, ABC):
                 print_fn=self.log,
             ):
                 kc_id_str = str(kc_id)
+                kc_data = self._align_kc_group_indices_with_fit_metadata(
+                    kc_id_str, kc_data
+                )
 
                 kc_fit_result = self.fits.get_fit(kc_id_str)
                 if kc_fit_result is None:
