@@ -7,6 +7,7 @@ import pytest
 
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.core.standard import StandardBKT
+from stanbkt.models.priors import StandardPriors
 from stanbkt.utils.data_utils import KCData, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -146,6 +147,41 @@ class TestBuildStanDataDict:
         result = model._build_stan_data_dict(_kc_data(3, 4))
         assert isinstance(result["nStudents"], int)
         assert isinstance(result["nProblems"], int)
+
+    def test_none_priors_set_unif_flag_to_one(self):
+        model = StandardBKT()
+        result = model._build_stan_data_dict(
+            _kc_data(3, 4), priors=StandardPriors(use_defaults=False)
+        )
+        for param in ("pi_know", "learn", "forget", "guess", "slip"):
+            assert result[f"unif_prior_{param}"] == 1
+
+    def test_uniform_priors_use_positive_dummy_std(self):
+        model = StandardBKT()
+        result = model._build_stan_data_dict(
+            _kc_data(3, 4), priors=StandardPriors(use_defaults=False)
+        )
+        for param in ("pi_know", "learn", "forget", "guess", "slip"):
+            assert result[f"prior_{param}_std"] == [1.0]
+
+    def test_stan_data_does_not_include_raw_none_priors(self):
+        model = StandardBKT()
+        result = model._build_stan_data_dict(
+            _kc_data(3, 4), priors=StandardPriors(use_defaults=False)
+        )
+        for key in (
+            "pi_know_mu",
+            "pi_know_std",
+            "learn_mu",
+            "learn_std",
+            "forget_mu",
+            "forget_std",
+            "guess_mu",
+            "guess_std",
+            "slip_mu",
+            "slip_std",
+        ):
+            assert key not in result
 
 
 # ---------------------------------------------------------------------------

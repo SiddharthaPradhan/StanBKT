@@ -87,14 +87,7 @@ def plot_posterior_correctness(
         raise ValueError(
             f"First percentile must be less than second percentile. Got {percentiles}."
         )
-    # # keep only the problem ids that are present in both the data and posterior
-    # common_problem_ids = set(data_kc[problem_col]).intersection(
-    #     posterior_pred_kc[posterior_problem_col]
-    # )
-    # data_kc = data_kc[data_kc[problem_col].isin(common_problem_ids)]
-    # posterior_pred_kc = posterior_pred_kc[
-    #     posterior_pred_kc[posterior_problem_col].isin(common_problem_ids)
-    # ]
+
     y_axis_label = (
         "Prob/Prop of Correctness" if type == "probs" else "Proportion Correct"
     )
@@ -106,11 +99,20 @@ def plot_posterior_correctness(
 
     # subset data to the kc
     data_kc: pd.DataFrame = data[data[column_mapping[ColumnNames.KC_ID]] == kc]
+
+    # keep only the problem ids that are present in both the data and posterior
+    common_problem_ids = set(data_kc[problem_col]).intersection(
+        posterior_pred_kc[problem_col]
+    )
+    data_kc = data_kc[data_kc[problem_col].isin(common_problem_ids)]
+    posterior_pred_kc = posterior_pred_kc[
+        posterior_pred_kc[problem_col].isin(common_problem_ids)
+    ]
+
     # subset to requested problems if provided
     if problem_ids is not None:
-        data_kc = data_kc[
-            data_kc[column_mapping[ColumnNames.PROBLEM_ID]].isin(problem_ids)
-        ]
+        data_kc = data_kc[data_kc[problem_col].isin(problem_ids)]
+
     grouped_plot = grouped
     posterior_kc = posterior_pred_kc.copy()
 
@@ -272,7 +274,6 @@ def plot_posterior_correctness(
             upper=lambda x: x.quantile(percentiles[1] / 100),
         )
         posterior_kc = posterior_kc.reindex(problem_ids)
-        print(posterior_kc)
         x_positions = np.arange(len(problem_ids))
 
         data_line_style = ":" if trajectory else None

@@ -200,6 +200,48 @@ class TestSummary:
         with pytest.raises(RuntimeError, match="must be fitted"):
             m.summary()
 
+    def test_none_kcs_summarizes_all(self):
+        m = _make_fitted_model()
+        m.fits._summary = MagicMock(
+            return_value=pd.DataFrame()
+        )  # ty: ignore[method-assign]
+
+        m.summary()
+
+        m.fits._summary.assert_called_once_with(
+            kcs=None,
+            percentiles=(2.5, 97.5),
+            kc_col_name="kc_id",
+        )
+
+    def test_single_kc_is_passed_to_summary(self):
+        m = _make_fitted_model()
+        m.fits._summary = MagicMock(
+            return_value=pd.DataFrame()
+        )  # ty: ignore[method-assign]
+
+        m.summary(kcs="kc_a")
+
+        m.fits._summary.assert_called_once_with(
+            kcs="kc_a",
+            percentiles=(2.5, 97.5),
+            kc_col_name="kc_id",
+        )
+
+    def test_kc_list_is_passed_to_summary(self):
+        m = _make_fitted_model()
+        m.fits._summary = MagicMock(
+            return_value=pd.DataFrame()
+        )  # ty: ignore[method-assign]
+
+        m.summary(kcs=["kc_a", "kc_b"])
+
+        m.fits._summary.assert_called_once_with(
+            kcs=["kc_a", "kc_b"],
+            percentiles=(2.5, 97.5),
+            kc_col_name="kc_id",
+        )
+
 
 # ---------------------------------------------------------------------------
 # predict

@@ -121,6 +121,11 @@ class PriorsBase(ABC):
             cls._validate_single(
                 priors, model_class, estimation_strategy, n_groups=n_groups
             )
+        elif isinstance(priors, PriorsBase):
+            raise TypeError(
+                f"Invalid prior class: expected {cls.__name__} for {model_class.__name__}, "
+                f"got {type(priors).__name__}"
+            )
         elif isinstance(priors, dict):
             for kc_id, kc_priors in priors.items():
                 if not isinstance(kc_priors, cls):
@@ -136,6 +141,11 @@ class PriorsBase(ABC):
                     kc_id=str(kc_id),
                     n_groups=n_groups,
                 )
+        else:
+            raise TypeError(
+                f"Invalid priors argument: expected {cls.__name__} or dict[str, {cls.__name__}], "
+                f"got {type(priors).__name__}"
+            )
 
     @staticmethod
     @abstractmethod

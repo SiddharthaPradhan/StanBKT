@@ -31,6 +31,34 @@ def _apply_tight_layout(plot_object: Any) -> None:
         plt.tight_layout()
 
 
+def _show_x_axes_on_all_subplots(plot_object: Any) -> None:
+    """Ensure x-axis labels and ticks are visible on all subplots.
+
+    ArviZ's plot_trace with col_wrap hides x-axes on non-bottom plots by default.
+    This function restores visibility to all axes.
+    """
+    figures: list[Any] = []
+    if hasattr(plot_object, "figures") and plot_object.figures is not None:
+        figures = list(plot_object.figures)
+    elif hasattr(plot_object, "figure") and plot_object.figure is not None:
+        figures = [plot_object.figure]
+
+    for figure in figures:
+        if hasattr(figure, "axes"):
+            for ax in figure.axes:
+                ax.tick_params(labelbottom=True, bottom=True)
+                # Explicitly set tick labels visible
+                for label in ax.get_xticklabels():
+                    label.set_visible(True)
+
+    if not figures:
+        # Fallback for plotting backends that only expose the current figure.
+        for ax in plt.gcf().axes:
+            ax.tick_params(labelbottom=True, bottom=True)
+            for label in ax.get_xticklabels():
+                label.set_visible(True)
+
+
 def _normalized_parameter_names(parameter_names: Sequence[str]) -> list[str]:
     indexed_counts: dict[str, int] = {}
     for name in parameter_names:
@@ -207,5 +235,6 @@ def plot_trace(
         backend="matplotlib",
         col_wrap=col_wrap,
     )
+    _show_x_axes_on_all_subplots(plot_object)
     _apply_tight_layout(plot_object)
     return plot_object

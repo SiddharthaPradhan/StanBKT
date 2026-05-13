@@ -18,7 +18,6 @@ from stanbkt.models.model_types import InitKnowledgeStrategy
 from stanbkt.models.core.standard import StandardBKT
 from stanbkt.models.core.multi import MultiBKT
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -334,6 +333,10 @@ class TestStandardPriorsValidate:
         p = StandardPriors()
         StandardPriors._validate(p, StandardBKT, CO)  # should not raise
 
+    def test_validate_wrong_priors_subclass_raises(self):
+        with pytest.raises(TypeError, match="expected StandardPriors"):
+            StandardPriors._validate(MultiPriors(), StandardBKT, CO)
+
     def test_validate_dict_of_valid_priors(self):
         priors_dict = {
             "kc1": StandardPriors(),
@@ -529,6 +532,16 @@ class TestMultiPriorsValidateSingle:
         object.__setattr__(p, "learn_mu", 42)  # int, not float/list/None
         with pytest.raises(ValueError, match="Invalid prior value type"):
             MultiPriors._validate_single(p, MultiBKT, CO)
+
+
+class TestMultiPriorsValidate:
+    def test_validate_single_instance(self):
+        p = MultiPriors()
+        MultiPriors._validate(p, MultiBKT, CO)
+
+    def test_validate_wrong_priors_subclass_raises(self):
+        with pytest.raises(TypeError, match="expected MultiPriors"):
+            MultiPriors._validate(StandardPriors(), MultiBKT, CO)
 
 
 # ---------------------------------------------------------------------------

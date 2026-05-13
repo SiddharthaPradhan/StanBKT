@@ -168,25 +168,29 @@ class StandardBKT(BKTModelBase):
             "individual_pi_know": int(self.individual_initial_knowledge),
         }
         if priors is not None:
-            for prior_param_key, value in priors.to_dict(
-                self.init_knowledge_strategy
-            ).items():
-                base_key = prior_param_key.removesuffix("_mu").removesuffix("_std")
-                if isinstance(value, list):
-                    data_dict["prior_" + prior_param_key] = value
-                    data_dict["unif_prior_" + base_key] = 0
-                elif isinstance(value, type(None)):
-                    data_dict["unif_prior_" + base_key] = 1
-                elif np.isscalar(value):  # scalar but stan expects array
-                    data_dict["prior_" + prior_param_key] = [value]
-                    data_dict["unif_prior_" + base_key] = 0
+            raw_priors = priors.to_dict(self.init_knowledge_strategy)
+            for param in ("pi_know", "learn", "forget", "guess", "slip"):
+                mu_key = f"{param}_mu"
+                std_key = f"{param}_std"
+                mu_value = raw_priors.get(mu_key)
+                std_value = raw_priors.get(std_key)
+
+                if mu_value is None or std_value is None:
+                    # Stan still requires prior arrays even when the model uses
+                    # the corresponding uniform-prior flag to ignore them.
+                    data_dict[f"prior_{mu_key}"] = [0.0]
+                    data_dict[f"prior_{std_key}"] = [1.0]
+                    data_dict[f"unif_prior_{param}"] = 1
+                elif np.isscalar(mu_value) and np.isscalar(std_value):
+                    data_dict[f"prior_{mu_key}"] = [mu_value]
+                    data_dict[f"prior_{std_key}"] = [std_value]
+                    data_dict[f"unif_prior_{param}"] = 0
                 else:
                     raise ValueError(
-                        f"Unsupported prior value type for parameter '{prior_param_key}': {type(value)}. "
-                        "Expected list, or scalar."
+                        f"Unsupported prior value type for parameter '{param}': "
+                        f"mu={type(mu_value).__name__}, std={type(std_value).__name__}. "
+                        "Expected scalar values or None."
                     )
-
-            data_dict.update(priors.to_dict(self.init_knowledge_strategy))
         return data_dict
 
     def _extract_bkt_params_from_fit(

@@ -391,6 +391,7 @@ class BKTModelBase(VerboseMixin, ABC):
 
     def summary(
         self,
+        kcs: Union[list[str], str, None] = None,
         percentiles: Tuple[float, float] = (2.5, 97.5),
         column_mapping: dict[str, str] = {},
         clear_cache: bool = False,
@@ -400,8 +401,9 @@ class BKTModelBase(VerboseMixin, ABC):
 
         Parameters
         ----------
-        params : list of str, optional
-            List of parameters to summarize. If None, summarizes all.
+        kcs : Union[list[str], str, None], optional
+            KCs to summarize. Can be a single KC string, a list of KCs, or None.
+            If None, summarizes all fitted KCs.
         percentiles : tuple of float, default=(2.5, 97.5)
             Percentiles to include in summary. Values should be in range [1, 99].
             Ignored when the fit method is MLE, MLE produces a point estimate only.
@@ -441,6 +443,7 @@ class BKTModelBase(VerboseMixin, ABC):
         kc_col_name = column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)
 
         return self.fits._summary(
+            kcs=kcs,
             percentiles=percentiles,
             kc_col_name=kc_col_name,
         )
