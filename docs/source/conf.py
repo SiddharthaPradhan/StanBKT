@@ -102,6 +102,8 @@ html_theme_options = {
     "footer_start": ["copyright", "sphinx-version"],
     "footer_center": ["maple-lab"],
     "footer_end": ["theme-version"],
+    # Announcement for unstable API
+    "announcement": "StanBKT is in active development. Until a stable version is released, breaking API changes may occur that could prevent loading models saved with older versions.",
 }
 
 # side bar config
@@ -117,6 +119,12 @@ html_show_sourcelink = False
 nbsphinx_prolog = f"""
 Download this notebook from {GITHUB_ROOT_URL}/docs/source/{{{{ env.doc2path(env.docname, base=None) }}}}
 """
+
+# add js to the html output
+
+html_js_files = [
+    ("readTheDocsSearch.js", {"defer": "defer"}),
+]
 
 # Application Events
 

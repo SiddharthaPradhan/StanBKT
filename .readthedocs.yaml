@@ -1,0 +1,55 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+
+# Required
+version: 2
+
+# Build documentation in the docs/ directory with Sphinx
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.12"
+
+# Set Python package installation
+# from https://docs.readthedocs.com/platform/stable/build-customization.html
+python:
+  install:
+    - method: uv
+      command: sync
+      groups:
+        - dev
+
+sphinx:
+  configuration: docs/source/conf.py
+  fail_on_warning: false
+
+# Optionally declare the Python requirements required to build your documentation
+# See https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
+formats:
+  - pdf
+  - epub
+
+# If using Jupyter Book, uncomment the following (default is sphinx):
+# build:
+#   tools:
+#     jupyter: true
+
+# Optional but recommended, declare the version of requirements to be used:
+# requirements:
+#   file: docs/requirements.txt
+
+# Optionally build your documentation in additional formats such as PDF and ePub
+# formats:
+#   - pdf
+#   - epub
+
+# Optional but set to True if you want MkDocs instead of Sphinx
+# mkdocs:
+#   configuration: mkdocs.yml
+
+# Optional but set to True if you want to build with mamba instead of virtualenv (and install conda packages)
+# conda:
+#   environment: environment.yml
+
+# Optional but set to False if you want to allow builds to continue if there are warnings.
+# fail_on_warning: true
