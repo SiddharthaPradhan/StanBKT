@@ -3,7 +3,7 @@
 *
 !*.*
 !*/
-
+!LICENSE
 
 .venv/
 *.code-workspace
