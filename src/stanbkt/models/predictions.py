@@ -198,8 +198,12 @@ def _predict_posterior_draws_numba(
     for kc_id, kc_data in iter_kc_data(
         data=data,
         col_mapping=column_mapping,
-        return_groups=model._use_groups,
         print_fn=model.log,
+        multi_init_stu=model.multi_init_stu,
+        multi_trans_stu=model.multi_trans_stu,
+        multi_emis_stu=model.multi_emis_stu,
+        multi_trans_prob=model.multi_trans_prob,
+        multi_emis_prob=model.multi_emis_prob,
     ):
         kc_id_str = str(kc_id)
         kc_data = model._align_kc_group_indices_with_fit_metadata(kc_id_str, kc_data)
@@ -208,7 +212,11 @@ def _predict_posterior_draws_numba(
             continue
 
         n_students = int(kc_data.correctness.shape[0])
-        groups = kc_data.groups if model._use_groups else None
+        groups = (
+            kc_data.student_groups_transition
+            if model._use_groups and kc_data.student_groups_transition is not None
+            else None
+        )
 
         prior_draws = _extract_param_draw_matrix(
             model, kc_fit, "pi_know", n_students, groups

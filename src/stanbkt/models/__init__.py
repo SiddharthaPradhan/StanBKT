@@ -6,8 +6,8 @@ for model types, priors, and error handling.
 
 # Core model classes
 from stanbkt.models.core.base import BKTModelBase
-from stanbkt.models.core.multi import MultiBKT
-from stanbkt.models.core.standard import StandardBKT
+from stanbkt.models.core.multi import MultiBKT, MultiBKTTest
+from stanbkt.models.core.standard import StandardBKT, StandardBKTTest
 
 # Model utilities
 from stanbkt.models.error import FitMethodMismatchError
@@ -19,7 +19,9 @@ __all__ = [
     # Core models
     "BKTModelBase",
     "MultiBKT",
+    "MultiBKTTest",
     "StandardBKT",
+    "StandardBKTTest",
     # Utilities
     "FitMethodMismatchError",
     "ModelType",

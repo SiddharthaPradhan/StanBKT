@@ -93,7 +93,24 @@ def plot_posterior_correctness(
     )
     student_col = column_mapping[ColumnNames.STUDENT_ID]
     problem_col = column_mapping[ColumnNames.PROBLEM_ID]
-    group_col = column_mapping.get(ColumnNames.GROUP, ColumnNames.GROUP)
+    
+    # When grouped plotting is requested, find a role-specific group column
+    group_col = None
+    if grouped:
+        for group_role in [
+            ColumnNames.STUDENT_GROUP_INIT,
+            ColumnNames.STUDENT_GROUP_TRANSITION,
+            ColumnNames.STUDENT_GROUP_EMISSION,
+        ]:
+            candidate = column_mapping.get(group_role)
+            if candidate and candidate in data.columns:
+                group_col = candidate
+                break
+        if group_col is None:
+            raise ValueError(
+                "Grouped plotting requested but no role-specific student group column found. "
+                "Provide one of: student_group_init, student_group_transition, or student_group_emission."
+            )
 
     validate_data(data, column_mapping, check_groups=grouped)
 
@@ -129,6 +146,7 @@ def plot_posterior_correctness(
     )
 
     if grouped_plot:
+        assert group_col is not None, "group_col must be set when grouped_plot is True"
         correctness_by_problem_by_group, problem_ids = (
             _point_estimate_correctness_per_problem_by_group(
                 data_kc, column_mapping, group_col, point_estimate, frac

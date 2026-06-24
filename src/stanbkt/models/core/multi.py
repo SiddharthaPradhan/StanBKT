@@ -71,6 +71,8 @@ class MultiBKT(BKTModelBase):
             cpp_compile_kwargs=cpp_compile_kwargs,
         )
         self._use_groups = True
+        # For MultiBKT, we use student grouping for transitions (the traditional grouping)
+        self.multi_trans_stu = True
 
     @property
     def _stan_model_filename(self) -> str:
@@ -100,8 +102,8 @@ class MultiBKT(BKTModelBase):
         Parameters
         ----------
         kc_data : KCData
-            Preprocessed KC data.  Must have ``groups`` and ``group_2_index``
-            populated (i.e. produced with ``return_groups=True``).
+            Preprocessed KC data. Must have ``student_groups_transition``
+            populated (i.e., produced with ``multi_trans_stu=True``).
         priors : PriorsBase, optional
             Per-group prior specifications.  If ``None``, default priors are used.
 
@@ -110,16 +112,17 @@ class MultiBKT(BKTModelBase):
         dict[str, Any]
             Data dict ready to pass to CmdStanPy.
         """
-        if kc_data.groups is None or kc_data.group_2_index is None:
+        if kc_data.student_groups_transition is None:
             raise ValueError(
-                "KCData must have groups populated for MultiBKT. "
-                "Ensure the data contains a 'group_id' column and that "
+                "KCData must have student_groups_transition populated for MultiBKT. "
+                "Ensure the data contains a group column and that "
                 "fit() / predict() are called correctly."
             )
 
         correctness = kc_data.correctness
         n_students, n_problems = correctness.shape
-        n_groups: int = len(kc_data.group_2_index)
+        groups = kc_data.student_groups_transition
+        n_groups: int = int(np.max(groups))
 
         data_dict: dict[str, Any] = {
             "nStudents": int(n_students),
@@ -127,7 +130,7 @@ class MultiBKT(BKTModelBase):
             "correctness": correctness,
             "interaction_lengths": kc_data.lengths,
             "nGroups": n_groups,
-            "groups": kc_data.groups,
+            "groups": groups,
             "individual_pi_know": int(self.individual_initial_knowledge),
         }
 
@@ -293,3 +296,201 @@ class MultiBKT(BKTModelBase):
             "'evaluate' is not yet implemented for MultiBKT. "
             "This method will be available in a future release."
         )
+
+
+class MultiBKTTest(MultiBKT):
+    """MultiBKT variant that uses the test Stan model file."""
+
+    def __init__(
+        self,
+        fit_method: FitMethod = FitMethod.MCMC,
+        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        stan_compile_kwargs: dict | None = None,
+        cpp_compile_kwargs: dict | None = None,
+        multi_init_stu: bool = True,
+        multi_trans_stu: bool = True,
+        multi_emis_stu: bool = True,
+        multi_trans_prob: bool = True,
+        multi_emis_prob: bool = True,
+    ):
+        super().__init__(
+            fit_method=fit_method,
+            verbose=verbose,
+            stan_compile_kwargs=stan_compile_kwargs,
+            cpp_compile_kwargs=cpp_compile_kwargs,
+        )
+        self.multi_init_stu = multi_init_stu
+        self.multi_trans_stu = multi_trans_stu
+        self.multi_emis_stu = multi_emis_stu
+        self.multi_trans_prob = multi_trans_prob
+        self.multi_emis_prob = multi_emis_prob
+
+    @property
+    def _stan_model_filename(self) -> str:
+        return str(files("stanbkt").joinpath("stan_code", "BKT", "BKT_model_test.stan"))
+
+    def _build_stan_data_dict(
+        self, kc_data: KCData, priors: Optional[PriorsBase] = None
+    ) -> dict[str, Any]:
+        correctness = kc_data.correctness
+        n_students, n_problems = correctness.shape
+
+        if kc_data.problem_sequence is not None and kc_data.problem_sequence.shape == (
+            n_students,
+            n_problems,
+        ):
+            problem_sequence = kc_data.problem_sequence.astype(np.int32, copy=False)
+        else:
+            problem_sequence = np.tile(
+                np.arange(1, n_problems + 1, dtype=np.int32), (n_students, 1)
+            )
+
+        def _resolve_student_groups(
+            values: Optional[npt.NDArray[np.int32]],
+            enabled: bool,
+        ) -> npt.NDArray[np.int32]:
+            if enabled:
+                if values is None:
+                    raise ValueError(
+                        "Role-specific student grouping requested but no data provided. "
+                        "Ensure the data column is populated."
+                    )
+                return values.astype(np.int32, copy=False)
+            return np.ones(n_students, dtype=np.int32)
+
+        def _resolve_problem_groups(
+            values: Optional[npt.NDArray[np.int32]],
+            enabled: bool,
+        ) -> npt.NDArray[np.int32]:
+            if enabled:
+                if values is None:
+                    raise ValueError(
+                        "Role-specific problem grouping requested but no data provided. "
+                        "Ensure the data column is populated."
+                    )
+                return values.astype(np.int32, copy=False)
+            return np.ones(max(1, n_problems), dtype=np.int32)
+
+        student_groups_init = _resolve_student_groups(
+            kc_data.student_groups_init,
+            self.multi_init_stu,
+        )
+        student_groups_transition = _resolve_student_groups(
+            kc_data.student_groups_transition,
+            self.multi_trans_stu,
+        )
+        student_groups_emission = _resolve_student_groups(
+            kc_data.student_groups_emission,
+            self.multi_emis_stu,
+        )
+        problem_groups_transition = _resolve_problem_groups(
+            kc_data.problem_groups_transition,
+            self.multi_trans_prob,
+        )
+        problem_groups_emission = _resolve_problem_groups(
+            kc_data.problem_groups_emission,
+            self.multi_emis_prob,
+        )
+
+        n_student_groups_init = int(np.max(student_groups_init))
+        n_student_groups_transition = int(np.max(student_groups_transition))
+        n_student_groups_emission = int(np.max(student_groups_emission))
+        n_problem_groups_transition = int(np.max(problem_groups_transition))
+        n_problem_groups_emission = int(np.max(problem_groups_emission))
+
+        data_dict: dict[str, Any] = {
+            "nProblems": int(n_problems),
+            "nStudents": int(n_students),
+            "nStudentGroupsInit": n_student_groups_init,
+            "nStudentGroupsTransition": n_student_groups_transition,
+            "nStudentGroupsEmission": n_student_groups_emission,
+            "nProblemGroupsTransition": n_problem_groups_transition,
+            "nProblemGroupsEmission": n_problem_groups_emission,
+            "studentGroupsInit": student_groups_init,
+            "studentGroupsTransition": student_groups_transition,
+            "studentGroupsEmission": student_groups_emission,
+            "problemGroupsTransition": problem_groups_transition,
+            "problemGroupsEmission": problem_groups_emission,
+            "correctness": correctness,
+            "problem_sequence": problem_sequence,
+            "interaction_lengths": kc_data.lengths,
+        }
+
+        if priors is None:
+            priors = self._default_priors()
+
+        raw_priors = priors.to_dict(self.init_knowledge_strategy)
+
+        def _expand_vector(value: Any, size: int) -> list[float]:
+            if value is None:
+                return []
+            arr = np.asarray(value, dtype=np.float64).ravel()
+            if arr.size == 0:
+                return []
+            if arr.size == 1:
+                return [float(arr[0])] * size
+            if arr.size >= size:
+                return [float(v) for v in arr[:size]]
+            out = [float(v) for v in arr]
+            out.extend([float(arr[-1])] * (size - arr.size))
+            return out
+
+        def _vector_prior(param: str, size: int) -> tuple[list[float], list[float], int]:
+            mu_vec = _expand_vector(raw_priors.get(f"{param}_mu"), size)
+            std_vec = _expand_vector(raw_priors.get(f"{param}_std"), size)
+            if len(mu_vec) == 0 or len(std_vec) == 0:
+                return [0.0] * size, [1.0] * size, 1
+            return mu_vec, std_vec, 0
+
+        def _matrix_prior(
+            param: str, n_rows: int, n_cols: int
+        ) -> tuple[list[list[float]], list[list[float]], int]:
+            mu_rows = _expand_vector(raw_priors.get(f"{param}_mu"), n_rows)
+            std_rows = _expand_vector(raw_priors.get(f"{param}_std"), n_rows)
+            if len(mu_rows) == 0 or len(std_rows) == 0:
+                return (
+                    [[0.0] * n_cols for _ in range(n_rows)],
+                    [[1.0] * n_cols for _ in range(n_rows)],
+                    1,
+                )
+            return (
+                [[mu_rows[row_idx]] * n_cols for row_idx in range(n_rows)],
+                [[std_rows[row_idx]] * n_cols for row_idx in range(n_rows)],
+                0,
+            )
+
+        pi_mu, pi_std, pi_unif = _vector_prior("pi_know", n_student_groups_init)
+        learn_mu, learn_std, learn_unif = _matrix_prior(
+            "learn", n_student_groups_transition, n_problem_groups_transition
+        )
+        forget_mu, forget_std, forget_unif = _matrix_prior(
+            "forget", n_student_groups_transition, n_problem_groups_transition
+        )
+        guess_mu, guess_std, guess_unif = _matrix_prior(
+            "guess", n_student_groups_emission, n_problem_groups_emission
+        )
+        slip_mu, slip_std, slip_unif = _matrix_prior(
+            "slip", n_student_groups_emission, n_problem_groups_emission
+        )
+
+        data_dict.update(
+            {
+                "prior_pi_know_mu": pi_mu,
+                "prior_pi_know_std": pi_std,
+                "prior_learn_mu": learn_mu,
+                "prior_learn_std": learn_std,
+                "prior_forget_mu": forget_mu,
+                "prior_forget_std": forget_std,
+                "prior_guess_mu": guess_mu,
+                "prior_guess_std": guess_std,
+                "prior_slip_mu": slip_mu,
+                "prior_slip_std": slip_std,
+                "unif_prior_pi_know": pi_unif,
+                "unif_prior_learn": learn_unif,
+                "unif_prior_forget": forget_unif,
+                "unif_prior_guess": guess_unif,
+                "unif_prior_slip": slip_unif,
+            }
+        )
+
+        return data_dict

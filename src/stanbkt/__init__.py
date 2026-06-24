@@ -1,7 +1,8 @@
 """StanBKT: Estimating Bayesian Knowledge Tracing (BKT) models with Bayesian inference."""
 
 from stanbkt.models.core.base import BKTModelBase
-from stanbkt.models.core.standard import StandardBKT
+from stanbkt.models.core.multi import MultiBKTTest
+from stanbkt.models.core.standard import StandardBKT, StandardBKTTest
 from stanbkt.models.priors import StandardPriors
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.fit_options import (
@@ -25,6 +26,8 @@ __all__ = [
     # Models
     "BKTModelBase",
     "StandardBKT",
+    "StandardBKTTest",
+    "MultiBKTTest",
     "StandardPriors",
     # Fitting
     "FitMethod",

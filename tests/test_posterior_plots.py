@@ -81,7 +81,7 @@ def test_plot_posterior_correctness_grouped_respects_group_mapping() -> None:
         ColumnNames.CORRECTNESS: "is_correct",
         ColumnNames.ORDER: "t",
         ColumnNames.KC_ID: "skill",
-        ColumnNames.GROUP: "cohort",
+        ColumnNames.STUDENT_GROUP_TRANSITION: "cohort",
     }
 
     axes = plot_posterior_correctness(

@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from stanbkt.fits.fit_types import FitMethod, FitSaveEntry
-from stanbkt.models.core.multi import MultiBKT, _is_all_none
+from stanbkt.models.core.multi import MultiBKT, MultiBKTTest, _is_all_none
 from stanbkt.models.priors import MultiPriors
 from stanbkt.utils.data_utils import KCData
 from stanbkt.utils.verbose import VerbosityLevel
@@ -42,20 +42,20 @@ def _kc_data_with_groups(
     n_problems: int = 3,
     n_groups: int = 2,
 ) -> KCData:
-    """KCData with groups and group_2_index populated."""
+    """KCData with student_groups_transition populated (for MultiBKT)."""
     rng = np.random.default_rng(42)
     correctness = rng.integers(0, 2, size=(n_students, n_problems), dtype=np.int8)
     # 1-based group array: alternate students between groups
-    groups = np.array([(i % n_groups) + 1 for i in range(n_students)], dtype=np.int32)
-    group_2_index = {f"group{g}": g for g in range(1, n_groups + 1)}
+    student_groups_transition = np.array(
+        [(i % n_groups) + 1 for i in range(n_students)], dtype=np.int32
+    )
     return KCData(
         correctness=correctness,
         student_inter_dict={},
         lengths=np.full(n_students, n_problems, dtype=np.int32),
         student_ids=[f"s{i}" for i in range(n_students)],
         problem_ids=[f"p{j}" for j in range(n_problems)],
-        groups=groups,
-        group_2_index=group_2_index,
+        student_groups_transition=student_groups_transition,
     )
 
 
@@ -197,6 +197,49 @@ class TestStanFilenames:
         assert isinstance(model._stan_model_filename, str)
         assert isinstance(model._stan_hidden_filename, str)
         assert isinstance(model._stan_smoothed_hidden_filename, str)
+
+
+class TestMultiBKTTestFilename:
+    def test_model_filename_ends_with_bkt_model_test_stan(self):
+        assert MultiBKTTest()._stan_model_filename.endswith("BKT_model_test.stan")
+
+    def test_build_stan_data_dict_contains_test_model_keys(self):
+        model = MultiBKTTest()
+        result = model._build_stan_data_dict(_kc_data_with_groups(4, 3, 2))
+        for key in (
+            "nStudentGroupsInit",
+            "nStudentGroupsTransition",
+            "nStudentGroupsEmission",
+            "nProblemGroupsTransition",
+            "nProblemGroupsEmission",
+            "studentGroupsInit",
+            "studentGroupsTransition",
+            "studentGroupsEmission",
+            "problemGroupsTransition",
+            "problemGroupsEmission",
+            "problem_sequence",
+        ):
+            assert key in result
+
+    def test_constructor_flags_can_disable_student_transition_groups(self):
+        model = MultiBKTTest(multi_trans_stu=False)
+        result = model._build_stan_data_dict(_kc_data_with_groups(4, 3, 2))
+        assert result["nStudentGroupsTransition"] == 1
+
+    def test_constructor_flags_can_disable_problem_emission_groups(self):
+        model = MultiBKTTest(multi_emis_prob=False)
+        kc_data = _kc_data_with_groups(4, 3, 2)
+        kc_data = KCData(
+            correctness=kc_data.correctness,
+            student_inter_dict=kc_data.student_inter_dict,
+            lengths=kc_data.lengths,
+            student_ids=kc_data.student_ids,
+            problem_ids=kc_data.problem_ids,
+            student_groups_transition=kc_data.student_groups_transition,
+            problem_groups_emission=np.array([1, 2, 2], dtype=np.int32),
+        )
+        result = model._build_stan_data_dict(kc_data)
+        assert result["nProblemGroupsEmission"] == 1
 
 
 # ---------------------------------------------------------------------------

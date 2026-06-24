@@ -226,7 +226,6 @@ def gq_to_draws(
     for kc_id, kc_data in iter_kc_data(
         data=data,
         col_mapping=col_mapping,
-        return_groups=False,
         print_fn=print_fn,
     ):
         kc_id_str = str(kc_id)
@@ -462,7 +461,6 @@ def posterior_summary(
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=col_mapping,
-            return_groups=False,
             print_fn=None,
         ):
             kc_id_str = str(kc_id)

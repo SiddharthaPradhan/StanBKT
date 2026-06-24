@@ -70,27 +70,6 @@ def test_iter_kc_data_adds_default_kc_when_absent() -> None:
     assert kc_data.correctness.dtype == np.int8
 
 
-def test_iter_kc_data_builds_group_indices_and_mapping() -> None:
-    df = _base_df()
-    result = dict(iter_kc_data(df, return_groups=True))
-    kc_data = result["kc_a"]
-
-    assert kc_data.groups is not None
-    assert kc_data.group_2_index is not None
-    assert kc_data.groups.dtype == np.int32
-    assert kc_data.group_2_index is not None
-    assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}
-    assert sorted(np.unique(kc_data.groups).tolist()) == [1, 2]
-
-
-def test_iter_kc_data_group_equals_student() -> None:
-    df = _base_df().drop(columns=["group_id"])
-    col_mapping = ColumnNames.get_default_mapping()
-    col_mapping[ColumnNames.GROUP] = ColumnNames.STUDENT_ID
-
-    assert dict(iter_kc_data(df, col_mapping=col_mapping, return_groups=True))
-
-
 def test_format_data_returns_same_kc_structure() -> None:
     df = _base_df()
     formatted = format_kc_data(df)
@@ -265,19 +244,3 @@ def test_iter_kc_data_raises_on_duplicate_order_within_student() -> None:
 # ---------------------------------------------------------------------------
 # Additional format_data coverage
 # ---------------------------------------------------------------------------
-
-
-def test_format_data_with_return_groups_populates_groups() -> None:
-    df = _base_df()
-    formatted = format_kc_data(df, return_groups=True)
-    kc_data = formatted["kc_a"]
-    assert kc_data.groups is not None
-    assert kc_data.group_2_index is not None
-
-
-def test_format_data_with_return_groups_correct_mapping() -> None:
-    df = _base_df()
-    formatted = format_kc_data(df, return_groups=True)
-    kc_data = formatted["kc_a"]
-    assert kc_data.group_2_index is not None
-    assert set(kc_data.group_2_index.keys()) == {"g1", "g2"}

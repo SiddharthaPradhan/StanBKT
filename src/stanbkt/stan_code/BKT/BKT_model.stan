@@ -38,14 +38,14 @@ functions{
   Helper function to apply priors for the parameters. If unif_prior is 0, applies the priors on the logit scale.
   Else stan will automatically apply uniform priors over the parameter space/support.
   */
-  void handle_normal_priors_lp(int unif_prior,         // binary indicator for uniform prior
+  void handle_logistic_priors_lp(int unif_prior,         // binary indicator for uniform prior
                         row_vector logit_param, // parameter on logit scale
-                        array[] real prior_mu,  // prior means for normal distribution
-                        array[]  real prior_std // prior stds for normal distribution
+                        array[] real prior_mu,  // prior means for logistic distribution
+                        array[]  real prior_std // prior stds for logistic distribution
                     ){
     if (unif_prior != 1) {
-        // Apply normal priors on logit scale
-        logit_param ~ normal(prior_mu, prior_std);
+        // Apply logistic priors on logit scale
+        logit_param ~ logistic(prior_mu, prior_std);
     }
     // else stan will automatically apply uniform over the parameter space/support.
   }
@@ -105,11 +105,11 @@ transformed parameters {
 
 model {
     // Bayesian Priors
-    handle_normal_priors_lp(unif_prior_pi_know, logit_pi_know_group, prior_pi_know_mu, prior_pi_know_std);
-    handle_normal_priors_lp(unif_prior_learn, logit_learn_group, prior_learn_mu, prior_learn_std);
-    handle_normal_priors_lp(unif_prior_forget, logit_forget_group, prior_forget_mu, prior_forget_std);
-    handle_normal_priors_lp(unif_prior_guess, logit_guess_group, prior_guess_mu, prior_guess_std);
-    handle_normal_priors_lp(unif_prior_slip, logit_slip_group, prior_slip_mu, prior_slip_std);
+    handle_logistic_priors_lp(unif_prior_pi_know, logit_pi_know_group, prior_pi_know_mu, prior_pi_know_std);
+    handle_logistic_priors_lp(unif_prior_learn, logit_learn_group, prior_learn_mu, prior_learn_std);
+    handle_logistic_priors_lp(unif_prior_forget, logit_forget_group, prior_forget_mu, prior_forget_std);
+    handle_logistic_priors_lp(unif_prior_guess, logit_guess_group, prior_guess_mu, prior_guess_std);
+    handle_logistic_priors_lp(unif_prior_slip, logit_slip_group, prior_slip_mu, prior_slip_std);
 
 
     // The following variables are based on the parameters and converted into suitable vector or matrix form.

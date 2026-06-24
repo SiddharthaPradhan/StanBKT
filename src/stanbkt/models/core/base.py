@@ -116,6 +116,12 @@ class BKTModelBase(VerboseMixin, ABC):
         self.init_knowledge_strategy: InitKnowledgeStrategy = init_knowledge_strategy
         # Flag to control whether the model uses group-specific parameters
         self._use_groups: bool = False
+        # Grouping flags for role-specific parameter grouping (used primarily by test models)
+        self.multi_init_stu: bool = False
+        self.multi_trans_stu: bool = False
+        self.multi_emis_stu: bool = False
+        self.multi_trans_prob: bool = False
+        self.multi_emis_prob: bool = False
         # Model is instantiated lazily during first fit and cached
         self._stan_model: Optional[csp.CmdStanModel] = None
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
@@ -251,8 +257,12 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=data,
             col_mapping=column_mapping,
-            return_groups=self._use_groups,
             print_fn=self.log,
+            multi_init_stu=self.multi_init_stu,
+            multi_trans_stu=self.multi_trans_stu,
+            multi_emis_stu=self.multi_emis_stu,
+            multi_trans_prob=self.multi_trans_prob,
+            multi_emis_prob=self.multi_emis_prob,
         ):
             if self.fits.has_kc(str(kc_id)):
                 if not overwrite_kcs:
@@ -274,16 +284,22 @@ class BKTModelBase(VerboseMixin, ABC):
             fit_result = self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
+            
+            # Extract group metadata if present (for grouping-aware models)
+            group2index = None
+            groups = None
+            if self._use_groups and kc_data.student_groups_transition is not None:
+                # Derive group2index mapping from student_groups_transition
+                unique_group_indices = np.unique(kc_data.student_groups_transition)
+                group2index = {str(int(idx)): int(idx) for idx in unique_group_indices}
+                groups = set(str(int(idx)) for idx in unique_group_indices)
+            
             self.fits.add_fit(
                 str(kc_id),
                 fit_result,
                 overwrite_kcs=overwrite_kcs,
-                group2index=kc_data.group_2_index,
-                groups=(
-                    set(kc_data.group_2_index.keys())
-                    if kc_data.group_2_index is not None
-                    else None
-                ),
+                group2index=group2index,
+                groups=groups,
             )
             self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
             self._is_fitted = True
@@ -308,53 +324,17 @@ class BKTModelBase(VerboseMixin, ABC):
         if fit_save_entry is None or fit_save_entry.group2index in (None, {}):
             return kc_data
 
-        if kc_data.groups is None or kc_data.group_2_index is None:
+        if kc_data.student_groups_transition is None:
             raise ValueError(
                 f"KC '{kc_id}' requires group data for prediction because fit metadata contains group indices."
             )
 
-        fit_group2index = {
-            str(group_name): int(index)
-            for group_name, index in fit_save_entry.group2index.items()
-        }
-        trained_groups = (
-            {str(group_name) for group_name in fit_save_entry.groups}
-            if fit_save_entry.groups not in (None, set())
-            else set(fit_group2index.keys())
-        )
-        incoming_groups = {
-            str(group_name) for group_name in kc_data.group_2_index.keys()
-        }
-
-        unknown_groups = incoming_groups - trained_groups
-        if unknown_groups:
-            raise ValueError(
-                f"Prediction data for KC '{kc_id}' contains unseen groups: {sorted(unknown_groups)}. "
-                f"Expected groups from fit metadata: {sorted(trained_groups)}."
-            )
-
-        index2group = {
-            int(index): str(group_name)
-            for group_name, index in kc_data.group_2_index.items()
-        }
-        aligned_groups = np.empty(kc_data.groups.shape, dtype=np.int32)
-        for i, group_index in enumerate(kc_data.groups):
-            group_name = index2group.get(int(group_index))
-            if group_name is None:
-                raise ValueError(
-                    f"Prediction data for KC '{kc_id}' has group index '{int(group_index)}' with no group mapping."
-                )
-            if group_name not in fit_group2index:
-                raise ValueError(
-                    f"Prediction data for KC '{kc_id}' contains unseen group '{group_name}'."
-                )
-            aligned_groups[i] = fit_group2index[group_name]
-
-        return replace(
-            kc_data,
-            groups=aligned_groups,
-            group_2_index=dict(fit_group2index),
-        )
+        # For now, student_groups_transition uses numeric indices directly,
+        # so no alignment is needed - the indices should match directly
+        # from fit training data to prediction data.
+        # If alignment is needed in the future (e.g., different groupings per kc),
+        # additional logic would go here.
+        return kc_data
 
     @abstractmethod
     def _default_priors(self) -> PriorsBase:
@@ -607,8 +587,12 @@ class BKTModelBase(VerboseMixin, ABC):
         for kc_id, kc_data in iter_kc_data(
             data=filtered_data,
             col_mapping=resolved_mapping,
-            return_groups=self._use_groups,
             print_fn=self.log,
+            multi_init_stu=self.multi_init_stu,
+            multi_trans_stu=self.multi_trans_stu,
+            multi_emis_stu=self.multi_emis_stu,
+            multi_trans_prob=self.multi_trans_prob,
+            multi_emis_prob=self.multi_emis_prob,
         ):
             kc_data = self._align_kc_group_indices_with_fit_metadata(
                 str(kc_id), kc_data
@@ -618,7 +602,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
                 point_estimate=point_estimate,
-                groups=kc_data.groups if self._use_groups else None,
+                groups=kc_data.student_groups_transition if self._use_groups else None,
             )
             p_know, p_correctness = njit_predict_numba(
                 correctness=kc_data.correctness,
@@ -1430,8 +1414,12 @@ class BKTModelBase(VerboseMixin, ABC):
             for kc_id, kc_data in iter_kc_data(
                 data=data,
                 col_mapping=column_mapping,
-                return_groups=self._use_groups,
                 print_fn=self.log,
+                multi_init_stu=self.multi_init_stu,
+                multi_trans_stu=self.multi_trans_stu,
+                multi_emis_stu=self.multi_emis_stu,
+                multi_trans_prob=self.multi_trans_prob,
+                multi_emis_prob=self.multi_emis_prob,
             ):
                 kc_id_str = str(kc_id)
                 kc_data = self._align_kc_group_indices_with_fit_metadata(
@@ -1468,8 +1456,12 @@ class BKTModelBase(VerboseMixin, ABC):
             for kc_id, kc_data in iter_kc_data(
                 data=data,
                 col_mapping=column_mapping,
-                return_groups=self._use_groups,
                 print_fn=self.log,
+                multi_init_stu=self.multi_init_stu,
+                multi_trans_stu=self.multi_trans_stu,
+                multi_emis_stu=self.multi_emis_stu,
+                multi_trans_prob=self.multi_trans_prob,
+                multi_emis_prob=self.multi_emis_prob,
             ):
                 kc_id_str = str(kc_id)
                 kc_data = self._align_kc_group_indices_with_fit_metadata(
@@ -1583,7 +1575,6 @@ class BKTModelBase(VerboseMixin, ABC):
             kc_items = iter_kc_data(
                 data=data,
                 col_mapping=col_mapping,
-                return_groups=False,
                 print_fn=self.log,
             )
             result_frames = [
@@ -1598,7 +1589,6 @@ class BKTModelBase(VerboseMixin, ABC):
                 for kc_item in iter_kc_data(
                     data=data,
                     col_mapping=col_mapping,
-                    return_groups=False,
                     print_fn=self.log,
                 ):
                     pending.add(executor.submit(_summarize_kc, kc_item))

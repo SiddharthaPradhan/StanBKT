@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from stanbkt.fits.fit_types import FitMethod
-from stanbkt.models.core.standard import StandardBKT
+from stanbkt.models.core.standard import StandardBKT, StandardBKTTest
 from stanbkt.models.priors import StandardPriors
 from stanbkt.utils.data_utils import KCData, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
@@ -249,6 +249,64 @@ class TestEvaluate:
         model = StandardBKT()
         with pytest.raises(NotImplementedError):
             model.evaluate()
+
+
+class TestStandardBKTTestModelFile:
+    def test_stan_model_filename_points_to_test_model(self):
+        model = StandardBKTTest()
+        assert model._stan_model_filename.endswith("BKT_model_test.stan")
+
+    def test_stan_model_test_file_exists(self):
+        model = StandardBKTTest()
+        assert os.path.exists(model._stan_model_filename)
+
+    def test_build_stan_data_dict_contains_test_model_keys(self):
+        model = StandardBKTTest()
+        result = model._build_stan_data_dict(
+            _kc_data(3, 4), priors=StandardPriors(use_defaults=False)
+        )
+        for key in (
+            "nStudentGroupsInit",
+            "nStudentGroupsTransition",
+            "nStudentGroupsEmission",
+            "nProblemGroupsTransition",
+            "nProblemGroupsEmission",
+            "studentGroupsInit",
+            "studentGroupsTransition",
+            "studentGroupsEmission",
+            "problemGroupsTransition",
+            "problemGroupsEmission",
+            "problem_sequence",
+        ):
+            assert key in result
+
+    def test_constructor_flags_enable_student_transition_groups(self):
+        model = StandardBKTTest(multi_trans_stu=True)
+        kc_data = _kc_data(4, 3)
+        kc_data = KCData(
+            correctness=kc_data.correctness,
+            student_inter_dict=kc_data.student_inter_dict,
+            lengths=kc_data.lengths,
+            student_ids=kc_data.student_ids,
+            problem_ids=kc_data.problem_ids,
+            student_groups_transition=np.array([1, 2, 1, 2], dtype=np.int32),
+        )
+        result = model._build_stan_data_dict(kc_data, priors=StandardPriors())
+        assert result["nStudentGroupsTransition"] == 2
+
+    def test_constructor_flags_disable_student_transition_groups(self):
+        model = StandardBKTTest(multi_trans_stu=False)
+        kc_data = _kc_data(4, 3)
+        kc_data = KCData(
+            correctness=kc_data.correctness,
+            student_inter_dict=kc_data.student_inter_dict,
+            lengths=kc_data.lengths,
+            student_ids=kc_data.student_ids,
+            problem_ids=kc_data.problem_ids,
+            student_groups_transition=np.array([1, 2, 1, 2], dtype=np.int32),
+        )
+        result = model._build_stan_data_dict(kc_data, priors=StandardPriors())
+        assert result["nStudentGroupsTransition"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1192,6 @@ class TestPredictPosteriorDataPath:
             for kc_id, kc_data in iter_kc_data(
                 data=data,
                 col_mapping=column_mapping,
-                return_groups=False,
                 print_fn=None,
             ):
                 callback_calls.append(str(kc_id))
@@ -1494,7 +1551,6 @@ class TestPredictSmoothedPosteriorDataPath:
             for kc_id, kc_data in iter_kc_data(
                 data=data,
                 col_mapping=column_mapping,
-                return_groups=False,
                 print_fn=None,
             ):
                 callback_calls.append(str(kc_id))
