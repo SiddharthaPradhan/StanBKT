@@ -15,7 +15,7 @@ from numba import njit
 
 from stanbkt.fits.fit_types import CmdStanFit
 from stanbkt.utils.compilation import compile_stan_model
-from stanbkt.utils.data_utils import ColumnNames, KCData, iter_kc_data
+from stanbkt.utils.data_utils import ColumnNames, KCData, iter_kc_data, tile_categorical
 from stanbkt.utils.posterior_utils import posterior_summary
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ def _prepare_posterior_prediction_inputs(
     model.check_data_contains_fitted_kcs(set(data[kc_column_name].astype(str).unique()))
     overlapping_kcs = model.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
     data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
+    data_cp = model._drop_unseen_students(data_cp, resolved_mapping)
     return data_cp, resolved_mapping
 
 
@@ -83,15 +84,16 @@ def _extract_param_draw_matrix(
     if values.ndim == 0:
         values = values.reshape(1, 1)
 
+    # broadcast (zero-stride) views are safe here: the numba prediction kernels only
+    # ever read these arrays element-wise inside a prange loop, and the fancy indexing
+    # in the group branch below always produces a genuine owned array anyway.
     if groups is None:
         if values.ndim == 1:
-            return np.broadcast_to(
-                values.reshape(-1, 1), (values.shape[0], n_students)
-            ).copy()
+            return np.broadcast_to(values.reshape(-1, 1), (values.shape[0], n_students))
         if values.ndim == 2 and values.shape[1] == 1:
-            return np.broadcast_to(values, (values.shape[0], n_students)).copy()
+            return np.broadcast_to(values, (values.shape[0], n_students))
         if values.ndim == 2:
-            return np.broadcast_to(values[:, :1], (values.shape[0], n_students)).copy()
+            return np.broadcast_to(values[:, :1], (values.shape[0], n_students))
         raise ValueError(
             f"Unexpected parameter draw shape for '{param_name}': {values.shape}."
         )
@@ -107,12 +109,12 @@ def _extract_param_draw_matrix(
         else:
             group_draws = np.broadcast_to(
                 values.reshape(-1, 1), (values.shape[0], n_groups)
-            ).copy()
+            )
     elif values.ndim == 2:
         if values.shape[1] == n_groups:
             group_draws = values
         elif values.shape[1] == 1:
-            group_draws = np.broadcast_to(values, (values.shape[0], n_groups)).copy()
+            group_draws = np.broadcast_to(values, (values.shape[0], n_groups))
         else:
             raise ValueError(
                 f"Cannot map parameter '{param_name}' draws with shape {values.shape} to {n_groups} groups."
@@ -125,20 +127,34 @@ def _extract_param_draw_matrix(
     return group_draws[:, group_indices]
 
 
-def _flatten_student_matrix_by_lengths(
-    matrix: npt.NDArray[np.float64], lengths: npt.NDArray[np.int64]
+def _extract_pi_know_draw_matrix(
+    model: "BKTModelBase",
+    fit: CmdStanFit,
+    kc_data: KCData,
+    kc_id: str,
+    n_students: int,
+    groups: Optional[npt.NDArray[np.int32]],
 ) -> npt.NDArray[np.float64]:
-    total_obs = int(np.sum(lengths))
-    flat = np.empty(total_obs, dtype=np.float64)
-    cursor = 0
-    for student_index, interaction_len in enumerate(lengths):
-        interaction_len_int = int(interaction_len)
-        if interaction_len_int <= 0:
-            continue
-        next_cursor = cursor + interaction_len_int
-        flat[cursor:next_cursor] = matrix[student_index, :interaction_len_int]
-        cursor = next_cursor
-    return flat
+    """Extract per-draw pi_know values for every predict-time student.
+
+    With individualized initial knowledge, students in the fit reuse their fitted
+    value by ID and the rest get the population value.
+    """
+    if model.individual_initial_knowledge:
+        return model._individual_pi_know_draw_matrix(fit, kc_data, kc_id)
+    return _extract_param_draw_matrix(model, fit, "pi_know", n_students, groups)
+
+
+def _build_valid_observation_mask(
+    lengths: npt.NDArray[np.int64], n_problems: int
+) -> npt.NDArray[np.bool_]:
+    """Boolean mask selecting each student's valid (non-padded) interactions.
+
+    Reused across draws since it only depends on ``lengths``, not on any
+    particular draw's state matrix.
+    """
+    problem_positions = np.arange(n_problems)
+    return problem_positions[np.newaxis, :] < lengths[:, np.newaxis]
 
 
 def _build_observation_index_arrays(
@@ -174,19 +190,35 @@ def _build_observation_index_arrays(
     )
 
 
+# cache njit dispatchers per underlying predictor function so repeated calls reuse
+# the same compiled Dispatcher instead of re-wrapping it every call. state_predictor
+# is a staticmethod on BKTModelBase (not imported here to avoid a circular import
+# with models.core.base), so it's cached by the function object itself.
+_DRAWS_NUMBA_KERNEL_CACHE: dict[object, object] = {}
+
+
+def _get_draws_numba_kernel(state_predictor):
+    kernel = _DRAWS_NUMBA_KERNEL_CACHE.get(state_predictor)
+    if kernel is None:
+        kernel = njit(fastmath=True, parallel=False, cache=True)(state_predictor)
+        _DRAWS_NUMBA_KERNEL_CACHE[state_predictor] = kernel
+    return kernel
+
+
 def _predict_posterior_draws_numba(
     model: "BKTModelBase",
     data: pd.DataFrame,
     column_mapping: dict[str, str],
     *,
     smoothed: bool,
+    student_covariates: Optional[pd.DataFrame] = None,
 ) -> dict[str, pd.DataFrame]:
     state_predictor = (
         type(model)._predict_hidden_states_smoothed_numba
         if smoothed
         else type(model)._predict_hidden_states_numba
     )
-    njit_predictor = njit(fastmath=True, parallel=False, cache=True)(state_predictor)
+    njit_predictor = _get_draws_numba_kernel(state_predictor)
 
     kc_col = column_mapping[ColumnNames.KC_ID]
     student_col = column_mapping[ColumnNames.STUDENT_ID]
@@ -195,14 +227,22 @@ def _predict_posterior_draws_numba(
 
     posterior_draws: dict[str, pd.DataFrame] = {}
 
+    prepared_covariates, covariate_columns = model._prepare_joint_covariates(
+        data, student_covariates, column_mapping
+    )
+
     for kc_id, kc_data in iter_kc_data(
         data=data,
         col_mapping=column_mapping,
         return_groups=model._use_groups,
         print_fn=model.log,
+        student_covariates=prepared_covariates,
+        covariate_columns=covariate_columns,
     ):
         kc_id_str = str(kc_id)
         kc_data = model._align_kc_group_indices_with_fit_metadata(kc_id_str, kc_data)
+        if kc_data.covariates is not None:
+            model._check_covariate_columns_match(kc_id_str, kc_data.covariate_columns)
         kc_fit = model.fits.get_fit(kc_id_str)
         if kc_fit is None:
             continue
@@ -210,8 +250,8 @@ def _predict_posterior_draws_numba(
         n_students = int(kc_data.correctness.shape[0])
         groups = kc_data.groups if model._use_groups else None
 
-        prior_draws = _extract_param_draw_matrix(
-            model, kc_fit, "pi_know", n_students, groups
+        prior_draws = _extract_pi_know_draw_matrix(
+            model, kc_fit, kc_data, kc_id_str, n_students, groups
         )
         learn_draws = _extract_param_draw_matrix(
             model, kc_fit, "learn", n_students, groups
@@ -261,6 +301,7 @@ def _predict_posterior_draws_numba(
         pknow_all = np.empty(n_draws * total_obs, dtype=np.float64)
         pcorr_all = np.empty(n_draws * total_obs, dtype=np.float64)
         lengths = kc_data.lengths.astype(np.int64)
+        valid_mask = _build_valid_observation_mask(lengths, kc_data.correctness.shape[1])
 
         for draw_index in range(n_draws):
             p_know, p_correct = njit_predictor(
@@ -274,10 +315,8 @@ def _predict_posterior_draws_numba(
             )
             start = draw_index * total_obs
             end = start + total_obs
-            pknow_all[start:end] = _flatten_student_matrix_by_lengths(p_know, lengths)
-            pcorr_all[start:end] = _flatten_student_matrix_by_lengths(
-                p_correct, lengths
-            )
+            pknow_all[start:end] = p_know[valid_mask]
+            pcorr_all[start:end] = p_correct[valid_mask]
 
         kc_df = pd.DataFrame(
             {
@@ -285,8 +324,8 @@ def _predict_posterior_draws_numba(
                     np.arange(1, n_draws + 1, dtype=np.int64), total_obs
                 ),
                 kc_col: np.repeat(kc_id_str, n_draws * total_obs),
-                student_col: np.tile(student_ids, n_draws),
-                problem_col: np.tile(problem_ids, n_draws),
+                student_col: tile_categorical(student_ids, n_draws),
+                problem_col: tile_categorical(problem_ids, n_draws),
                 correctness_col: np.tile(correctness_vals, n_draws),
                 "_order": np.tile(order_vals, n_draws),
                 "pKnow": pknow_all,
@@ -310,6 +349,7 @@ def predict_posterior(
     quantiles: Optional[list[float]] = None,
     stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
     n_cores: int = 1,
+    student_covariates: Optional[pd.DataFrame] = None,
 ) -> dict[str, csp.CmdStanGQ]: ...
 
 
@@ -325,6 +365,7 @@ def predict_posterior(
     quantiles: Optional[list[float]] = None,
     stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
     n_cores: int = 1,
+    student_covariates: Optional[pd.DataFrame] = None,
 ) -> dict[str, pd.DataFrame]: ...
 
 
@@ -340,6 +381,7 @@ def predict_posterior(
     quantiles: Optional[list[float]] = None,
     stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
     n_cores: int = 1,
+    student_covariates: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame: ...
 
 
@@ -354,6 +396,7 @@ def predict_posterior(
     quantiles: Optional[list[float]] = None,
     stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
     n_cores: int = 1,
+    student_covariates: Optional[pd.DataFrame] = None,
 ) -> dict[str, csp.CmdStanGQ] | dict[str, pd.DataFrame] | pd.DataFrame:
     """Public wrapper for posterior prediction workflows.
 
@@ -409,6 +452,7 @@ def predict_posterior(
             data=data_cp,
             gq_model=gq_model,
             column_mapping=resolved_mapping,
+            student_covariates=student_covariates,
         )
 
     if output == "draws":
@@ -422,6 +466,7 @@ def predict_posterior(
                 data=data_cp,
                 column_mapping=resolved_mapping,
                 smoothed=smoothed,
+                student_covariates=student_covariates,
             )
 
         resolved_stan_output = stan_output
@@ -431,6 +476,7 @@ def predict_posterior(
                 data=data_cp,
                 gq_model=gq_model,
                 column_mapping=resolved_mapping,
+                student_covariates=student_covariates,
             )
         return model._process_predict_gq(
             resolved_stan_output, data_cp, resolved_mapping
@@ -449,6 +495,7 @@ def predict_posterior(
             data=data_cp,
             column_mapping=resolved_mapping,
             smoothed=smoothed,
+            student_covariates=student_covariates,
         )
         return posterior_summary(
             draws,
@@ -472,4 +519,5 @@ def predict_posterior(
         column_mapping=resolved_mapping,
         quantiles=resolved_quantiles,
         n_cores=resolved_n_cores,
+        student_covariates=student_covariates,
     )

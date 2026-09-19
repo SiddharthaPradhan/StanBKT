@@ -8,9 +8,10 @@ should inherit from.
 
 from __future__ import annotations
 import warnings
+from collections import deque
 from dataclasses import replace
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from natsort import natsort_keygen
+from natsort import natsort_keygen, natsorted
 import re
 from stanbkt.fits.fit_factory import FitFactory
 import json
@@ -26,7 +27,7 @@ import os
 import tempfile
 from numba import njit, prange
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
-from stanbkt.fits.fit_options import StanFitOptions
+from stanbkt.fits.fit_options import MCMCFitOptions, PFFitOptions, StanFitOptions
 from stanbkt.fits.fit_types import CmdStanFit, FitSaveEntry
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.fits.core.base import FitBase as BaseFit
@@ -40,6 +41,7 @@ from stanbkt.models.predictions import predict_posterior
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
+    prepare_student_covariates,
     ColumnNames,
     KCData,
     _DEFAULT_KC_ID,
@@ -48,11 +50,28 @@ from stanbkt.utils.data_utils import (
     _PCORRECT,
 )
 from stanbkt.utils.model_archive import pack_model_directory
+from stanbkt.utils.summary_utils import label_summary_index
 from stanbkt.utils.posterior_utils import (
     gq_to_draws,
     _process_single_kc_gq,
     _summarize_single_kc_gq,
 )
+
+# cache njit dispatchers for the point-estimate prediction kernels, keyed by
+# (predictor function, fastmath, parallel) so repeated predict() calls with the same
+# flags reuse the same compiled Dispatcher instead of re-wrapping it every call.
+_POINT_ESTIMATE_NUMBA_KERNEL_CACHE: dict[tuple[Callable, bool, bool], Callable] = {}
+
+
+def _get_point_estimate_numba_kernel(
+    state_predictor: Callable, fast_math: bool, parallel: bool
+) -> Callable:
+    cache_key = (state_predictor, fast_math, parallel)
+    kernel = _POINT_ESTIMATE_NUMBA_KERNEL_CACHE.get(cache_key)
+    if kernel is None:
+        kernel = njit(fastmath=fast_math, parallel=parallel, cache=True)(state_predictor)
+        _POINT_ESTIMATE_NUMBA_KERNEL_CACHE[cache_key] = kernel
+    return kernel
 
 
 class BKTModelBase(VerboseMixin, ABC):
@@ -79,6 +98,10 @@ class BKTModelBase(VerboseMixin, ABC):
         Additional keyword arguments for Stan model compilation.
     cpp_compile_kwargs : dict
         Additional keyword arguments for C++ compilation of the Stan model.
+    low_memory : bool
+        Whether to evict each KC's fit to disk after fitting, reloading it lazily on
+        next access. Reduces peak memory usage when fitting many KCs at the cost of
+        some performance.
     """
 
     def __init__(
@@ -89,6 +112,7 @@ class BKTModelBase(VerboseMixin, ABC):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
+        low_memory: bool = False,
     ):
 
         # verify if initial_knowledge_strategy is valid given the individual_initial_knowledge setting
@@ -122,6 +146,7 @@ class BKTModelBase(VerboseMixin, ABC):
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
         self.fits: BaseFit = self.fit_class()
         self._is_fitted: bool = False
+        self.low_memory: bool = low_memory
         self._fit_artifact_tmpdir: tempfile.TemporaryDirectory[str] | None = None
 
     def __str__(self) -> str:
@@ -165,6 +190,8 @@ class BKTModelBase(VerboseMixin, ABC):
         ] = None,
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
         overwrite_kcs: bool = False,
+        student_covariates: Optional[pd.DataFrame] = None,
+        n_kcs_workers: int = -1,
     ) -> BKTModelBase:
         """
         Fit the BKT model to data. Each KC is fitted independently with its own model.
@@ -194,7 +221,20 @@ class BKTModelBase(VerboseMixin, ABC):
             Whether to overwrite existing fits for KCs that are already fitted.
             If False, an error will be raised if attempting to fit a KC that already has a fit.
             If True, existing fits for the same KCs will be overwritten with the new fits.
-
+        student_covariates : pd.DataFrame, optional
+            One row per student with covariate columns, required when
+            ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``. All columns
+            other than the student ID column are treated as covariates, in the
+            DataFrame's own column order.
+        n_kcs_workers : int, default=-1
+            Number of KCs fitted concurrently. Each KC is an independent Stan run, so results
+            match a sequential fit. The Stan settings take priority: one fit already uses
+            ``parallel_chains * threads_per_chain`` cores for MCMC (``num_threads`` for
+            Pathfinder, 1 otherwise). With ``-1`` (auto) the number of workers is the available
+            CPUs divided by that, capped by the number of KCs, and the Stan settings are never
+            changed. A positive value is used as given, but ``n_kcs_workers`` times the cores
+            per fit must not exceed the available CPUs, otherwise a ``ValueError`` is raised.
+            ``1`` always fits the KCs sequentially.
 
         Returns
         -------
@@ -206,6 +246,13 @@ class BKTModelBase(VerboseMixin, ABC):
         ValueError
             If data validation fails or incompatible cpp_compile_kwargs and stan_fit_options.
         """
+        if self.low_memory:
+            if self._fit_artifact_tmpdir is None:
+                self._fit_artifact_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="stanbkt_fit_cache_"
+                )
+            self.fits.set_fit_artifact_base_location(self._fit_artifact_tmpdir.name)
+            self.fits.release_after_summary = True
 
         if self._stan_model is None:
             self._compile_model(self._stan_model_filename)
@@ -248,20 +295,17 @@ class BKTModelBase(VerboseMixin, ABC):
                 cpp_compile_kwargs=self.cpp_compile_kwargs,
             )
 
-        for kc_id, kc_data in iter_kc_data(
-            data=data,
-            col_mapping=column_mapping,
-            return_groups=self._use_groups,
-            print_fn=self.log,
-        ):
-            if self.fits.has_kc(str(kc_id)):
-                if not overwrite_kcs:
-                    raise ValueError(
-                        f"Fit for KC '{kc_id}' already exists. Set 'overwrite=True' to overwrite."
-                    )
+        resolved_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        prepared_covariates, covariate_columns = self._prepare_joint_covariates(
+            data, student_covariates, resolved_mapping
+        )
 
-            self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+        data_kcs = self._data_kc_ids(data, resolved_mapping)
+        n_kcs_workers = self._resolve_n_kcs_workers(
+            n_kcs_workers, self._stan_cores_per_fit(stan_fit_options), len(data_kcs)
+        )
 
+        def _fit_kc(kc_id, kc_data):
             # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
             kc_priors = (
                 priors.get(
@@ -271,9 +315,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 else priors
             )
             data_dict = self._build_stan_data_dict(kc_data, kc_priors)
-            fit_result = self._fit_stan_model_using_method(
+            return self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
+
+        def _record_kc(kc_id, kc_data, fit_result):
             self.fits.add_fit(
                 str(kc_id),
                 fit_result,
@@ -284,9 +330,57 @@ class BKTModelBase(VerboseMixin, ABC):
                     if kc_data.group_2_index is not None
                     else None
                 ),
+                student2index=(
+                    {str(sid): i + 1 for i, sid in enumerate(kc_data.student_ids)}
+                    if self.individual_initial_knowledge
+                    else None
+                ),
+                covariate_columns=kc_data.covariate_columns,
             )
+            if self.low_memory:
+                self.fits.release_fit_from_memory(str(kc_id))
             self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
             self._is_fitted = True
+
+        # fail before any KC is fitted so no work is wasted on an existing KC later in the data
+        if not overwrite_kcs:
+            for kc in data_kcs:
+                if self.fits.has_kc(kc):
+                    raise ValueError(
+                        f"Fit for KC '{kc}' already exists. Set 'overwrite=True' to overwrite."
+                    )
+
+        # fits are recorded in KC order so the fit state matches a sequential run
+        pending: deque = deque()
+        with ThreadPoolExecutor(max_workers=n_kcs_workers) as executor:
+            try:
+                for kc_id, kc_data in iter_kc_data(
+                    data=data,
+                    col_mapping=resolved_mapping,
+                    return_groups=self._use_groups,
+                    print_fn=self.log,
+                    student_covariates=prepared_covariates,
+                    covariate_columns=covariate_columns,
+                ):
+                    self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
+                    if n_kcs_workers == 1:
+                        _record_kc(kc_id, kc_data, _fit_kc(kc_id, kc_data))
+                        continue
+
+                    pending.append(
+                        (kc_id, kc_data, executor.submit(_fit_kc, kc_id, kc_data))
+                    )
+                    if len(pending) >= n_kcs_workers:
+                        done_kc_id, done_kc_data, future = pending.popleft()
+                        _record_kc(done_kc_id, done_kc_data, future.result())
+
+                while pending:
+                    done_kc_id, done_kc_data, future = pending.popleft()
+                    _record_kc(done_kc_id, done_kc_data, future.result())
+            except BaseException:
+                for _, _, future in pending:
+                    future.cancel()
+                raise
         return self
 
     def _get_fit_save_entry(self, kc_id: str) -> FitSaveEntry | None:
@@ -356,6 +450,47 @@ class BKTModelBase(VerboseMixin, ABC):
             group_2_index=dict(fit_group2index),
         )
 
+    def _prepare_joint_covariates(
+        self,
+        data: pd.DataFrame,
+        student_covariates: Optional[pd.DataFrame],
+        resolved_mapping: dict[str, str],
+    ) -> tuple[Optional[pd.DataFrame], Optional[list[str]]]:
+        """Validate and index student covariates for the JOINT strategy.
+
+        Returns ``(None, None)`` when the model isn't using JOINT. Raises if
+        JOINT is active and no covariates were supplied.
+        """
+        if self.init_knowledge_strategy != InitKnowledgeStrategy.JOINT:
+            return None, None
+        if student_covariates is None:
+            raise ValueError(
+                "'student_covariates' must be provided when init_knowledge_strategy="
+                "InitKnowledgeStrategy.JOINT."
+            )
+        student_col = resolved_mapping[ColumnNames.STUDENT_ID]
+        all_students = data[student_col].astype(str).unique()
+        return prepare_student_covariates(
+            student_covariates, all_students, student_id_col=student_col
+        )
+
+    def _check_covariate_columns_match(
+        self, kc_id: str, covariate_columns: Optional[list[str]]
+    ) -> None:
+        """Raise if predict-time covariate columns/order differ from the fitted KC's."""
+        fit_save_entry = self._get_fit_save_entry(kc_id)
+        expected = (
+            list(fit_save_entry.covariate_columns)
+            if fit_save_entry is not None and fit_save_entry.covariate_columns is not None
+            else None
+        )
+        actual = list(covariate_columns) if covariate_columns is not None else None
+        if expected is not None and expected != actual:
+            raise ValueError(
+                f"'student_covariates' columns for KC '{kc_id}' do not match the columns "
+                f"used at fit time. Expected {expected}, got {actual}."
+            )
+
     @abstractmethod
     def _default_priors(self) -> PriorsBase:
         """Return default priors for the model parameters."""
@@ -395,6 +530,7 @@ class BKTModelBase(VerboseMixin, ABC):
         percentiles: Tuple[float, float] = (2.5, 97.5),
         column_mapping: dict[str, str] = {},
         clear_cache: bool = False,
+        label_indexes: bool = True,
     ) -> Any:
         """
         Get summary statistics for model parameters.
@@ -409,6 +545,10 @@ class BKTModelBase(VerboseMixin, ABC):
             Ignored when the fit method is MLE, MLE produces a point estimate only.
         clear_cache : bool, default=False
             Whether to refresh the cached summaries.
+        label_indexes : bool, default=True
+            Whether to replace Stan indexes (``learn[2]``) with the group, student or
+            covariate they represent. The index becomes ``[kc, parameter, axis, label]``.
+            Set to False for the raw CmdStan parameter names.
 
         Returns
         -------
@@ -442,10 +582,31 @@ class BKTModelBase(VerboseMixin, ABC):
             )
         kc_col_name = column_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)
 
-        return self.fits._summary(
+        summary_df = self.fits._summary(
             kcs=kcs,
             percentiles=percentiles,
             kc_col_name=kc_col_name,
+        )
+        if not label_indexes:
+            return summary_df
+
+        kc_entries = {
+            str(kc): self._get_fit_save_entry(str(kc))
+            for kc in summary_df.index.get_level_values(0).unique()
+        }
+        return label_summary_index(
+            summary_df,
+            group2index={kc: e.group2index if e else None for kc, e in kc_entries.items()},
+            student2index={
+                kc: e.student2index if e else None for kc, e in kc_entries.items()
+            },
+            covariate_columns={
+                kc: e.covariate_columns if e else None for kc, e in kc_entries.items()
+            },
+            group_col_name=column_mapping.get(ColumnNames.GROUP, ColumnNames.GROUP),
+            student_col_name=column_mapping.get(
+                ColumnNames.STUDENT_ID, ColumnNames.STUDENT_ID
+            ),
         )
 
     def _fit_check(self, referrer: Optional[str] = None) -> None:
@@ -462,6 +623,9 @@ class BKTModelBase(VerboseMixin, ABC):
             "verbose": int(self.verbose),
             "stan_compile_kwargs": self.stan_compile_kwargs,
             "cpp_compile_kwargs": self.cpp_compile_kwargs,
+            "low_memory": self.low_memory,
+            "individual_initial_knowledge": self.individual_initial_knowledge,
+            "init_knowledge_strategy": self.init_knowledge_strategy.value,
         }
 
     def save(self, save_base_location: str | os.PathLike[str]) -> None:
@@ -537,6 +701,46 @@ class BKTModelBase(VerboseMixin, ABC):
             ]
         )
 
+    def _drop_unseen_students(
+        self, data: pd.DataFrame, resolved_mapping: dict[str, str]
+    ) -> pd.DataFrame:
+        """Drop students missing from each KC's fit when initial knowledge is a free per-student parameter.
+
+        Only applies to ``individual_initial_knowledge`` with CORRECTNESS_ONLY, where an
+        unseen student has no fitted value to use.
+        """
+        if (
+            not self.individual_initial_knowledge
+            or self.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
+        ):
+            return data
+        kc_str = data[resolved_mapping[ColumnNames.KC_ID]].astype(str)
+        student_str = data[resolved_mapping[ColumnNames.STUDENT_ID]].astype(str)
+        keep = pd.Series(True, index=data.index)
+        dropped: set[str] = set()
+        for kc in kc_str.unique():
+            fit_save_entry = self._get_fit_save_entry(kc)
+            if fit_save_entry is None or not fit_save_entry.student2index:
+                continue
+            unseen = (kc_str == kc) & ~student_str.isin(fit_save_entry.student2index)
+            keep &= ~unseen
+            dropped.update(student_str[unseen].unique())
+        if not keep.any():
+            raise ValueError(
+                "None of the students in 'data' were part of the fit. Individualized "
+                "initial knowledge with CORRECTNESS_ONLY can only predict fitted students."
+            )
+        if dropped:
+            shown = natsorted(dropped)[:10]
+            more = f" and {len(dropped) - 10} more" if len(dropped) > 10 else ""
+            warnings.warn(
+                f"Dropping {len(dropped)} student(s) that were not part of the fit: "
+                f"{shown}{more}.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return data.loc[keep]
+
     def _prepare_point_estimate_prediction_inputs(
         self,
         data: Optional[pd.DataFrame],
@@ -569,6 +773,7 @@ class BKTModelBase(VerboseMixin, ABC):
         filtered_data = working_data.loc[
             working_data[kc_column_name].isin(overlapping_kcs)
         ].copy()
+        filtered_data = self._drop_unseen_students(filtered_data, resolved_mapping)
 
         return filtered_data, resolved_mapping
 
@@ -586,6 +791,7 @@ class BKTModelBase(VerboseMixin, ABC):
         parallel: bool,
         fast_math: bool,
         state_predictor: Callable,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         filtered_data, resolved_mapping = (
             self._prepare_point_estimate_prediction_inputs(
@@ -598,10 +804,13 @@ class BKTModelBase(VerboseMixin, ABC):
         if filtered_data.empty:
             return self._empty_point_estimate_prediction_frame()
 
-        # compile and cache the numba function selected by the caller
-        njit_predict_numba: Callable = njit(
-            fastmath=fast_math, parallel=parallel, cache=True
-        )(state_predictor)
+        prepared_covariates, covariate_columns = self._prepare_joint_covariates(
+            filtered_data, student_covariates, resolved_mapping
+        )
+
+        njit_predict_numba: Callable = _get_point_estimate_numba_kernel(
+            state_predictor, fast_math, parallel
+        )
 
         predictions: list[pd.DataFrame] = []
         for kc_id, kc_data in iter_kc_data(
@@ -609,16 +818,25 @@ class BKTModelBase(VerboseMixin, ABC):
             col_mapping=resolved_mapping,
             return_groups=self._use_groups,
             print_fn=self.log,
+            student_covariates=prepared_covariates,
+            covariate_columns=covariate_columns,
         ):
+            kc_id_str = str(kc_id)
             kc_data = self._align_kc_group_indices_with_fit_metadata(
-                str(kc_id), kc_data
+                kc_id_str, kc_data
             )
+            if kc_data.covariates is not None:
+                self._check_covariate_columns_match(
+                    kc_id_str, kc_data.covariate_columns
+                )
             kc_fit = self.fits.get_fit(kc_id)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
                 point_estimate=point_estimate,
                 groups=kc_data.groups if self._use_groups else None,
+                kc_data=kc_data,
+                kc_id=kc_id_str,
             )
             p_know, p_correctness = njit_predict_numba(
                 correctness=kc_data.correctness,
@@ -658,6 +876,7 @@ class BKTModelBase(VerboseMixin, ABC):
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Predict hidden states using point-estimate parameters from fitted posteriors."""
         self._fit_check(referrer="predict")
@@ -668,6 +887,7 @@ class BKTModelBase(VerboseMixin, ABC):
             parallel=parallel,
             fast_math=fast_math,
             state_predictor=type(self)._predict_hidden_states_numba,
+            student_covariates=student_covariates,
         )
 
     def predict_smoothed(
@@ -683,6 +903,7 @@ class BKTModelBase(VerboseMixin, ABC):
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         parallel: bool = True,
         fast_math: bool = True,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Predict smoothed hidden states using point-estimate parameters."""
         self._fit_check(referrer="predict_smoothed")
@@ -693,6 +914,7 @@ class BKTModelBase(VerboseMixin, ABC):
             parallel=parallel,
             fast_math=fast_math,
             state_predictor=type(self)._predict_hidden_states_smoothed_numba,
+            student_covariates=student_covariates,
         )
 
     @staticmethod
@@ -908,8 +1130,8 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         long_data_df: dict[str, Any] = {
-            "student_id": student_ids,
-            "problem_id": problem_ids,
+            "student_id": pd.Categorical(student_ids),
+            "problem_id": pd.Categorical(problem_ids),
             "pKnow": p_know_vals,
             "pCorrectness": (
                 np.concatenate(p_correctness_segs)
@@ -921,60 +1143,6 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return pd.DataFrame(long_data_df)
 
-    @staticmethod
-    def _build_prediction_index_frame(kc_data: KCData, n_problems: int) -> pd.DataFrame:
-        """Build a lookup frame mapping Stan 1-based (student_idx, problem_idx) to original IDs.
-
-        Used by the posterior prediction path to remap numeric Stan indices back to the
-        original student/problem ID strings.
-        """
-        n_students = len(kc_data.student_inter_dict)
-        lengths = np.clip(kc_data.lengths, 0, n_problems)
-
-        flat_student_idx = np.repeat(
-            np.arange(1, n_students + 1, dtype=np.int64), n_problems
-        )
-        flat_problem_idx = np.tile(
-            np.arange(1, n_problems + 1, dtype=np.int64), n_students
-        )
-
-        student_positions = np.repeat(np.arange(n_students, dtype=np.int64), n_problems)
-        problem_positions = flat_problem_idx - 1  # 0-based
-        flat_is_valid = problem_positions < lengths[student_positions]
-
-        flat_student_ids = np.repeat(
-            np.fromiter(
-                (str(sid) for sid in kc_data.student_inter_dict.keys()),
-                dtype=object,
-                count=n_students,
-            ),
-            n_problems,
-        )
-
-        flat_problem_ids = np.full(n_students * n_problems, "-1", dtype=object)
-        for student_index, interaction in enumerate(
-            kc_data.student_inter_dict.values()
-        ):
-            row_start = student_index * n_problems
-            for problem_index, pid in enumerate(interaction.problem_ids):
-                flat_problem_ids[row_start + problem_index] = str(pid)
-
-        flat_correctness = kc_data.correctness.ravel(order="C").astype(
-            np.float64, copy=True
-        )
-        flat_correctness[flat_correctness < 0] = -1.0
-
-        return pd.DataFrame(
-            {
-                "student_idx": flat_student_idx,
-                "problem_idx": flat_problem_idx,
-                "student_id": flat_student_ids,
-                "problem_id": flat_problem_ids,
-                "is_valid": flat_is_valid,
-                "correctness": flat_correctness,
-            }
-        )
-
     @abstractmethod
     def _extract_bkt_params_from_fit(
         self,
@@ -982,6 +1150,8 @@ class BKTModelBase(VerboseMixin, ABC):
         n_students: int,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         groups: Optional[npt.NDArray[np.int32]] = None,
+        kc_data: Optional[KCData] = None,
+        kc_id: Optional[str] = None,
     ) -> tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
@@ -991,6 +1161,97 @@ class BKTModelBase(VerboseMixin, ABC):
     ]:
         """Extract student-indexed BKT parameter arrays from fit artifacts."""
         raise NotImplementedError
+
+    @staticmethod
+    def _extract_named_param_matrix(
+        fit: CmdStanFit, param_name: str
+    ) -> npt.NDArray[np.float64]:
+        """Extract a Stan variable's draws as a 2D ``(n_draws, n_values)`` array.
+
+        Normalizes MLE/pathfinder point estimates (which have no draw dimension)
+        to a single-row matrix.
+        """
+        stan_variable_fn = getattr(fit, "stan_variable", None)
+        if callable(stan_variable_fn):
+            values = np.asarray(stan_variable_fn(param_name), dtype=np.float64)
+        else:
+            values = np.asarray(
+                BKTModelBase._extract_param_draws(fit, param_name), dtype=np.float64
+            )
+        if values.ndim == 0:
+            return values.reshape(1, 1)
+        if values.ndim == 1:
+            return values.reshape(1, -1)
+        return values
+
+    @staticmethod
+    def _extract_scalar_param_draws(
+        fit: CmdStanFit, param_name: str
+    ) -> npt.NDArray[np.float64]:
+        """Extract a scalar Stan parameter's draws as a 1D ``(n_draws,)`` array."""
+        return BKTModelBase._extract_named_param_matrix(fit, param_name).reshape(-1)
+
+    def _train_student_positions(
+        self, kc_id: str, student_ids: list[str]
+    ) -> npt.NDArray[np.int64]:
+        """0-based fit-time position of each student by ID, -1 if not in the fit."""
+        fit_save_entry = self._get_fit_save_entry(kc_id)
+        student2index = (
+            fit_save_entry.student2index if fit_save_entry is not None else None
+        )
+        if not student2index:
+            raise ValueError(
+                f"Fit for KC '{kc_id}' has no stored student index. Refit the model "
+                "to predict with individualized initial knowledge."
+            )
+        return np.array(
+            [student2index.get(str(sid), 0) - 1 for sid in student_ids],
+            dtype=np.int64,
+        )
+
+    def _individual_pi_know_draw_matrix(
+        self, fit: CmdStanFit, kc_data: KCData, kc_id: str
+    ) -> npt.NDArray[np.float64]:
+        """Per-draw pi_know for every predict-time student, shape ``(n_draws, n_students)``.
+
+        Students in the fit reuse their fitted latent value, matched by ID. Under JOINT
+        the rest get the regression mean. Under CORRECTNESS_ONLY unseen students are
+        dropped earlier by ``_drop_unseen_students``.
+        """
+        positions = self._train_student_positions(kc_id, kc_data.student_ids)
+        seen = positions >= 0
+        n_students = len(kc_data.student_ids)
+
+        if self.init_knowledge_strategy == InitKnowledgeStrategy.JOINT:
+            b0_draws = self._extract_scalar_param_draws(fit, "pi_b0_know_param")
+            sigma_draws = self._extract_scalar_param_draws(fit, "pi_sigma_param")
+            z_draws = self._extract_named_param_matrix(fit, "logit_pi_know_z")
+            n_draws = b0_draws.shape[0]
+            logits = np.repeat(b0_draws[:, None], n_students, axis=1)
+            if kc_data.covariates is not None and kc_data.covariates.shape[1] > 0:
+                b1_draws = self._extract_named_param_matrix(fit, "pi_b1_know_param")
+                logits = logits + b1_draws @ kc_data.covariates.T
+            logits[:, seen] += sigma_draws[:, None] * z_draws[:, positions[seen]]
+        else:
+            logits = self._extract_named_param_matrix(fit, "logit_pi_know_group")[
+                :, positions
+            ]
+        return 1.0 / (1.0 + np.exp(-logits))
+
+    def _extract_individual_pi_know_point_estimate(
+        self,
+        fit: CmdStanFit,
+        kc_data: KCData,
+        kc_id: str,
+        point_estimate: Literal["mean", "median", "mode"],
+    ) -> npt.NDArray[np.float64]:
+        """Per-student pi_know point estimates under individualized initial knowledge."""
+        draws = self._individual_pi_know_draw_matrix(fit, kc_data, kc_id)
+        if point_estimate == "mean":
+            return draws.mean(axis=0)
+        if point_estimate == "median":
+            return np.median(draws, axis=0)
+        return np.array([self._modal_estimate(col) for col in draws.T], dtype=np.float64)
 
     @staticmethod
     def _modal_estimate(draws: npt.NDArray[np.float64]) -> float:
@@ -1102,6 +1363,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 Mapping[ColumnNames | str, str],
             ]
         ] = None,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> dict[str, csp.CmdStanGQ]:
         """Run Stan generated quantities for posterior state prediction.
 
@@ -1125,6 +1387,7 @@ class BKTModelBase(VerboseMixin, ABC):
             column_mapping=column_mapping,
             smoothed=False,
             output="stan",
+            student_covariates=student_covariates,
         )
 
     def predict_posterior_draws(
@@ -1139,6 +1402,7 @@ class BKTModelBase(VerboseMixin, ABC):
         ] = None,
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         backend: Literal["stan", "numba"] = "stan",
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> dict[str, pd.DataFrame]:
         """Return draw-level posterior prediction DataFrames.
 
@@ -1170,6 +1434,7 @@ class BKTModelBase(VerboseMixin, ABC):
             backend=backend,
             output="draws",
             stan_output=stan_output,
+            student_covariates=student_covariates,
         )
 
     def predict_smoothed_posterior_stan(
@@ -1182,6 +1447,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 Mapping[ColumnNames | str, str],
             ]
         ] = None,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> dict[str, csp.CmdStanGQ]:
         """Run Stan generated quantities for smoothed posterior state prediction.
 
@@ -1204,6 +1470,7 @@ class BKTModelBase(VerboseMixin, ABC):
             column_mapping=column_mapping,
             smoothed=True,
             output="stan",
+            student_covariates=student_covariates,
         )
 
     def predict_smoothed_posterior_draws(
@@ -1218,6 +1485,7 @@ class BKTModelBase(VerboseMixin, ABC):
         ] = None,
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         backend: Literal["stan", "numba"] = "stan",
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> dict[str, pd.DataFrame]:
         """Return draw-level smoothed posterior prediction DataFrames.
 
@@ -1249,6 +1517,7 @@ class BKTModelBase(VerboseMixin, ABC):
             backend=backend,
             output="draws",
             stan_output=stan_output,
+            student_covariates=student_covariates,
         )
 
     def predict_posterior_summary(
@@ -1265,6 +1534,7 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         n_cores: int = 1,
         backend: Literal["stan", "numba"] = "stan",
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Return per-observation posterior summaries without materializing all draws.
 
@@ -1308,6 +1578,7 @@ class BKTModelBase(VerboseMixin, ABC):
             quantiles=quantiles,
             stan_output=stan_output,
             n_cores=n_cores,
+            student_covariates=student_covariates,
         )
 
     def predict_smoothed_posterior_summary(
@@ -1324,6 +1595,7 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_output: Optional[dict[str, csp.CmdStanGQ]] = None,
         n_cores: int = 1,
         backend: Literal["stan", "numba"] = "stan",
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Return per-observation smoothed posterior summaries without materializing all draws.
 
@@ -1368,7 +1640,35 @@ class BKTModelBase(VerboseMixin, ABC):
             quantiles=quantiles,
             stan_output=stan_output,
             n_cores=n_cores,
+            student_covariates=student_covariates,
         )
+
+    def _augment_stan_data_for_predict(
+        self,
+        kc_id_str: str,
+        kc_data: KCData,
+        kc_fit_result: CmdStanFit,
+        data_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bind the fit-time population and map predict-time students to it by ID.
+
+        The saved per-student parameters are sized by the fit-time population, which
+        can differ from the predict-time ``nStudents``.
+        """
+        if not self.individual_initial_knowledge:
+            return data_dict
+        param_name = (
+            "logit_pi_know_z"
+            if self.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
+            else "logit_pi_know_group"
+        )
+        n_train = self._extract_named_param_matrix(kc_fit_result, param_name).shape[1]
+        positions = self._train_student_positions(kc_id_str, kc_data.student_ids)
+        return {
+            **data_dict,
+            "nTrainStudents": int(n_train),
+            "train_student_idx": (positions + 1).astype(np.int32),
+        }
 
     def _generate_single_kc_quantities(
         self,
@@ -1379,6 +1679,9 @@ class BKTModelBase(VerboseMixin, ABC):
         gq_model: csp.CmdStanModel,
     ) -> tuple[str, csp.CmdStanGQ, KCData]:
         data_dict = self._build_stan_data_dict(kc_data, kc_priors)
+        data_dict = self._augment_stan_data_for_predict(
+            kc_id_str, kc_data, kc_fit_result, data_dict
+        )
         gq_fit = gq_model.generate_quantities(
             data=data_dict,
             previous_fit=kc_fit_result,  # type: ignore[type-var]
@@ -1399,6 +1702,7 @@ class BKTModelBase(VerboseMixin, ABC):
         ] = None,
         _per_kc_callback: Optional[Callable[[str, Any, KCData], None]] = None,
         n_cores: int = 1,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> dict[str, csp.CmdStanGQ]:
         # validate priors
         if priors is None:
@@ -1414,6 +1718,10 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
         n_cores = self._resolve_n_cores(n_cores)
+        resolved_mapping = ColumnNames.apply_default_mapping(column_mapping)
+        prepared_covariates, covariate_columns = self._prepare_joint_covariates(
+            data, student_covariates, resolved_mapping
+        )
 
         gq_kc_fit: dict[str, csp.CmdStanGQ] = {}
 
@@ -1429,14 +1737,20 @@ class BKTModelBase(VerboseMixin, ABC):
         if n_cores == 1:
             for kc_id, kc_data in iter_kc_data(
                 data=data,
-                col_mapping=column_mapping,
+                col_mapping=resolved_mapping,
                 return_groups=self._use_groups,
                 print_fn=self.log,
+                student_covariates=prepared_covariates,
+                covariate_columns=covariate_columns,
             ):
                 kc_id_str = str(kc_id)
                 kc_data = self._align_kc_group_indices_with_fit_metadata(
                     kc_id_str, kc_data
                 )
+                if kc_data.covariates is not None:
+                    self._check_covariate_columns_match(
+                        kc_id_str, kc_data.covariate_columns
+                    )
 
                 kc_fit_result = self.fits.get_fit(kc_id_str)
                 if kc_fit_result is None:
@@ -1467,14 +1781,20 @@ class BKTModelBase(VerboseMixin, ABC):
         with ThreadPoolExecutor(max_workers=n_cores) as executor:
             for kc_id, kc_data in iter_kc_data(
                 data=data,
-                col_mapping=column_mapping,
+                col_mapping=resolved_mapping,
                 return_groups=self._use_groups,
                 print_fn=self.log,
+                student_covariates=prepared_covariates,
+                covariate_columns=covariate_columns,
             ):
                 kc_id_str = str(kc_id)
                 kc_data = self._align_kc_group_indices_with_fit_metadata(
                     kc_id_str, kc_data
                 )
+                if kc_data.covariates is not None:
+                    self._check_covariate_columns_match(
+                        kc_id_str, kc_data.covariate_columns
+                    )
 
                 kc_fit_result = self.fits.get_fit(kc_id_str)
                 if kc_fit_result is None:
@@ -1541,6 +1861,89 @@ class BKTModelBase(VerboseMixin, ABC):
             ]
             + summary_cols
         )
+
+    @staticmethod
+    def _data_kc_ids(
+        data: pd.DataFrame, resolved_mapping: Mapping[str, str]
+    ) -> list[str]:
+        """KC IDs iter_kc_data would yield: rows without an order value are dropped."""
+        kc_column = resolved_mapping[ColumnNames.KC_ID]
+        order_column = resolved_mapping[ColumnNames.ORDER]
+        if kc_column not in data.columns:
+            return [_DEFAULT_KC_ID]
+        if order_column in data.columns:
+            return list(
+                data.loc[data[order_column].notna(), kc_column].astype(str).unique()
+            )
+        return []
+
+    @staticmethod
+    def _available_cpus() -> int:
+        # affinity aware, os.cpu_count ignores cpusets and taskset limits
+        count_fn = getattr(os, "process_cpu_count", None)
+        if count_fn is not None:
+            count = count_fn()
+        elif hasattr(os, "sched_getaffinity"):
+            count = len(os.sched_getaffinity(0))
+        else:
+            count = os.cpu_count()
+        return count or 1
+
+    @staticmethod
+    def _stan_cores_per_fit(fit_options: StanFitOptions) -> int:
+        """Cores one KC fit already uses, from the fit options."""
+        if isinstance(fit_options, MCMCFitOptions):
+            chains = fit_options.chains
+            parallel_chains = fit_options.parallel_chains or chains
+            return max(1, min(chains, parallel_chains) * fit_options.threads_per_chain)
+        if isinstance(fit_options, PFFitOptions):
+            return max(1, fit_options.num_threads or 1)
+        return 1
+
+    def _resolve_n_kcs_workers(
+        self, n_kcs_workers: int, stan_cores_per_fit: int, n_kcs: int
+    ) -> int:
+        if isinstance(n_kcs_workers, bool) or not isinstance(
+            n_kcs_workers, (int, np.integer)
+        ):
+            raise TypeError("'n_kcs_workers' must be -1 (auto) or a positive integer.")
+        if n_kcs_workers != -1 and n_kcs_workers < 1:
+            raise ValueError("'n_kcs_workers' must be -1 (auto) or a positive integer.")
+
+        available = self._available_cpus()
+        n_kcs = max(1, n_kcs)
+
+        if n_kcs_workers == -1:
+            workers = min(n_kcs, max(1, available // stan_cores_per_fit))
+            if n_kcs > 1 and stan_cores_per_fit >= available:
+                message = (
+                    f"n_kcs_workers=-1 resolved to 1: the Stan settings already use "
+                    f"{stan_cores_per_fit} cores per fit and {available} CPUs are available, "
+                    "so KCs are fitted one at a time."
+                )
+                if stan_cores_per_fit > available:
+                    message += (
+                        " The Stan settings alone oversubscribe the available CPUs."
+                    )
+                self.log(message, level=VerbosityLevel.WARN)
+            else:
+                self.log(
+                    f"Fitting {n_kcs} KC(s) with {workers} concurrent worker(s) "
+                    f"({stan_cores_per_fit} Stan cores per fit, {available} CPUs available).",
+                    level=VerbosityLevel.INFO if workers > 1 else VerbosityLevel.DEBUG,
+                )
+            return workers
+
+        workers = min(int(n_kcs_workers), n_kcs)
+        total = workers * stan_cores_per_fit
+        if workers > 1 and total > available:
+            raise ValueError(
+                f"n_kcs_workers={workers} x {stan_cores_per_fit} Stan cores per fit = "
+                f"{total} cores, but only {available} CPUs are available. Reduce "
+                "n_kcs_workers or the Stan settings (chains, parallel_chains, "
+                "threads_per_chain), or use n_kcs_workers=-1 to size it automatically."
+            )
+        return workers
 
     @staticmethod
     def _resolve_n_cores(n_cores: int) -> int:
@@ -1629,6 +2032,7 @@ class BKTModelBase(VerboseMixin, ABC):
         column_mapping: dict[str, str],
         quantiles: list[float],
         n_cores: int = 1,
+        student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Run GQ and summarize outputs one KC at a time to minimize peak memory."""
         result_frames: list[pd.DataFrame] = []
@@ -1646,6 +2050,7 @@ class BKTModelBase(VerboseMixin, ABC):
             column_mapping=column_mapping,
             _per_kc_callback=_consume,
             n_cores=n_cores,
+            student_covariates=student_covariates,
         )
 
         if not result_frames:

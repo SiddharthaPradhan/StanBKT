@@ -60,8 +60,8 @@ class PriorsBase(ABC):
     # logit_pi_know ~ beta0 + beta1 * pretest + sigma* logit_pi_know_z
     pi_b0_know_mu: float | None | _UnsetType = _UNSET
     pi_b0_know_std: float | None | _UnsetType = _UNSET
-    pi_b1_know_mu: float | None | _UnsetType = _UNSET
-    pi_b1_know_std: float | None | _UnsetType = _UNSET
+    pi_b1_know_mu: float | list[float] | None | _UnsetType = _UNSET
+    pi_b1_know_std: float | list[float] | None | _UnsetType = _UNSET
     pi_sigma_lambda: float | None | _UnsetType = _UNSET
 
     # whether to fill in missing values with defaults or None (non-informative)
@@ -215,6 +215,33 @@ class PriorsBase(ABC):
             "Subclasses must implement get_default_priors to provide appropriate defaults based on estimation strategy"
         )
 
+    @staticmethod
+    def _expand_covariate_priors(
+        mu: float | list[float] | None,
+        std: float | list[float] | None,
+        n_covariates: int,
+    ) -> tuple[list[float] | None, list[float] | None]:
+        """Broadcast scalar pi_b1_know_mu/std priors to length ``n_covariates``.
+
+        A list is validated against ``n_covariates`` and returned unchanged.
+        This is separate from :meth:`MultiPriors._expand_grouped_priors` since
+        covariates are a different axis than groups.
+        """
+
+        def _expand(value: float | list[float] | None) -> list[float] | None:
+            if value is None:
+                return None
+            if isinstance(value, list):
+                if len(value) != n_covariates:
+                    raise ValueError(
+                        f"pi_b1_know prior must be a list of length {n_covariates} "
+                        f"(number of covariates), got list of length {len(value)}."
+                    )
+                return value
+            return [value] * n_covariates
+
+        return _expand(mu), _expand(std)
+
 
 @dataclass
 class StandardPriors(PriorsBase):
@@ -303,9 +330,9 @@ class StandardPriors(PriorsBase):
     def __post_init__(self) -> None:
         """Post-initialization processing to handle default values."""
         if self.use_defaults:
-            defaults = StandardPriors.get_default_priors(
-                estimation_type=InitKnowledgeStrategy.CORRECTNESS_ONLY,  # default estimation type for defaults
-            )
+            # unfiltered scalar defaults (covers both CORRECTNESS_ONLY and JOINT keys) -
+            # filtering by estimation strategy happens later, at to_dict() call time.
+            defaults = StandardPriors._default_scalar_priors()
             for key, default_value in defaults.items():
                 if getattr(self, key) is _UNSET:
                     setattr(self, key, default_value)
@@ -336,18 +363,26 @@ class StandardPriors(PriorsBase):
                     f"Invalid model class: {StandardPriors.__name__} should be used with {StandardPriors.expected_class().__name__}, "
                     f"got {model_class.__name__}"
                 )
-            if not isinstance(value, (int, float, type(None))):
+            # pi_b1_know_mu/std are per-covariate and may be a list; every other key is scalar
+            if key in ("pi_b1_know_mu", "pi_b1_know_std") and isinstance(value, list):
+                if not all(isinstance(v, (int, float, type(None))) for v in value):
+                    raise ValueError(
+                        f"Invalid prior value type for {key}: expected a list of float or None values."
+                    )
+            elif not isinstance(value, (int, float, type(None))):
                 raise ValueError(
                     f"Invalid prior value type for {key}: expected float, or None, got {type(value).__name__}"
                 )
             # check std and lambda are positive if not None
             if key.endswith((STD, LAMBDA)) and value is not None:
-                if value <= 0:
-                    msg = f"Bayesian Prior {key} "
-                    if kc_id is not None:
-                        msg += f"for KC '{kc_id}' "
-                    msg += f"must be positive and non-zero, got {value}"
-                    raise ValueError(msg)
+                values_to_check = value if isinstance(value, list) else [value]
+                for v in values_to_check:
+                    if v is not None and v <= 0:
+                        msg = f"Bayesian Prior {key} "
+                        if kc_id is not None:
+                            msg += f"for KC '{kc_id}' "
+                        msg += f"must be positive and non-zero, got {v}"
+                        raise ValueError(msg)
 
     @staticmethod
     def get_default_priors(
@@ -440,9 +475,9 @@ class MultiPriors(PriorsBase):
     def __post_init__(self) -> None:
         """Post-initialization processing to handle default values."""
         if self.use_defaults:
-            defaults = MultiPriors.get_default_priors(
-                estimation_type=InitKnowledgeStrategy.CORRECTNESS_ONLY,
-            )
+            # unfiltered scalar defaults (covers both CORRECTNESS_ONLY and JOINT keys) -
+            # filtering by estimation strategy happens later, at to_dict() call time.
+            defaults = MultiPriors._default_scalar_priors()
             for key, default_value in defaults.items():
                 if getattr(self, key) is _UNSET:
                     setattr(self, key, default_value)
@@ -476,8 +511,9 @@ class MultiPriors(PriorsBase):
                 raise ValueError(
                     f"Invalid prior value type for {key}: expected float, list, or None, got {type(value).__name__}"
                 )
-            # if value is a list, check that its length matches n_groups
-            if isinstance(value, list):
+            # if value is a list, check that its length matches n_groups, except for
+            # pi_b1_know_mu/std which are per-covariate lists, not per-group
+            if isinstance(value, list) and key not in ("pi_b1_know_mu", "pi_b1_know_std"):
                 if len(value) != n_groups:
                     msg = f"Bayesian Prior {key} for KC '{kc_id}' must be a list of length {n_groups}, "
                     msg += f"got list of length {len(value)}"

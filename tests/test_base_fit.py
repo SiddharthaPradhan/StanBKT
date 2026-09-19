@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import stanbkt.fits.persistence.fit_io as persistence_io
+import stanbkt.fits.core.base as fit_base_module
 from stanbkt.fits.persistence.fit_io import (
     FitMetadata,
     FitSaveEntry,
@@ -309,6 +310,153 @@ class TestSaveLoadRoundTrip:
 
         with pytest.raises(ValueError, match="expecting method 'vb'"):
             _VBConcreteFit._load(str(save_dir))
+
+    def test_load_can_defer_fit_objects_until_first_access(self, tmp_path, monkeypatch):
+        save_dir = tmp_path / "fit_saves"
+        fit = _ConcreteFit()
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+                with open(
+                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
+                ) as f:
+                    f.write("lp__\n0\n")
+
+        class _DummyLoadedFit:
+            pass
+
+        loaded_fit_obj = _DummyLoadedFit()
+        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
+        fit._save(str(save_dir))
+
+        calls: list[str] = []
+
+        def _fake_from_csv(path: str):
+            calls.append(path)
+            return loaded_fit_obj
+
+        monkeypatch.setattr(fit_base_module, "cmdstan_from_csv", _fake_from_csv)
+
+        loaded = _ConcreteFit._load(str(save_dir), lazy=True)
+
+        assert loaded.stan_fits == {}
+        assert loaded.num_fitted_kcs == 1
+        assert calls == []
+
+        reloaded_fit = loaded.get_fit("kc_a")
+
+        assert reloaded_fit is loaded_fit_obj
+        assert len(calls) == 1
+        assert "kc_a" in loaded.stan_fits
+
+
+class TestMemoryRelease:
+    def test_release_fit_from_memory_persists_and_allows_lazy_reload(
+        self, tmp_path, monkeypatch
+    ):
+        fit = _ConcreteFit(fit_artifact_base_location=str(tmp_path))
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+                with open(
+                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
+                ) as f:
+                    f.write("lp__\n0\n")
+
+        loaded_fit_obj = object()
+        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
+        fit.release_fit_from_memory("kc_a")
+
+        assert "kc_a" not in fit.stan_fits
+        assert fit.has_kc("kc_a")
+        assert fit.num_fitted_kcs == 1
+
+        monkeypatch.setattr(fit_base_module, "cmdstan_from_csv", lambda _: loaded_fit_obj)
+        assert fit.get_fit("kc_a") is loaded_fit_obj
+
+    def test_release_fit_from_memory_requires_artifact_location(self):
+        fit = _ConcreteFit()
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+
+        fit.add_fit("kc_a", _DummySavedFit())  # ty:ignore[invalid-argument-type]
+
+        with pytest.raises(RuntimeError, match="artifact base location is not configured"):
+            fit.release_fit_from_memory("kc_a")
+
+    def test_release_fit_from_memory_raises_for_unknown_kc(self, tmp_path):
+        fit = _ConcreteFit(fit_artifact_base_location=str(tmp_path))
+
+        with pytest.raises(KeyError):
+            fit.release_fit_from_memory("kc_missing")
+
+
+class TestSummaryRelease:
+    @staticmethod
+    def _mcmc_mock(tmp_marker: str):
+        from cmdstanpy import CmdStanMCMC
+
+        mock = MagicMock(spec=CmdStanMCMC)
+
+        def _save(folder: str) -> None:
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8") as f:
+                f.write("lp__\n0\n")
+
+        mock.save_csvfiles.side_effect = _save
+        mock.summary.return_value = pd.DataFrame(
+            {"Mean": [1.0]}, index=pd.Index(["lp__"], name=tmp_marker)
+        )
+        return mock
+
+    def _evicted_fit(self, tmp_path, monkeypatch, release_after_summary):
+        from stanbkt.fits.core.mcmc import MCMCFit
+
+        fit = MCMCFit(fit_artifact_base_location=str(tmp_path))
+        fit.release_after_summary = release_after_summary
+        for kc in ("kc_a", "kc_b", "kc_c"):
+            fit.add_fit(kc, self._mcmc_mock(kc))
+            fit.release_fit_from_memory(kc)
+        monkeypatch.setattr(
+            fit_base_module, "cmdstan_from_csv", lambda _: self._mcmc_mock("reload")
+        )
+        return fit
+
+    def test_summary_releases_fits_it_reloaded(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        summary = fit._summary()
+        assert set(summary.index.get_level_values("kc_id")) == {"kc_a", "kc_b", "kc_c"}
+        assert fit.stan_fits == {}
+        assert fit.num_fitted_kcs == 3
+
+    def test_summary_keeps_fits_that_were_already_resident(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        fit.get_fit("kc_b")
+        fit._summary()
+        assert set(fit.stan_fits) == {"kc_b"}
+
+    def test_summary_keeps_reloaded_fits_when_flag_is_off(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=False)
+        fit._summary()
+        assert set(fit.stan_fits) == {"kc_a", "kc_b", "kc_c"}
+
+    def test_summary_holds_at_most_one_reloaded_fit_at_a_time(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        peak = []
+        original = fit._get_fit_for_summary
+
+        def _spy(kc):
+            result = original(kc)
+            peak.append(len(fit.stan_fits))
+            return result
+
+        monkeypatch.setattr(fit, "_get_fit_for_summary", _spy)
+        fit._summary()
+        assert max(peak) == 1
 
 
 # ---------------------------------------------------------------------------

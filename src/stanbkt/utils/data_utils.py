@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import warnings
 import pandas as pd
 from typing import Optional, Callable, Any, Union
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import numpy.typing as npt
 import numpy as np
 from dataclasses import dataclass
@@ -134,6 +135,11 @@ class KCData:
         Optional group array (e.g., student group assignments or problem difficulty groups).
     group_2_index : Optional[dict[str, int]], default None
         Optional mapping from group ID to index in groups array.
+    covariates : Optional[np.ndarray], default None
+        Optional JOINT-strategy covariate matrix, shape (num_students, num_covariates),
+        row order matching ``student_ids``.
+    covariate_columns : Optional[list[str]], default None
+        Optional ordered covariate column names corresponding to ``covariates`` columns.
     """
 
     # correctness matrix of shape (num_students, num_problems)
@@ -150,6 +156,100 @@ class KCData:
     groups: Optional[np.ndarray] = None
     # optional mapping from group id to index in groups array
     group_2_index: Optional[dict[str, int]] = None
+    # optional JOINT-strategy covariate matrix, row order matching student_ids
+    covariates: Optional[np.ndarray] = None
+    covariate_columns: Optional[list[str]] = None
+
+
+def prepare_student_covariates(
+    student_covariates: pd.DataFrame,
+    all_student_ids: Iterable[str],
+    student_id_col: str = ColumnNames.STUDENT_ID,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Validate and index a student-level covariate DataFrame for the JOINT strategy.
+
+    Parameters
+    ----------
+    student_covariates : pandas.DataFrame
+        One row per student. All columns other than ``student_id_col`` are
+        treated as covariates, in the DataFrame's own column order.
+    all_student_ids : Iterable[str]
+        Student IDs that must be covered (typically every student in the
+        interaction data being fit/predicted on).
+    student_id_col : str, default ColumnNames.STUDENT_ID
+        Column name identifying the student in ``student_covariates``.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, list[str]]
+        The covariate DataFrame indexed by student ID, and the ordered list
+        of covariate column names.
+
+    Raises
+    ------
+    ValueError
+        If ``student_id_col`` is missing, there are no covariate columns, a
+        covariate column is non-numeric, any required student is missing a
+        covariate row, or a required student has a NaN or infinite value.
+    """
+    if student_id_col not in student_covariates.columns:
+        raise ValueError(
+            f"'student_covariates' is missing the student ID column '{student_id_col}'."
+        )
+
+    working = student_covariates.copy()
+    working[student_id_col] = working[student_id_col].astype(str)
+
+    duplicate_mask = working[student_id_col].duplicated(keep=False)
+    if duplicate_mask.any():
+        duplicate_ids = sorted(working.loc[duplicate_mask, student_id_col].unique())
+        warnings.warn(
+            f"'student_covariates' contains duplicate student IDs: {duplicate_ids}. "
+            "Keeping the first occurrence of each and dropping the rest.",
+            UserWarning,
+            stacklevel=2,
+        )
+        working = working.drop_duplicates(subset=student_id_col, keep="first")
+
+    covariate_columns = [col for col in working.columns if col != student_id_col]
+    if not covariate_columns:
+        raise ValueError(
+            "'student_covariates' must contain at least one covariate column besides "
+            f"'{student_id_col}'."
+        )
+    non_numeric = [
+        col
+        for col in covariate_columns
+        if not pd.api.types.is_numeric_dtype(working[col])
+    ]
+    if non_numeric:
+        raise ValueError(
+            f"'student_covariates' has non-numeric covariate column(s): {non_numeric}."
+        )
+    indexed = working.set_index(student_id_col)
+
+    required_ids = sorted(set(str(sid) for sid in all_student_ids))
+    missing = [sid for sid in required_ids if sid not in indexed.index]
+    if missing:
+        raise ValueError(
+            "'student_covariates' is missing rows for student(s) present in the "
+            f"interaction data: {missing}."
+        )
+
+    required = indexed.loc[required_ids, covariate_columns]
+    values = np.column_stack(
+        [required[col].to_numpy(dtype=np.float64, na_value=np.nan) for col in covariate_columns]
+    )
+    bad = ~np.isfinite(values)
+    if bad.any():
+        bad_columns = [col for col, flag in zip(covariate_columns, bad.any(axis=0)) if flag]
+        bad_students = [sid for sid, flag in zip(required_ids, bad.any(axis=1)) if flag]
+        raise ValueError(
+            "'student_covariates' has NaN or infinite values in column(s) "
+            f"{bad_columns} for student(s) {bad_students[:5]}"
+            f"{' and more' if len(bad_students) > 5 else ''}."
+        )
+    return indexed, covariate_columns
 
 
 def validate_data(
@@ -209,6 +309,8 @@ def format_kc_data(
     col_mapping: Optional[Mapping[str, str]] = None,
     return_groups: bool = False,
     print_fn: Optional[Callable] = None,
+    student_covariates: Optional[pd.DataFrame] = None,
+    covariate_columns: Optional[list[str]] = None,
 ) -> dict[str, KCData]:
     """
     Format input data for BKT model fitting.
@@ -224,6 +326,11 @@ def format_kc_data(
         Whether to add student id to group id mapping in the returned dictionary.
     print_fn : callable, optional
         Optional function for printing messages (e.g., logging).
+    student_covariates : pandas.DataFrame, optional
+        Already-validated JOINT-strategy covariates, indexed by student ID
+        (see :func:`prepare_student_covariates`).
+    covariate_columns : list[str], optional
+        Ordered covariate column names present in ``student_covariates``.
     Returns
     -------
     dict[str, KCData]
@@ -235,6 +342,8 @@ def format_kc_data(
             col_mapping=col_mapping,
             return_groups=return_groups,
             print_fn=print_fn,
+            student_covariates=student_covariates,
+            covariate_columns=covariate_columns,
         )
     )
 
@@ -250,6 +359,8 @@ def iter_kc_data(
     ] = None,
     return_groups: bool = False,
     print_fn: Optional[Callable] = None,
+    student_covariates: Optional[pd.DataFrame] = None,
+    covariate_columns: Optional[list[str]] = None,
 ) -> Iterator[tuple[str, KCData]]:
     """
     Yield formatted KC data one KC at a time.
@@ -264,6 +375,11 @@ def iter_kc_data(
         Whether to include per-student group indices.
     print_fn : callable, optional
         Optional function for printing messages (e.g., logging).
+    student_covariates : pandas.DataFrame, optional
+        Already-validated JOINT-strategy covariates, indexed by student ID
+        (see :func:`prepare_student_covariates`).
+    covariate_columns : list[str], optional
+        Ordered covariate column names present in ``student_covariates``.
 
     Yields
     ------
@@ -284,14 +400,16 @@ def iter_kc_data(
     order_col = col_mapping.get(ColumnNames.ORDER)
     kc_column = col_mapping.get(ColumnNames.KC_ID)
 
+    # shallow copy so the caller's dtypes are left alone
+    working_data = data.copy(deep=False)
     # if no kc column in data, add a default kc column
-    working_data = data
     if data.get(kc_column) is None:
-        working_data = data.copy()
         working_data[kc_column] = _DEFAULT_KC_ID
 
-    working_data[student_col] = working_data[student_col].astype(str)
-    working_data[kc_column] = working_data[kc_column].astype(str)
+    # categorical dtype keeps the same string values but makes the groupby/sort/
+    # duplicated calls below compare integer codes instead of boxed python strings.
+    working_data[student_col] = working_data[student_col].astype(str).astype("category")
+    working_data[kc_column] = working_data[kc_column].astype(str).astype("category")
 
     # ignore rows without ordering
     working_data = working_data[working_data[order_col].notna()].copy()
@@ -305,6 +423,8 @@ def iter_kc_data(
         working_data = working_data.copy()
         working_data[group_col] = working_data[col_mapping.get(ColumnNames.STUDENT_ID)]
         col_mapping[ColumnNames.GROUP] = group_col
+
+    natsort_key = natsort_keygen()
 
     for kc, subset in working_data.groupby(kc_column, sort=False, observed=True):
         duplicate_order_rows = subset.duplicated(
@@ -327,49 +447,40 @@ def iter_kc_data(
             ) from exc
 
         student_ids: list[str] = sorted(
-            subset[student_col].unique().tolist(), key=natsort_keygen()
+            subset[student_col].unique().tolist(), key=natsort_key
         )
 
         observed_subset = subset.loc[subset[correctness_col].notna()]
-        observed_by_student: dict[str, pd.DataFrame] = {
-            str(student_id): student_rows
-            for student_id, student_rows in observed_subset.groupby(
-                student_col, sort=False, observed=True
+        n_students = len(student_ids)
+
+        # position of each observed row's student in the natural sorted student order
+        categories = subset[student_col].cat.categories
+        position_by_code = np.full(len(categories), -1, dtype=np.int64)
+        position_by_code[categories.get_indexer(student_ids)] = np.arange(n_students)
+        row_positions = position_by_code[observed_subset[student_col].cat.codes.to_numpy()]
+        # rows are already ordered within student, so the running count is the column index
+        columns = observed_subset.groupby(student_col, sort=False, observed=True).cumcount().to_numpy()
+
+        lengths: npt.NDArray[np.int32] = np.bincount(
+            row_positions, minlength=n_students
+        ).astype(np.int32)
+        max_len = int(lengths.max()) if n_students else 0
+
+        correctness_array = np.full((n_students, max_len), _NA_FILL_VALUE, dtype=np.int8)
+        correctness_array[row_positions, columns] = observed_subset[correctness_col].to_numpy(
+            dtype=np.int8
+        )
+
+        by_student = np.argsort(row_positions, kind="stable")
+        attempted_problem_ids = observed_subset[problem_col].astype(str).to_numpy()[by_student].tolist()
+        ends = np.cumsum(lengths)
+        starts = ends - lengths
+        student_inter_dict: dict[str, StudentInteraction] = {
+            student_id: StudentInteraction(
+                problem_ids=attempted_problem_ids[start:end], length=int(length)
             )
+            for student_id, start, end, length in zip(student_ids, starts, ends, lengths)
         }
-
-        student_inter_dict: dict[str, StudentInteraction] = {}
-        sequences_with_lens: list[tuple[np.ndarray, int]] = []
-        max_len = 0
-        for student_id in student_ids:
-            observed_rows = observed_by_student.get(student_id)
-            if observed_rows is None:
-                sequence = np.empty(0, dtype=np.int8)
-                attempted_problem_ids: list[str] = []
-                seq_len = 0
-            else:
-                sequence = observed_rows[correctness_col].to_numpy(dtype=np.int8)
-                attempted_problem_ids = observed_rows[problem_col].astype(str).tolist()
-                seq_len = len(attempted_problem_ids)
-
-            sequences_with_lens.append((sequence, seq_len))
-            student_inter_dict[student_id] = StudentInteraction(
-                problem_ids=attempted_problem_ids,
-                length=seq_len,
-            )
-            if seq_len > max_len:
-                max_len = seq_len
-
-        correctness_array = np.full(
-            (len(student_ids), max_len), _NA_FILL_VALUE, dtype=np.int8
-        )
-        for i, (sequence, seq_len) in enumerate(sequences_with_lens):
-            if seq_len:
-                correctness_array[i, :seq_len] = sequence
-
-        lengths: npt.NDArray[np.int32] = np.array(
-            [seq_len for _, seq_len in sequences_with_lens], dtype=np.int32
-        )
 
         problem_ids: list[str] = [str(i) for i in range(1, max_len + 1)]
         kc_data_dict: dict[str, Any] = {
@@ -395,6 +506,19 @@ def iter_kc_data(
             }
             kc_data_dict["groups"] = group_indices
             kc_data_dict["group_2_index"] = group_2_index
+
+        if student_covariates is not None and covariate_columns is not None:
+            try:
+                covariates_array = student_covariates.loc[
+                    student_ids, covariate_columns
+                ].to_numpy(dtype=np.float64)
+            except KeyError as exc:
+                raise ValueError(
+                    f"KC '{kc}' contains student(s) with no matching row in "
+                    f"'student_covariates': {exc}"
+                ) from exc
+            kc_data_dict["covariates"] = covariates_array
+            kc_data_dict["covariate_columns"] = list(covariate_columns)
 
         kc_data = KCData(**kc_data_dict)
 
@@ -455,3 +579,14 @@ def dict_has_types(
     return all(
         isinstance(k, key_type) and isinstance(v, value_type) for k, v in x.items()
     )
+
+
+def tile_categorical(values: npt.NDArray[np.object_], n_tiles: int) -> pd.Categorical:
+    """Tile an array of repeated ID values as a categorical, tiling codes instead of values.
+
+    Used when building draw-level prediction output, where the same small set of
+    student/problem IDs is repeated once per posterior draw.
+    """
+    categorical = pd.Categorical(values)
+    tiled_codes = np.tile(categorical.codes, n_tiles)
+    return pd.Categorical.from_codes(tiled_codes, categories=categorical.categories)

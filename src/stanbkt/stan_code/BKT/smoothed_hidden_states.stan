@@ -28,17 +28,6 @@ generated quantities {
             B_matrix_group[group_idx][1,] = [1 - guess[group_idx], guess[group_idx]];
             B_matrix_group[group_idx][2,] = [slip[group_idx], 1 - slip[group_idx]];
         }
-        array[individual_pi_know == 1 ? nStudents : nGroups] vector[2] pi;
-        if (individual_pi_know == 1) {
-            for (student_idx in 1:nStudents) {
-                pi[student_idx] = to_vector([1 - pi_know[student_idx], pi_know[student_idx]]);
-            }
-        } else {
-            for (group_idx in 1:nGroups) {
-                pi[group_idx] = to_vector([1 - pi_know[group_idx], pi_know[group_idx]]);
-            }
-        }
-        
         for (studentIdx in 1:nStudents) {
             matrix[2, interaction_lengths[studentIdx]] logOmegaStudent;
             int studentGroupIdx = groups[studentIdx];
@@ -48,11 +37,17 @@ generated quantities {
                     logOmegaStudent[state, t] = bernoulli_lpmf(correctness[studentIdx, t] |  B_matrix_group[studentGroupIdx, state, 2]);
                 }
             }
+
+            real studentInit = gq_pi_know(train_student_idx[studentIdx], studentGroupIdx, individual_pi_know, joint_pi_know,
+                                    pi_know, pi_b0_know_param, covariates[studentIdx],
+                                    pi_b1_know_param, pi_sigma_param, logit_pi_know_z);
+            vector[2] piStudent = to_vector([1 - studentInit, studentInit]);
+
             int L = interaction_lengths[studentIdx];
             int paddingNALength = nProblems - L;
-            pKnow[studentIdx, 1:L] = hmm_hidden_state_prob(logOmegaStudent, 
-                                            A_matrix_group[studentGroupIdx], 
-                                            pi[individual_pi_know == 1 ? studentIdx : studentGroupIdx])[2];
+            pKnow[studentIdx, 1:L] = hmm_hidden_state_prob(logOmegaStudent,
+                                            A_matrix_group[studentGroupIdx],
+                                            piStudent)[2];
             pKnow[studentIdx, L+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
 
             // pCorrectness[t] = pKnow[t] * (1 - slip) + (1 - pKnow[t]) * guess

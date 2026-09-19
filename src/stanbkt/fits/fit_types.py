@@ -85,6 +85,12 @@ class FitSaveEntry:
         Optional mapping from group identifiers to integer indices used in the fit.
     groups : set[str] | None, default=None
         Optional set of group identifiers included in the fit.
+    student2index : dict[str, int] | None, default=None
+        Optional mapping from student ID to the 1-based index used in the fit, stored
+        when initial knowledge is individualized so predictions match students by ID.
+    covariate_columns : tuple[str, ...] | None, default=None
+        Optional ordered covariate column names used to fit this KC under the
+        JOINT strategy. Defines the order of the ``pi_b1_know`` coefficients.
     """
 
     kc: str
@@ -92,6 +98,8 @@ class FitSaveEntry:
     summary_cache_available: bool = False
     group2index: Union[dict[str, int], None] = None
     groups: Union[set[str], None] = None
+    student2index: Union[dict[str, int], None] = None
+    covariate_columns: Union[tuple[str, ...], None] = None
 
     def __hash__(self) -> int:
         """Compute a stable hash even when optional mapping/set fields are present."""
@@ -105,6 +113,11 @@ class FitSaveEntry:
             if self.groups is None
             else frozenset(str(group_name) for group_name in self.groups)
         )
+        student2index_hashable = (
+            None
+            if self.student2index is None
+            else frozenset((str(k), int(v)) for k, v in self.student2index.items())
+        )
         return hash(
             (
                 self.kc,
@@ -112,6 +125,8 @@ class FitSaveEntry:
                 self.summary_cache_available,
                 group2index_hashable,
                 groups_hashable,
+                student2index_hashable,
+                self.covariate_columns,
             )
         )
 

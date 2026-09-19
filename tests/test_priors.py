@@ -109,13 +109,14 @@ class TestStandardPriorsConstruction:
 
     def test_joint_priors_default_constructed(self):
         p = StandardPriors()
-        # JOINT strategy priors are NOT filled by __post_init__ (which uses CORRECTNESS_ONLY defaults)
-        # they remain _UNSET until explicitly set or until use_defaults=False sets them to None
-        assert isinstance(p.pi_b0_know_mu, _UnsetType)
-        assert isinstance(p.pi_b0_know_std, _UnsetType)
-        assert isinstance(p.pi_b1_know_mu, _UnsetType)
-        assert isinstance(p.pi_b1_know_std, _UnsetType)
-        assert isinstance(p.pi_sigma_lambda, _UnsetType)
+        # JOINT strategy priors are filled with real defaults by __post_init__,
+        # same as CORRECTNESS_ONLY priors, so JOINT works out of the box without
+        # requiring the caller to pass explicit priors.
+        assert p.pi_b0_know_mu == 0.0
+        assert p.pi_b0_know_std == 5.0
+        assert p.pi_b1_know_mu == 0.0
+        assert p.pi_b1_know_std == 5.0
+        assert p.pi_sigma_lambda == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -568,3 +569,58 @@ class TestHierarchicalPriorsStub:
     def test_cannot_be_instantiated_directly(self):
         with pytest.raises(TypeError, match="abstract"):
             HierarchicalPriors()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# PriorsBase — _expand_covariate_priors (JOINT strategy, arbitrary covariates)
+# ---------------------------------------------------------------------------
+
+
+class TestExpandCovariatePriors:
+    def test_scalar_broadcast_to_n_covariates(self):
+        mu, std = PriorsBase._expand_covariate_priors(0.0, 5.0, 3)
+        assert mu == [0.0, 0.0, 0.0]
+        assert std == [5.0, 5.0, 5.0]
+
+    def test_none_passthrough(self):
+        mu, std = PriorsBase._expand_covariate_priors(None, None, 3)
+        assert mu is None
+        assert std is None
+
+    def test_list_of_correct_length_passthrough(self):
+        mu, std = PriorsBase._expand_covariate_priors([1.0, 2.0], [3.0, 4.0], 2)
+        assert mu == [1.0, 2.0]
+        assert std == [3.0, 4.0]
+
+    def test_list_of_wrong_length_raises(self):
+        with pytest.raises(ValueError, match="length 3"):
+            PriorsBase._expand_covariate_priors([1.0, 2.0], None, 3)
+
+    def test_zero_covariates(self):
+        mu, std = PriorsBase._expand_covariate_priors(0.0, 5.0, 0)
+        assert mu == []
+        assert std == []
+
+
+class TestPiB1KnowAcceptsList:
+    def test_standard_priors_accepts_list(self):
+        p = StandardPriors(pi_b1_know_mu=[1.0, 2.0], pi_b1_know_std=[3.0, 4.0])
+        assert p.pi_b1_know_mu == [1.0, 2.0]
+        assert p.pi_b1_know_std == [3.0, 4.0]
+        StandardPriors._validate_single(p, StandardBKT, JOINT)  # should not raise
+
+    def test_standard_priors_rejects_wrong_element_type(self):
+        p = _joint_standard_priors(pi_b1_know_mu=["not-a-float", 2.0])
+        with pytest.raises(ValueError, match="Invalid prior value type"):
+            StandardPriors._validate_single(p, StandardBKT, JOINT)
+
+    def test_standard_priors_rejects_non_positive_std_in_list(self):
+        p = _joint_standard_priors(pi_b1_know_std=[5.0, -1.0])
+        with pytest.raises(ValueError, match="must be positive"):
+            StandardPriors._validate_single(p, StandardBKT, JOINT)
+
+    def test_multi_priors_accepts_list_without_n_groups_length_check(self):
+        p = MultiPriors(pi_b1_know_mu=[1.0, 2.0, 3.0], pi_b1_know_std=[1.0, 1.0, 1.0])
+        # n_groups=2 here is unrelated to the 3-covariate pi_b1_know list; the
+        # per-group length check must not apply to pi_b1_know_mu/std.
+        MultiPriors._validate_single(p, MultiBKT, JOINT, n_groups=2)

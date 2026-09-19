@@ -55,6 +55,16 @@ class MultiBKT(BKTModelBase):
         Additional Stan compilation options.
     cpp_compile_kwargs : dict | None, optional
         Additional C++ compilation options.
+    individual_initial_knowledge : bool, default False
+        Whether to estimate individualized initial knowledge parameters for each student (True) or a single population-level initial knowledge parameter (False).
+    init_knowledge_strategy : InitKnowledgeStrategy, default=InitKnowledgeStrategy.CORRECTNESS_ONLY
+        Strategy for estimating initial knowledge when `individual_initial_knowledge` is True. This determines how the initial knowledge parameters are informed by the data:
+        - InitKnowledgeStrategy.CORRECTNESS_ONLY: Initial knowledge is informed solely by the correctness of the first interaction for each student.
+        - InitKnowledgeStrategy.JOINT: Initial knowledge is informed by both the correctness and a supplied student-level covariate.
+    low_memory : bool
+        Whether to evict each KC's fit to disk after fitting, reloading it lazily on
+        next access. Reduces peak memory usage when fitting many KCs at the cost of
+        some performance.
     """
 
     def __init__(
@@ -63,12 +73,18 @@ class MultiBKT(BKTModelBase):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
+        individual_initial_knowledge: bool = False,
+        init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
+        low_memory: bool = False,
     ):
         super().__init__(
             verbose=verbose,
             fit_method=fit_method,
+            individual_initial_knowledge=individual_initial_knowledge,
+            init_knowledge_strategy=init_knowledge_strategy,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
+            low_memory=low_memory,
         )
         self._use_groups = True
 
@@ -120,6 +136,8 @@ class MultiBKT(BKTModelBase):
         correctness = kc_data.correctness
         n_students, n_problems = correctness.shape
         n_groups: int = len(kc_data.group_2_index)
+        n_covariates = kc_data.covariates.shape[1] if kc_data.covariates is not None else 0
+        is_joint = self.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
 
         data_dict: dict[str, Any] = {
             "nStudents": int(n_students),
@@ -129,18 +147,68 @@ class MultiBKT(BKTModelBase):
             "nGroups": n_groups,
             "groups": kc_data.groups,
             "individual_pi_know": int(self.individual_initial_knowledge),
+            "joint_pi_know": int(is_joint),
+            "nTrainStudents": int(n_students),
+            "nCovariates": int(n_covariates),
+            "train_student_idx": np.arange(1, n_students + 1, dtype=np.int32),
+            "covariates": (
+                kc_data.covariates
+                if kc_data.covariates is not None
+                else np.zeros((n_students, 0), dtype=np.float64)
+            ),
         }
 
         if priors is None:
             priors = MultiPriors(use_defaults=True)
 
         raw_priors = priors.to_dict(self.init_knowledge_strategy)
-        # Expand scalar priors to per-group lists
+        # Expand scalar priors to per-group lists (pi_b0/b1/sigma stay scalar/per-covariate)
         expanded_priors = MultiPriors._expand_grouped_priors(
             raw_priors, n_groups=n_groups
         )
 
+        if is_joint:
+            data_dict["prior_pi_know_mu"] = [0.0] * n_groups
+            data_dict["prior_pi_know_std"] = [1.0] * n_groups
+            data_dict["unif_prior_pi_know"] = 1
+
+            b0_mu = raw_priors.get("pi_b0_know_mu")
+            b0_std = raw_priors.get("pi_b0_know_std")
+            data_dict["prior_pi_b0_know_mu"] = b0_mu if b0_mu is not None else 0.0
+            data_dict["prior_pi_b0_know_std"] = b0_std if b0_std is not None else 5.0
+            data_dict["unif_prior_pi_b0_know"] = int(b0_mu is None or b0_std is None)
+
+            b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+                raw_priors.get("pi_b1_know_mu"),
+                raw_priors.get("pi_b1_know_std"),
+                n_covariates,
+            )
+            data_dict["prior_pi_b1_know_mu"] = (
+                b1_mu if b1_mu is not None else [0.0] * n_covariates
+            )
+            data_dict["prior_pi_b1_know_std"] = (
+                b1_std if b1_std is not None else [5.0] * n_covariates
+            )
+            data_dict["unif_prior_pi_b1_know"] = int(b1_mu is None or b1_std is None)
+
+            sigma_lambda = raw_priors.get("pi_sigma_lambda")
+            data_dict["prior_pi_sigma_lambda"] = (
+                sigma_lambda if sigma_lambda is not None else 0.5
+            )
+            data_dict["unif_prior_pi_sigma"] = int(sigma_lambda is None)
+        else:
+            data_dict["prior_pi_b0_know_mu"] = 0.0
+            data_dict["prior_pi_b0_know_std"] = 5.0
+            data_dict["prior_pi_b1_know_mu"] = [0.0] * n_covariates
+            data_dict["prior_pi_b1_know_std"] = [5.0] * n_covariates
+            data_dict["prior_pi_sigma_lambda"] = 0.5
+            data_dict["unif_prior_pi_b0_know"] = 1
+            data_dict["unif_prior_pi_b1_know"] = 1
+            data_dict["unif_prior_pi_sigma"] = 1
+
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
+            if is_joint and param == "pi_know":
+                continue
             mu_key = f"{param}_mu"
             std_key = f"{param}_std"
             mu_val = expanded_priors.get(mu_key)
@@ -228,6 +296,8 @@ class MultiBKT(BKTModelBase):
         n_students: int,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         groups: Optional[npt.NDArray[np.int32]] = None,
+        kc_data: Optional[KCData] = None,
+        kc_id: Optional[str] = None,
     ) -> tuple[
         npt.NDArray[np.float64],
         npt.NDArray[np.float64],
@@ -268,8 +338,15 @@ class MultiBKT(BKTModelBase):
                 return group_params[groups - 1].astype(np.float64)
             return np.full(n_students, float(group_params[0]), dtype=np.float64)
 
+        if self.individual_initial_knowledge:
+            init_know = self._extract_individual_pi_know_point_estimate(
+                fit, kc_data=kc_data, kc_id=kc_id, point_estimate=point_estimate
+            )
+        else:
+            init_know = _to_student_array("pi_know")
+
         return (
-            _to_student_array("pi_know"),
+            init_know,
             _to_student_array("learn"),
             _to_student_array("forget"),
             _to_student_array("guess"),

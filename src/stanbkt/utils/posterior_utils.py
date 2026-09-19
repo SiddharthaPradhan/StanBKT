@@ -16,6 +16,7 @@ from stanbkt.utils.data_utils import (
     _PKNOW,
     _PCORRECT,
     iter_kc_data,
+    tile_categorical,
 )
 
 _COL_PAT = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
@@ -171,8 +172,8 @@ def _process_single_kc_gq(
         col: np.repeat(gq_kc_df[col].to_numpy(), n_obs) for col in id_cols
     }
     result[kc_col] = np.repeat(kc_id_str, n_draws * n_obs)
-    result[student_col] = np.tile(obs_student_ids_arr, n_draws)
-    result[problem_col] = np.tile(obs_problem_ids_arr, n_draws)
+    result[student_col] = tile_categorical(obs_student_ids_arr, n_draws)
+    result[problem_col] = tile_categorical(obs_problem_ids_arr, n_draws)
     result[correctness_col] = np.tile(obs_correctness_arr, n_draws)
     result["_order"] = np.tile(obs_order_arr, n_draws)
     result[_PKNOW] = pknow_values
@@ -353,8 +354,8 @@ def _summarize_single_kc_gq(
 
     result: dict[str, Any] = {
         "kc_id": np.repeat(kc_id_str, len(obs_keys)),
-        student_col: np.asarray(obs_student_ids, dtype=object),
-        problem_col: np.asarray(obs_problem_ids, dtype=object),
+        student_col: pd.Categorical(obs_student_ids),
+        problem_col: pd.Categorical(obs_problem_ids),
         correctness_col: np.asarray(obs_correctness, dtype=np.int8),
         "_order": np.asarray(obs_order, dtype=np.int64),
         f"{_PKNOW}_mean": pknow_means,

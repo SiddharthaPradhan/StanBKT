@@ -46,6 +46,16 @@ def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
                     if fit_save.groups not in (None, set())
                     else {}
                 ),
+                **(
+                    {"student2index": fit_save.student2index}
+                    if fit_save.student2index not in (None, {})
+                    else {}
+                ),
+                **(
+                    {"covariate_columns": list(fit_save.covariate_columns)}
+                    if fit_save.covariate_columns not in (None, ())
+                    else {}
+                ),
             }
             for fit_save in natsort.natsorted(
                 fit_metadata.fit_saves.values(),
@@ -164,12 +174,42 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
                 )
             parsed_groups = {str(group_name) for group_name in groups_raw}
 
+        student2index_raw = entry.get("student2index", None)
+        if student2index_raw is None:
+            parsed_student2index: dict[str, int] | None = None
+        else:
+            if not isinstance(student2index_raw, dict):
+                raise ValueError(
+                    f"Error parsing fit metadata: metadata for KC '{kc}' field 'student2index' must be an object when provided."
+                )
+            parsed_student2index = {}
+            for student_id, index in student2index_raw.items():
+                if not isinstance(student_id, str) or not isinstance(index, int):
+                    raise ValueError(
+                        f"Error parsing fit metadata: metadata for KC '{kc}' field 'student2index' must map string student IDs to integer indices."
+                    )
+                parsed_student2index[student_id] = index
+
+        covariate_columns_raw = entry.get("covariate_columns", None)
+        if covariate_columns_raw is None:
+            parsed_covariate_columns: tuple[str, ...] | None = None
+        else:
+            if not isinstance(covariate_columns_raw, list) or not all(
+                isinstance(col, str) for col in covariate_columns_raw
+            ):
+                raise ValueError(
+                    f"Error parsing fit metadata: metadata for KC '{kc}' field 'covariate_columns' must be an array of strings when provided."
+                )
+            parsed_covariate_columns = tuple(covariate_columns_raw)
+
         parsed_fit_saves[kc] = FitSaveEntry(
             kc=kc,
             save_folder=save_folder,
             summary_cache_available=summary_cache_available,
             group2index=parsed_group2index,
             groups=parsed_groups,
+            student2index=parsed_student2index,
+            covariate_columns=parsed_covariate_columns,
         )
 
     return FitMetadata(

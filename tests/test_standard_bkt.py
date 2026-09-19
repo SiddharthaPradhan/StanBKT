@@ -7,6 +7,7 @@ import pytest
 
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.core.standard import StandardBKT
+from stanbkt.models.model_types import InitKnowledgeStrategy
 from stanbkt.models.priors import StandardPriors
 from stanbkt.utils.data_utils import KCData, format_kc_data
 from stanbkt.utils.verbose import VerbosityLevel
@@ -225,6 +226,71 @@ class TestFitMethodGuards:
             model.fit(_minimal_df(), method=FitMethod.MCMC)
 
 
+class TestLowMemoryMode:
+    def test_low_memory_mode_evicts_in_memory_fit_objects(self, monkeypatch):
+        model = StandardBKT(low_memory=True)
+
+        monkeypatch.setattr(
+            model,
+            "_compile_model",
+            lambda _: setattr(model, "_stan_model", object()),
+        )
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+                with open(
+                    os.path.join(folder, "mock_chain.csv"), "w", encoding="utf-8"
+                ) as f:
+                    f.write("lp__\n0\n")
+
+        monkeypatch.setattr(
+            model,
+            "_fit_stan_model_using_method",
+            lambda data_dict, fit_options: _DummySavedFit(),
+        )
+        monkeypatch.setattr(
+            FitMethod,
+            "infer_fit_method_from_stan_fit",
+            staticmethod(lambda _: FitMethod.MCMC),
+        )
+
+        model.fit(_minimal_df())
+
+        assert model.fits is not None
+        assert model.fits.num_fitted_kcs == 1
+        assert model.fits.has_kc("default_kc")
+        assert "default_kc" not in model.fits.stan_fits
+
+    def test_low_memory_disabled_keeps_fit_objects_in_memory(self, monkeypatch):
+        model = StandardBKT(low_memory=False)
+
+        monkeypatch.setattr(
+            model,
+            "_compile_model",
+            lambda _: setattr(model, "_stan_model", object()),
+        )
+
+        class _DummySavedFit:
+            def save_csvfiles(self, folder: str) -> None:
+                os.makedirs(folder, exist_ok=True)
+
+        monkeypatch.setattr(
+            model,
+            "_fit_stan_model_using_method",
+            lambda data_dict, fit_options: _DummySavedFit(),
+        )
+        monkeypatch.setattr(
+            FitMethod,
+            "infer_fit_method_from_stan_fit",
+            staticmethod(lambda _: FitMethod.MCMC),
+        )
+
+        model.fit(_minimal_df())
+
+        assert "default_kc" in model.fits.stan_fits
+
+
 # ---------------------------------------------------------------------------
 # _fit_using_method — raises for unimplemented methods
 # ---------------------------------------------------------------------------
@@ -285,7 +351,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -335,7 +401,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -368,7 +434,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -402,7 +468,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.1),
@@ -446,7 +512,7 @@ class TestPredict:
 # ---------------------------------------------------------------------------
 
 _MOCK_PARAMS = (
-    lambda fit, n_students, point_estimate="mean", groups=None: (  # noqa: E731
+    lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (  # noqa: E731
         np.full(n_students, 0.2),
         np.full(n_students, 0.3),
         np.full(n_students, 0.1),
@@ -1639,3 +1705,84 @@ class TestStanFilePaths:
         assert os.path.isfile(
             model._stan_smoothed_hidden_filename
         ), f"Smoothed hidden states Stan file not found: {model._stan_smoothed_hidden_filename}"
+
+
+# ---------------------------------------------------------------------------
+# _build_stan_data_dict, JOINT strategy
+# ---------------------------------------------------------------------------
+
+
+def _joint_kc_data(n_covariates=2) -> KCData:
+    base = _kc_data()
+    return KCData(
+        correctness=base.correctness,
+        student_inter_dict=base.student_inter_dict,
+        lengths=base.lengths,
+        student_ids=base.student_ids,
+        problem_ids=base.problem_ids,
+        covariates=np.arange(3 * n_covariates, dtype=np.float64).reshape(3, -1),
+        covariate_columns=[f"c{i}" for i in range(n_covariates)],
+    )
+
+
+class TestBuildStanDataDictJoint:
+    def _model(self):
+        return StandardBKT(
+            individual_initial_knowledge=True,
+            init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+        )
+
+    def test_joint_priors_are_forwarded_not_dropped(self):
+        model = self._model()
+        data = model._build_stan_data_dict(_joint_kc_data(), model._default_priors())
+        assert data["joint_pi_know"] == 1
+        assert data["prior_pi_b0_know_mu"] == 0.0
+        assert data["prior_pi_b0_know_std"] == 5.0
+        assert data["prior_pi_sigma_lambda"] == 0.5
+        assert data["unif_prior_pi_b0_know"] == 0
+        assert data["unif_prior_pi_b1_know"] == 0
+        assert data["unif_prior_pi_sigma"] == 0
+        assert data["unif_prior_pi_know"] == 1
+
+    def test_scalar_b1_prior_broadcast_to_covariates(self):
+        model = self._model()
+        data = model._build_stan_data_dict(_joint_kc_data(3), model._default_priors())
+        assert data["nCovariates"] == 3
+        assert data["prior_pi_b1_know_mu"] == [0.0] * 3
+        assert data["prior_pi_b1_know_std"] == [5.0] * 3
+
+    def test_list_b1_prior_used_per_covariate(self):
+        model = self._model()
+        priors = StandardPriors(pi_b1_know_mu=[1.0, 2.0], pi_b1_know_std=[3.0, 4.0])
+        data = model._build_stan_data_dict(_joint_kc_data(2), priors)
+        assert data["prior_pi_b1_know_mu"] == [1.0, 2.0]
+        assert data["prior_pi_b1_know_std"] == [3.0, 4.0]
+
+    def test_b1_prior_length_mismatch_raises(self):
+        model = self._model()
+        priors = StandardPriors(pi_b1_know_mu=[1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="length 2"):
+            model._build_stan_data_dict(_joint_kc_data(2), priors)
+
+    def test_none_joint_priors_use_uniform_flags(self):
+        model = self._model()
+        priors = StandardPriors(use_defaults=False)
+        data = model._build_stan_data_dict(_joint_kc_data(), priors)
+        assert data["unif_prior_pi_b0_know"] == 1
+        assert data["unif_prior_pi_b1_know"] == 1
+        assert data["unif_prior_pi_sigma"] == 1
+
+    def test_fit_time_train_size_matches_students(self):
+        model = self._model()
+        data = model._build_stan_data_dict(_joint_kc_data(), model._default_priors())
+        assert data["nTrainStudents"] == 3
+        assert data["covariates"].shape == (3, 2)
+        np.testing.assert_array_equal(data["train_student_idx"], [1, 2, 3])
+        assert "covariates_new" not in data
+
+    def test_non_joint_default_has_empty_covariates(self):
+        model = StandardBKT()
+        data = model._build_stan_data_dict(_kc_data(), model._default_priors())
+        assert data["joint_pi_know"] == 0
+        assert data["covariates"].shape == (3, 0)
+        assert data["unif_prior_pi_b0_know"] == 1

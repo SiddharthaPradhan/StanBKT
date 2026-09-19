@@ -7,6 +7,7 @@ from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
 from typing import Union
 
 import pandas as pd
+from cmdstanpy import from_csv as cmdstan_from_csv
 
 from stanbkt.fits.fit_types import CmdStanFit, FitMetadata, FitMethod, FitSaveEntry
 from stanbkt.fits.persistence.fit_io import (
@@ -55,6 +56,7 @@ class FitBase(VerboseMixin, ABC):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         fits: dict[str, CmdStanFit] | None = None,
         fit_metadata: FitMetadata | None = None,
+        fit_artifact_base_location: str | None = None,
         cache_summary: bool = True,
         summary_percentiles: tuple[float, float] = (2.5, 97.5),
         _summary_cache: dict[str, pd.DataFrame] | None = None,
@@ -69,6 +71,9 @@ class FitBase(VerboseMixin, ABC):
             Existing per-KC fit objects to initialize from.
         fit_metadata : FitMetadata | None, optional
             Persisted metadata for this fit collection.
+        fit_artifact_base_location : str | None, optional
+            Folder where per-KC CmdStan CSV artifacts are persisted. When set,
+            fits released from memory can be lazily reloaded from disk.
         cache_summary : bool, default True
             Whether generated summaries should be cached in memory.
         summary_percentiles : tuple[float, float], default (2.5, 97.5)
@@ -94,6 +99,10 @@ class FitBase(VerboseMixin, ABC):
             self._fit_metadata.summary_percentiles
         )
         self._should_cache_summary: bool = cache_summary
+        self._fit_artifact_base_location: str | None = fit_artifact_base_location
+        # when set, summaries drop fits they had to reload from disk
+        self.release_after_summary: bool = False
+        self._summary_loaded: set[str] = set()
         self.num_fitted_kcs = len(self.get_fitted_kcs())
 
     def __str__(self) -> str:
@@ -132,6 +141,8 @@ class FitBase(VerboseMixin, ABC):
         overwrite_kcs: bool = False,
         group2index: dict[str, int] | None = None,
         groups: set[str] | None = None,
+        student2index: dict[str, int] | None = None,
+        covariate_columns: list[str] | None = None,
     ) -> None:
         """Add a fit for a knowledge component to the model's fit state.
 
@@ -147,6 +158,11 @@ class FitBase(VerboseMixin, ABC):
             Optional mapping from group ID to 1-based index used for this KC's fit.
         groups : set[str] | None, optional
             Optional set of group IDs used for this KC's fit.
+        student2index : dict[str, int] | None, optional
+            Optional mapping from student ID to 1-based index used for this KC's fit.
+        covariate_columns : list[str] | None, optional
+            Optional ordered covariate column names used for this KC's fit under
+            the JOINT init-knowledge strategy.
 
         Raises
         ------
@@ -191,6 +207,12 @@ class FitBase(VerboseMixin, ABC):
             summary_cache_available=False,
             group2index=(dict(group2index) if group2index is not None else None),
             groups=(set(groups) if groups is not None else None),
+            student2index=(
+                dict(student2index) if student2index is not None else None
+            ),
+            covariate_columns=(
+                tuple(covariate_columns) if covariate_columns is not None else None
+            ),
         )
         self.num_fitted_kcs = len(self.get_fitted_kcs())
 
@@ -201,6 +223,47 @@ class FitBase(VerboseMixin, ABC):
     def get_fitted_kcs(self) -> set[str]:
         """Return all known fitted KCs."""
         return set(self._fit_metadata.fit_saves.keys()).union(self.stan_fits.keys())
+
+    def set_fit_artifact_base_location(self, base_location: str | os.PathLike[str]) -> None:
+        """Configure where fit artifacts are stored for lazy reloading."""
+        self._fit_artifact_base_location = os.fspath(base_location)
+
+    def release_fit_from_memory(self, kc: str) -> None:
+        """Persist a KC fit to disk and evict the in-memory CmdStan fit object.
+
+        Raises
+        ------
+        RuntimeError
+            If no artifact base location has been configured.
+        KeyError
+            If the KC does not exist or is not currently loaded in memory.
+        """
+        if self._fit_artifact_base_location is None:
+            raise RuntimeError(
+                "Fit artifact base location is not configured. "
+                "Set it before releasing fits from memory."
+            )
+        if kc not in self.get_fitted_kcs():
+            raise KeyError(f"No fit found for KC '{kc}'.")
+        if kc not in self.stan_fits:
+            raise KeyError(
+                f"Fit for KC '{kc}' is not currently loaded in memory and cannot be released."
+            )
+
+        saved_single_metadata = save_fit_artifacts(
+            base_save_location=self._fit_artifact_base_location,
+            fits={kc: self.stan_fits[kc]},
+            fit_metadata=replace(
+                self._fit_metadata,
+                fit_saves={kc: self._fit_metadata.fit_saves[kc]},
+            ),
+            summary_cache={
+                kc: self._summary_cache[kc] for kc in [kc] if kc in self._summary_cache
+            },
+        )
+        self._fit_metadata.fit_saves[kc] = saved_single_metadata.fit_saves[kc]
+        self.stan_fits.pop(kc, None)
+        self.num_fitted_kcs = len(self.get_fitted_kcs())
 
     def get_fit(self, kc: str) -> CmdStanFit:
         """Get the fit for a knowledge component.
@@ -221,8 +284,36 @@ class FitBase(VerboseMixin, ABC):
             If no fit exists for the specified KC.
         """
         if kc not in self.stan_fits:
-            raise KeyError(f"No fit found for KC '{kc}'.")
+            if kc not in self._fit_metadata.fit_saves:
+                raise KeyError(f"No fit found for KC '{kc}'.")
+            if self._fit_artifact_base_location is None:
+                raise KeyError(
+                    f"Fit for KC '{kc}' is not loaded in memory and no artifact location is configured."
+                )
+
+            fit_save = self._fit_metadata.fit_saves[kc]
+            kc_fit_save_folder = os.path.join(
+                self._fit_artifact_base_location,
+                FIT_SAVE_FOLDER,
+                str(fit_save.save_folder),
+            )
+            self.stan_fits[kc] = cmdstan_from_csv(kc_fit_save_folder)
         return self.stan_fits[kc]
+
+    def _get_fit_for_summary(self, kc: str) -> CmdStanFit:
+        """Get a KC fit for summarizing, dropping the previous summary reload first."""
+        self._release_summary_loaded()
+        was_resident = kc in self.stan_fits
+        kc_fit = self.get_fit(kc)
+        if self.release_after_summary and not was_resident:
+            self._summary_loaded.add(kc)
+        return kc_fit
+
+    def _release_summary_loaded(self) -> None:
+        """Evict fits that summary reloaded from disk (they are already persisted)."""
+        for kc in self._summary_loaded:
+            self.stan_fits.pop(kc, None)
+        self._summary_loaded.clear()
 
     def has_kc(self, kc: str) -> bool:
         """Check if a fit exists for a knowledge component.
@@ -285,13 +376,15 @@ class FitBase(VerboseMixin, ABC):
         self._summary_cache[kc] = kc_summary_df
 
     @classmethod
-    def _load(cls, base_save_location: str) -> FitBase:
+    def _load(cls, base_save_location: str, lazy: bool = False) -> FitBase:
         """Load fit artifacts from disk into a ``BaseFit`` subclass instance.
 
         Parameters
         ----------
         base_save_location : str
             Root folder containing persisted fit artifacts.
+        lazy : bool, default False
+            Whether to defer loading CmdStan fit objects until first access.
 
         Returns
         -------
@@ -309,11 +402,13 @@ class FitBase(VerboseMixin, ABC):
         loaded_fit_metadata, fits, summary_cache = load_fit_artifacts(
             base_save_location=base_save_location,
             expected_fit_method=expected_fit_method,
+            lazy=lazy,
         )
 
         return cls(
             fits=fits,
             fit_metadata=loaded_fit_metadata,
+            fit_artifact_base_location=base_save_location,
             _summary_cache=summary_cache,
         )
 

@@ -11,7 +11,9 @@ generated quantities {
         for (studentIdx in 1:nStudents) {
             int studentGroupIdx = groups[studentIdx];
             // initial probability of knowing
-            real studentInit = pi_know[individual_pi_know == 1 ? studentIdx : studentGroupIdx]; 
+            real studentInit = gq_pi_know(train_student_idx[studentIdx], studentGroupIdx, individual_pi_know, joint_pi_know,
+                                    pi_know, pi_b0_know_param, covariates[studentIdx],
+                                    pi_b1_know_param, pi_sigma_param, logit_pi_know_z);
             real studentLearn = learn[studentGroupIdx];   // transition probability of learning
             real studentGuess = guess[studentGroupIdx];   // emission probability of guessing
             real studentSlip = slip[studentGroupIdx];     // emission probability of slipping

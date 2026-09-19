@@ -108,6 +108,14 @@ class TestBKTModelBaseInit:
         m = _ConcreteModel()
         assert m.cpp_compile_kwargs == {}
 
+    def test_low_memory_default_false(self):
+        m = _ConcreteModel()
+        assert m.low_memory is False
+
+    def test_low_memory_can_be_enabled(self):
+        m = _ConcreteModel(low_memory=True)
+        assert m.low_memory is True
+
     def test_stan_model_is_none(self):
         m = _ConcreteModel()
         assert m._stan_model is None
@@ -206,7 +214,7 @@ class TestSummary:
             return_value=pd.DataFrame()
         )  # ty: ignore[method-assign]
 
-        m.summary()
+        m.summary(label_indexes=False)
 
         m.fits._summary.assert_called_once_with(
             kcs=None,
@@ -220,7 +228,7 @@ class TestSummary:
             return_value=pd.DataFrame()
         )  # ty: ignore[method-assign]
 
-        m.summary(kcs="kc_a")
+        m.summary(kcs="kc_a", label_indexes=False)
 
         m.fits._summary.assert_called_once_with(
             kcs="kc_a",
@@ -234,7 +242,7 @@ class TestSummary:
             return_value=pd.DataFrame()
         )  # ty: ignore[method-assign]
 
-        m.summary(kcs=["kc_a", "kc_b"])
+        m.summary(kcs=["kc_a", "kc_b"], label_indexes=False)
 
         m.fits._summary.assert_called_once_with(
             kcs=["kc_a", "kc_b"],
@@ -309,6 +317,9 @@ class TestSave:
             "verbose": int(VerbosityLevel.DEBUG),
             "stan_compile_kwargs": {"stanc": True},
             "cpp_compile_kwargs": {"threads": 4},
+            "low_memory": False,
+            "individual_initial_knowledge": False,
+            "init_knowledge_strategy": "correctness_only",
         }
 
 

@@ -93,7 +93,7 @@ class MCMCFit(FitBase):
         summary_frames: list[pd.DataFrame] = []
         for kc in sorted(kcs_set):
             # skip KCs that were not requested
-            kc_stan_fit = self.get_fit(kc)
+            kc_stan_fit = self._get_fit_for_summary(kc)
             if kc_stan_fit is None:
                 raise ValueError(
                     f"Stan fit for KC '{kc}' is not available. Failed to generate summary."
@@ -121,6 +121,7 @@ class MCMCFit(FitBase):
             if self._should_cache_summary:
                 # cache summary for future use
                 self._update_summary_cache(kc, summary_df)
+        self._release_summary_loaded()
         if summary_frames:
             summary_concat_df: pd.DataFrame = pd.concat(summary_frames, axis=0)
             return summary_concat_df.set_index([kc_col_name, "parameter"])

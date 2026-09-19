@@ -62,6 +62,7 @@ class StandardBKT(BKTModelBase):
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
+        low_memory: bool = False,
     ):
         """Initialize a StandardBKT model instance.
 
@@ -84,6 +85,10 @@ class StandardBKT(BKTModelBase):
             Additional keyword arguments for Stan model compilation.
         cpp_compile_kwargs : dict
             Additional keyword arguments for C++ compilation of the Stan model.
+        low_memory : bool
+            Whether to evict each KC's fit to disk after fitting, reloading it lazily on
+            next access. Reduces peak memory usage when fitting many KCs at the cost of
+            some performance.
         """
 
         super().__init__(
@@ -93,6 +98,7 @@ class StandardBKT(BKTModelBase):
             init_knowledge_strategy=init_knowledge_strategy,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
+            low_memory=low_memory,
         )
 
     @property
@@ -157,6 +163,8 @@ class StandardBKT(BKTModelBase):
         """
         correctness = kc_data.correctness
         n_students, n_problems = correctness.shape
+        n_covariates = kc_data.covariates.shape[1] if kc_data.covariates is not None else 0
+        is_joint = self.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
 
         data_dict = {
             "nStudents": int(n_students),
@@ -166,10 +174,66 @@ class StandardBKT(BKTModelBase):
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
             "individual_pi_know": int(self.individual_initial_knowledge),
+            "joint_pi_know": int(is_joint),
+            "nTrainStudents": int(n_students),
+            "nCovariates": int(n_covariates),
+            "train_student_idx": np.arange(1, n_students + 1, dtype=np.int32),
+            "covariates": (
+                kc_data.covariates
+                if kc_data.covariates is not None
+                else np.zeros((n_students, 0), dtype=np.float64)
+            ),
         }
         if priors is not None:
             raw_priors = priors.to_dict(self.init_knowledge_strategy)
+            if is_joint:
+                data_dict["prior_pi_know_mu"] = [0.0]
+                data_dict["prior_pi_know_std"] = [1.0]
+                data_dict["unif_prior_pi_know"] = 1
+
+                b0_mu = raw_priors.get("pi_b0_know_mu")
+                b0_std = raw_priors.get("pi_b0_know_std")
+                data_dict["prior_pi_b0_know_mu"] = b0_mu if b0_mu is not None else 0.0
+                data_dict["prior_pi_b0_know_std"] = (
+                    b0_std if b0_std is not None else 5.0
+                )
+                data_dict["unif_prior_pi_b0_know"] = int(
+                    b0_mu is None or b0_std is None
+                )
+
+                b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+                    raw_priors.get("pi_b1_know_mu"),
+                    raw_priors.get("pi_b1_know_std"),
+                    n_covariates,
+                )
+                data_dict["prior_pi_b1_know_mu"] = (
+                    b1_mu if b1_mu is not None else [0.0] * n_covariates
+                )
+                data_dict["prior_pi_b1_know_std"] = (
+                    b1_std if b1_std is not None else [5.0] * n_covariates
+                )
+                data_dict["unif_prior_pi_b1_know"] = int(
+                    b1_mu is None or b1_std is None
+                )
+
+                sigma_lambda = raw_priors.get("pi_sigma_lambda")
+                data_dict["prior_pi_sigma_lambda"] = (
+                    sigma_lambda if sigma_lambda is not None else 0.5
+                )
+                data_dict["unif_prior_pi_sigma"] = int(sigma_lambda is None)
+            else:
+                data_dict["prior_pi_b0_know_mu"] = 0.0
+                data_dict["prior_pi_b0_know_std"] = 5.0
+                data_dict["prior_pi_b1_know_mu"] = [0.0] * n_covariates
+                data_dict["prior_pi_b1_know_std"] = [5.0] * n_covariates
+                data_dict["prior_pi_sigma_lambda"] = 0.5
+                data_dict["unif_prior_pi_b0_know"] = 1
+                data_dict["unif_prior_pi_b1_know"] = 1
+                data_dict["unif_prior_pi_sigma"] = 1
+
             for param in ("pi_know", "learn", "forget", "guess", "slip"):
+                if is_joint and param == "pi_know":
+                    continue
                 mu_key = f"{param}_mu"
                 std_key = f"{param}_std"
                 mu_value = raw_priors.get(mu_key)
@@ -199,6 +263,8 @@ class StandardBKT(BKTModelBase):
         n_students: int,
         point_estimate: Literal["mean", "median", "mode"] = "mean",
         groups: Optional[np.ndarray] = None,
+        kc_data: Optional[KCData] = None,
+        kc_id: Optional[str] = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Extract BKT parameters from a fitted Stan model.
 
@@ -221,9 +287,18 @@ class StandardBKT(BKTModelBase):
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
             Tuple of (prior_know, learn, forget, guess, slip) arrays, each of shape (n_students,).
         """
-        init_know = StandardBKT._extract_param_point_estimate(
-            fit, "pi_know", point_estimate
-        )
+        if self.individual_initial_knowledge:
+            init_know = self._extract_individual_pi_know_point_estimate(
+                fit, kc_data=kc_data, kc_id=kc_id, point_estimate=point_estimate
+            )
+        else:
+            init_know = np.full(
+                n_students,
+                StandardBKT._extract_param_point_estimate(
+                    fit, "pi_know", point_estimate
+                ),
+                dtype=np.float64,
+            )
         learn = StandardBKT._extract_param_point_estimate(fit, "learn", point_estimate)
         forget = StandardBKT._extract_param_point_estimate(
             fit, "forget", point_estimate
@@ -232,7 +307,7 @@ class StandardBKT(BKTModelBase):
         slip = StandardBKT._extract_param_point_estimate(fit, "slip", point_estimate)
 
         return (
-            np.full(n_students, init_know, dtype=np.float64),
+            init_know,
             np.full(n_students, learn, dtype=np.float64),
             np.full(n_students, forget, dtype=np.float64),
             np.full(n_students, guess, dtype=np.float64),

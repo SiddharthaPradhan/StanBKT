@@ -10,6 +10,7 @@ import pytest
 
 from stanbkt.fits.fit_types import FitMethod, FitSaveEntry
 from stanbkt.models.core.multi import MultiBKT, _is_all_none
+from stanbkt.models.model_types import InitKnowledgeStrategy
 from stanbkt.models.priors import MultiPriors
 from stanbkt.utils.data_utils import KCData
 from stanbkt.utils.verbose import VerbosityLevel
@@ -524,7 +525,7 @@ class TestPredict:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.05),
@@ -664,7 +665,7 @@ class TestPredictSmoothedStates:
         monkeypatch.setattr(
             model,
             "_extract_bkt_params_from_fit",
-            lambda fit, n_students, point_estimate="mean", groups=None: (
+            lambda fit, n_students, point_estimate="mean", groups=None, kc_id=None, kc_data=None: (
                 np.full(n_students, 0.3),
                 np.full(n_students, 0.2),
                 np.full(n_students, 0.05),
@@ -692,3 +693,60 @@ class TestPredictSmoothedStates:
         out = model.predict_smoothed(data=_grouped_df())
         assert isinstance(out, pd.DataFrame)
         assert len(out) == 0
+
+
+# ---------------------------------------------------------------------------
+# JOINT strategy
+# ---------------------------------------------------------------------------
+
+
+def _joint_kc_data(n_covariates: int = 2) -> KCData:
+    base = _kc_data_with_groups(4, 3, 2)
+    return KCData(
+        correctness=base.correctness,
+        student_inter_dict=base.student_inter_dict,
+        lengths=base.lengths,
+        student_ids=base.student_ids,
+        problem_ids=base.problem_ids,
+        groups=base.groups,
+        group_2_index=base.group_2_index,
+        covariates=np.arange(4 * n_covariates, dtype=np.float64).reshape(4, -1),
+        covariate_columns=[f"c{i}" for i in range(n_covariates)],
+    )
+
+
+class TestMultiBKTJoint:
+    def _model(self):
+        return MultiBKT(
+            individual_initial_knowledge=True,
+            init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
+        )
+
+    def test_constructor_stores_strategy(self):
+        model = self._model()
+        assert model.individual_initial_knowledge is True
+        assert model.init_knowledge_strategy == InitKnowledgeStrategy.JOINT
+
+    def test_data_dict_keeps_group_priors_and_adds_joint_priors(self):
+        model = self._model()
+        data = model._build_stan_data_dict(_joint_kc_data(), model._default_priors())
+        assert data["joint_pi_know"] == 1
+        assert data["nGroups"] == 2
+        assert len(data["prior_learn_mu"]) == 2
+        assert data["prior_pi_b0_know_std"] == 5.0
+        assert len(data["prior_pi_b1_know_mu"]) == 2
+        assert data["unif_prior_pi_know"] == 1
+        assert data["covariates"].shape == (4, 2)
+
+    def test_b1_list_prior_is_per_covariate_not_per_group(self):
+        model = self._model()
+        priors = MultiPriors(pi_b1_know_mu=[1.0, 2.0], pi_b1_know_std=[1.0, 1.0])
+        data = model._build_stan_data_dict(_joint_kc_data(2), priors)
+        assert data["prior_pi_b1_know_mu"] == [1.0, 2.0]
+
+    def test_non_joint_default_unchanged(self):
+        model = MultiBKT()
+        data = model._build_stan_data_dict(_kc_data_with_groups(4, 3, 2))
+        assert data["joint_pi_know"] == 0
+        assert data["nCovariates"] == 0
+        assert data["unif_prior_pi_sigma"] == 1
