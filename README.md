@@ -2,8 +2,8 @@
 	<img src="docs/source/_static/logo-light.png" alt="StanBKT logo" width="150" />
 </p>
 
-
 # StanBKT
+
 <p align="center">
 	<a href="https://stanbkt.readthedocs.io/">
 		<img src="https://readthedocs.org/projects/stanbkt/badge/?version=latest" alt="Documentation Status" />
@@ -11,12 +11,16 @@
 	<a href="https://pypi.org/project/stanbkt/">
 		<img src="https://img.shields.io/pypi/v/stanbkt" alt="PyPI" />
 	</a>
+	<a href="https://github.com/SiddharthaPradhan/StanBKT/actions/workflows/ci.yml">
+		<img src="https://github.com/SiddharthaPradhan/StanBKT/actions/workflows/ci.yml/badge.svg" alt="CI" />
+	</a>
 	<a href="LICENSE">
 		<img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" />
 	</a>
 </p>
 
 ## Overview
+
 StanBKT is a Python package for fitting Bayesian Knowledge Tracing (BKT) models with Stan (<https://mc-stan.org/>).
 It is designed for educational data in long format (student interactions over time) and provides tools for:
 
