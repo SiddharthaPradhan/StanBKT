@@ -15,7 +15,14 @@ from numba import njit
 
 from stanbkt.fits.fit_types import CmdStanFit
 from stanbkt.utils.compilation import compile_stan_model
-from stanbkt.utils.data_utils import ColumnNames, KCData, iter_kc_data, tile_categorical
+from stanbkt.utils.data_utils import (
+    ColumnNames,
+    KCData,
+    constant_categorical,
+    iter_kc_data,
+    smallest_int_dtype,
+    tile_categorical,
+)
 from stanbkt.utils.posterior_utils import posterior_summary
 
 if TYPE_CHECKING:
@@ -301,7 +308,9 @@ def _predict_posterior_draws_numba(
         pknow_all = np.empty(n_draws * total_obs, dtype=np.float64)
         pcorr_all = np.empty(n_draws * total_obs, dtype=np.float64)
         lengths = kc_data.lengths.astype(np.int64)
-        valid_mask = _build_valid_observation_mask(lengths, kc_data.correctness.shape[1])
+        valid_mask = _build_valid_observation_mask(
+            lengths, kc_data.correctness.shape[1]
+        )
 
         for draw_index in range(n_draws):
             p_know, p_correct = njit_predictor(
@@ -318,19 +327,22 @@ def _predict_posterior_draws_numba(
             pknow_all[start:end] = p_know[valid_mask]
             pcorr_all[start:end] = p_correct[valid_mask]
 
+        draw_dtype = smallest_int_dtype(n_draws)
+        order_dtype = smallest_int_dtype(int(order_vals.max()))
         kc_df = pd.DataFrame(
             {
                 "draw__": np.repeat(
-                    np.arange(1, n_draws + 1, dtype=np.int64), total_obs
+                    np.arange(1, n_draws + 1, dtype=draw_dtype), total_obs
                 ),
-                kc_col: np.repeat(kc_id_str, n_draws * total_obs),
+                kc_col: constant_categorical(kc_id_str, n_draws * total_obs),
                 student_col: tile_categorical(student_ids, n_draws),
                 problem_col: tile_categorical(problem_ids, n_draws),
                 correctness_col: np.tile(correctness_vals, n_draws),
-                "_order": np.tile(order_vals, n_draws),
+                "_order": np.tile(order_vals.astype(order_dtype), n_draws),
                 "pKnow": pknow_all,
                 "pCorrectness": pcorr_all,
-            }
+            },
+            copy=False,
         )
         posterior_draws[kc_id_str] = kc_df
 

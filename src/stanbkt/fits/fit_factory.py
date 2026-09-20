@@ -159,6 +159,13 @@ class FitFactory:
                     f"{fit_options.threads_per_chain} threads per chain specified, but `'STAN_THREADS': "
                     f"{cpp_compile_kwargs.get('STAN_THREADS', None)}` given in cpp_compile_kwargs."
                 )
+            if fit_options.opencl_ids is not None and not cpp_compile_kwargs.get(
+                "STAN_OPENCL", False
+            ):
+                raise ValueError(
+                    f"opencl_ids {fit_options.opencl_ids} specified, but `'STAN_OPENCL': "
+                    f"{cpp_compile_kwargs.get('STAN_OPENCL', None)}` given in cpp_compile_kwargs."
+                )
         except KeyError:
             raise ValueError(
                 f"Unsupported fit method '{fit_method}'. Cannot verify fit options compatibility."

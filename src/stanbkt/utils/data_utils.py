@@ -590,3 +590,18 @@ def tile_categorical(values: npt.NDArray[np.object_], n_tiles: int) -> pd.Catego
     categorical = pd.Categorical(values)
     tiled_codes = np.tile(categorical.codes, n_tiles)
     return pd.Categorical.from_codes(tiled_codes, categories=categorical.categories)
+
+
+def constant_categorical(value: str, n: int) -> pd.Categorical:
+    """Categorical of length n holding a single repeated value, stored as int8 codes."""
+    return pd.Categorical.from_codes(
+        np.zeros(n, dtype=np.int8), categories=pd.Index([value])
+    )
+
+
+def smallest_int_dtype(max_value: int) -> np.dtype:
+    """Smallest signed integer dtype that can hold values up to max_value."""
+    for dtype in (np.int8, np.int16, np.int32):
+        if max_value <= np.iinfo(dtype).max:
+            return np.dtype(dtype)
+    return np.dtype(np.int64)

@@ -10,19 +10,23 @@ import numpy as np
 import pandas as pd
 from numba import njit, prange
 
+from stanbkt.utils.numba_utils import PARALLEL_SAFE
 from stanbkt.utils.data_utils import (
     ColumnNames,
     KCData,
     _PKNOW,
     _PCORRECT,
+    constant_categorical,
     iter_kc_data,
+    smallest_int_dtype,
     tile_categorical,
 )
 
 _COL_PAT = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
 
 
-@njit(parallel=True, cache=True)
+# parallel only when the threading layer tolerates concurrent launches from KC worker threads
+@njit(parallel=PARALLEL_SAFE, cache=True)
 def _compute_posterior_stats(
     arr: np.ndarray,  # (n_obs, n_draws), float64,
     quantile_fracs: np.ndarray,  # (n_q,), float64
@@ -168,21 +172,26 @@ def _process_single_kc_gq(
 
     pknow_values = gq_kc_df[pknow_obs_cols].to_numpy().ravel()
 
-    result: dict[str, Any] = {
-        col: np.repeat(gq_kc_df[col].to_numpy(), n_obs) for col in id_cols
-    }
-    result[kc_col] = np.repeat(kc_id_str, n_draws * n_obs)
+    result: dict[str, Any] = {}
+    for col in id_cols:
+        col_values = gq_kc_df[col].to_numpy()
+        result[col] = np.repeat(
+            col_values.astype(smallest_int_dtype(int(col_values.max()))), n_obs
+        )
+    result[kc_col] = constant_categorical(kc_id_str, n_draws * n_obs)
     result[student_col] = tile_categorical(obs_student_ids_arr, n_draws)
     result[problem_col] = tile_categorical(obs_problem_ids_arr, n_draws)
     result[correctness_col] = np.tile(obs_correctness_arr, n_draws)
-    result["_order"] = np.tile(obs_order_arr, n_draws)
+    result["_order"] = np.tile(
+        obs_order_arr.astype(smallest_int_dtype(int(obs_order_arr.max()))), n_draws
+    )
     result[_PKNOW] = pknow_values
     if pcorr_cols:
         result[_PCORRECT] = (
             gq_kc_df[[pcorr_cols[k] for k in obs_keys]].to_numpy().ravel()
         )
 
-    return pd.DataFrame(result), id_cols
+    return pd.DataFrame(result, copy=False), id_cols
 
 
 def gq_to_draws(

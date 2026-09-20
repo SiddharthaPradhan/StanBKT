@@ -102,6 +102,7 @@ If your dataset uses different column names, pass a `column_mapping` dictionary 
 ## Notes
 
 - StanBKT uses CmdStanPy under the hood.
+- Works on Linux, macOS and Windows (x86_64 and ARM). `pip install stanbkt[tbb]` optionally adds TBB where available.
 - If you use Windows, review the installation notes in the docs for compiler/toolchain setup.
 - Running Stan-based inference can take time on first compile.
 

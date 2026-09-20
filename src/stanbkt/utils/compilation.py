@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Optional, Callable
 import platform
@@ -18,6 +19,8 @@ from ssl import SSLCertVerificationError
 
 _INCLUDE_PATTERN = re.compile(r'^\s*#include\s+"(?P<path>[^"]+)"', re.MULTILINE)
 _CACHE_NAMESPACE = "compiled_stan"
+_COMPILE_LOCKS: dict[str, threading.Lock] = {}
+_COMPILE_LOCKS_GUARD = threading.Lock()
 N_CORES = os.cpu_count()
 if N_CORES is None:
     N_CORES = 1
@@ -41,7 +44,7 @@ def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
             # see https://github.com/stan-dev/cmdstanpy/blob/a2da6369e111c58356300fc7c01323d7f835d191/cmdstanpy/install_cmdstan.py#L487
             import urllib.request
 
-            urllib.request.urlopen("https://www.github.com")
+            urllib.request.urlopen("https://www.github.com", timeout=15)
         except URLError as e:
             if isinstance(e.reason, SSLCertVerificationError):
                 raise RuntimeError(
@@ -221,6 +224,19 @@ def _get_source_root(source_paths: list[Path]) -> Path:
     return Path(common_root)
 
 
+def _platform_fingerprint() -> dict[str, str]:
+    """Identify the OS, CPU architecture and CmdStan version a binary was built for."""
+    try:
+        cmdstan_version = str(csp.utils.cmdstan_version())
+    except Exception:
+        cmdstan_version = "unknown"
+    return {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "cmdstan": cmdstan_version,
+    }
+
+
 def _build_dict_for_hash(
     stan_file: Path,
     cpp_options: dict[str, Any] | None,
@@ -257,6 +273,7 @@ def _build_dict_for_hash(
         )
 
     return {
+        "platform": _platform_fingerprint(),
         "sources": source_payload,
         "cpp_options": _normalize_for_hash(cpp_options or {}),
         "stanc_options": _normalize_for_hash(stanc_options or {}),
@@ -347,6 +364,11 @@ def _cached_executable_path(stan_file: Path, cache_dir: Path) -> Path:
     return cache_dir / f"{stan_file.stem}{suffix}"
 
 
+def _compile_lock(key: Path) -> threading.Lock:
+    with _COMPILE_LOCKS_GUARD:
+        return _COMPILE_LOCKS.setdefault(str(key), threading.Lock())
+
+
 def compile_stan_model(
     stan_file: str | os.PathLike[str],
     cpp_options: dict[str, Any] | None = None,
@@ -396,25 +418,38 @@ def compile_stan_model(
     # check for cached executable
     cached_exe_file = _cached_executable_path(resolved_stan_file, cache_dir)
 
-    if cached_exe_file.exists():
-        if print_fn is not None:
+    # serialize compiles of the same model across KC worker threads
+    with _compile_lock(cache_dir):
+        if not cached_exe_file.exists():
+            if print_fn is not None:
+                print_fn(
+                    "Compiling Stan model. This may take a while. Subsequent calls for the same model and compile options will use cached executable.",
+                    level=VerbosityLevel.INFO,
+                )
+            _compile_into_cache(
+                resolved_stan_file, cached_exe_file, cpp_options, stanc_options
+            )
+        elif print_fn is not None:
             print_fn(
                 f"Using cached compiled Stan model executable at {cached_exe_file}",
                 level=VerbosityLevel.INFO,
             )
-        return csp.CmdStanModel(
-            stan_file=str(resolved_stan_file),
-            exe_file=str(cached_exe_file),
-            stanc_options=dict(stanc_options) if stanc_options else None,
-            cpp_options=dict(cpp_options) if cpp_options else None,
-        )
 
-    if print_fn is not None:
-        print_fn(
-            "Compiling Stan model. This may take a while. Subsequent calls for the same model and compile options will use cached executable.",
-            level=VerbosityLevel.INFO,
-        )
+    return csp.CmdStanModel(
+        stan_file=str(resolved_stan_file),
+        exe_file=str(cached_exe_file),
+        stanc_options=dict(stanc_options) if stanc_options else None,
+        cpp_options=dict(cpp_options) if cpp_options else None,
+    )
 
+
+def _compile_into_cache(
+    resolved_stan_file: Path,
+    cached_exe_file: Path,
+    cpp_options: dict[str, Any] | None,
+    stanc_options: dict[str, Any] | None,
+) -> None:
+    """Compile a Stan file in a temp dir and atomically place the exe in the cache."""
     # Compile inside a temporary directory so the exe is never written into
     # the installed package tree (e.g. site-packages inside a venv).
     # Source files are mirrored there only for the duration of compilation
@@ -441,14 +476,10 @@ def compile_stan_model(
                 "CmdStanPy failed to produce a compiled executable. Perhaps reconfigure and/or reinstall CmdStanPy?"
             )
 
-        shutil.move(str(compiled_model.exe_file), cached_exe_file)
-
-    return csp.CmdStanModel(
-        stan_file=str(resolved_stan_file),
-        exe_file=str(cached_exe_file),
-        stanc_options=dict(stanc_options) if stanc_options else None,
-        cpp_options=dict(cpp_options) if cpp_options else None,
-    )
+        # copy next to the target then rename, so readers never see a partial exe
+        staged = cached_exe_file.with_name(f".{cached_exe_file.name}.{os.getpid()}.tmp")
+        shutil.move(str(compiled_model.exe_file), staged)
+        os.replace(staged, cached_exe_file)
 
 
 def get_cache_root() -> Path:

@@ -2051,7 +2051,7 @@ wheels = [
 
 [[package]]
 name = "stanbkt"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "arviz" },
@@ -2062,8 +2062,12 @@ dependencies = [
     { name = "pandas" },
     { name = "platformdirs" },
     { name = "scikit-learn" },
-    { name = "tbb" },
     { name = "xarray" },
+]
+
+[package.optional-dependencies]
+tbb = [
+    { name = "tbb", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -2095,9 +2099,10 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "platformdirs", specifier = ">=4.4.0" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "tbb", specifier = ">=2022.3.1" },
+    { name = "tbb", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'tbb') or (sys_platform == 'win32' and extra == 'tbb')", specifier = ">=2022.3.1" },
     { name = "xarray", specifier = ">=2024.7.0" },
 ]
+provides-extras = ["tbb"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2135,7 +2140,7 @@ name = "tbb"
 version = "2022.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tcmlib" },
+    { name = "tcmlib", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/08/59/8d381a2cfe8d36c4f4ff9f94769ff2809bfc16014d888360b0e24c7e5c6b/tbb-2022.3.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:534c089eca6bcf148408684c156229d5f09c01d323b685b15739f41985b529d7", size = 4178630, upload-time = "2026-01-22T05:30:20.589Z" },

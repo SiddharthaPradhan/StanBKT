@@ -22,6 +22,9 @@ class BaseFitOptions:
     ----------
     seed : int | None
         RNG seed for reproducibility.
+    opencl_ids : tuple[int, int] | None
+        OpenCL (platform id, device id) to run on. Requires the model to be compiled
+        with ``cpp_compile_kwargs={"STAN_OPENCL": True}``.
     extra_kwargs : dict[str, Any]
         Additional keyword arguments forwarded directly to CmdStanPy.
         These keys are merged last and therefore override generated defaults
@@ -34,6 +37,7 @@ class BaseFitOptions:
 
     seed: int | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
+    opencl_ids: tuple[int, int] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Self:
