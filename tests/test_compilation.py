@@ -330,3 +330,48 @@ def test_setup_cmdstanpy_raises_when_install_fails(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="GITHUB_PAT"):
         compilation.setup_cmdstanpy(n_cores=1)
+
+
+def test_setup_cmdstanpy_uses_installed_version(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(compilation, "is_sys_windows", lambda: False)
+    set_paths: list[str] = []
+
+    def _set_path(path):
+        if not os.path.isdir(path):
+            raise ValueError("not installed")
+        set_paths.append(path)
+
+    def _no_install(**kwargs):
+        raise AssertionError("unexpected install")
+
+    monkeypatch.setattr(compilation.csp, "set_cmdstan_path", _set_path)
+    monkeypatch.setattr(compilation.csp, "install_cmdstan", _no_install)
+    (tmp_path / ".cmdstan" / "cmdstan-2.37.0").mkdir(parents=True)
+
+    compilation.setup_cmdstanpy(n_cores=1, version="2.37.0")
+
+    assert set_paths == [str(tmp_path / ".cmdstan" / "cmdstan-2.37.0")]
+
+
+def test_setup_cmdstanpy_installs_missing_version(tmp_path: Path, monkeypatch) -> None:
+    import urllib.request
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(compilation, "is_sys_windows", lambda: False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: None)
+
+    def _not_installed(path):
+        raise ValueError("not installed")
+
+    install_calls: list[dict] = []
+    monkeypatch.setattr(compilation.csp, "set_cmdstan_path", _not_installed)
+    monkeypatch.setattr(
+        compilation.csp,
+        "install_cmdstan",
+        lambda **kwargs: install_calls.append(kwargs) or True,
+    )
+
+    compilation.setup_cmdstanpy(n_cores=1, version="2.36.0")
+
+    assert install_calls == [{"version": "2.36.0", "cores": 1}]

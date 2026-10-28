@@ -8,38 +8,44 @@ functions{
   Students are sorted by decreasing sequence length, so the active students at each step are a prefix.
   Emission tables: P(correct | not known) = guess, P(correct | known) = 1 - slip.
   */
-  real partial_sum(array[] int lengths_slice, // sliced sequence lengths, decreasing (nStudentsInSlice)
+  real partial_sum(array[] real pi_know_slice, // sliced initial probability of knowing, sorted student order
                    int start, int end, // slice indexes
-                   matrix correct_by_time, // 1 if correct, 0 otherwise (nProblems, nStudents)
-                   vector learn_student, // per student parameters, in sorted student order (nStudents)
-                   vector forget_student,
-                   vector guess_student,
-                   vector slip_student,
-                   vector pi_know_student // initial probability of knowing (nStudents)
+                   array[] int lengths_sorted, // sequence lengths, decreasing (nStudents)
+                   array[,] int correct_by_time, // 1 if correct, 0 otherwise (nProblems, nStudents)
+                   array[] int groups_sorted, // group of each student, sorted student order (nStudents)
+                   row_vector learn, // group parameters (nGroups)
+                   row_vector forget,
+                   row_vector guess,
+                   row_vector slip
                    ) {
     int n = end - start + 1;
-    vector[n] learn_s = learn_student[start:end];
-    vector[n] slip_s = slip_student[start:end];
-    // emission probabilities are P(y | not known) = not_guess + y * guess_gain and P(y | known) = slip_s + y * slip_gain
-    vector[n] not_guess = 1 - guess_student[start:end];
-    vector[n] guess_gain = 2 * guess_student[start:end] - 1;
-    vector[n] slip_gain = 1 - 2 * slip_s;
+    array[n] int g = groups_sorted[start:end];
+    vector[n] learn_s = to_vector(learn[g]);
+    vector[n] slip_s = to_vector(slip[g]);
+    vector[n] guess_s = to_vector(guess[g]);
+    // emission tables stacked as [P(incorrect | state); P(correct | state)], indexed by student + n * y.
+    // indexing with data creates no autodiff nodes, unlike mixing the tables with y arithmetically
+    vector[2 * n] emit_known = append_row(slip_s, 1 - slip_s);
+    vector[2 * n] emit_unknown = append_row(1 - guess_s, guess_s);
     // P(known at next step) = learn + P(known | y) * (1 - forget - learn)
-    vector[n] transition_gain = 1 - forget_student[start:end] - learn_s;
+    vector[n] transition_gain = 1 - to_vector(forget[g]) - learn_s;
     // probability of knowing the skill before observing the current interaction
-    vector[n] known = pi_know_student[start:end];
+    vector[n] known = to_vector(pi_know_slice);
 
     real target_ = 0.0; // accumulator for the log density
     int active = n; // students that still have interactions at the current step
-    for (t in 1:lengths_slice[1]) {
-        while (lengths_slice[active] < t) {
+    array[n] int idx;
+    for (t in 1:lengths_sorted[start]) {
+        while (lengths_sorted[start + active - 1] < t) {
             active -= 1;
         }
-        vector[active] y = to_vector(correct_by_time[t, start:(start + active - 1)]);
+        // correct_by_time[t] is contiguous over students
+        for (i in 1:active) {
+            idx[i] = i + n * correct_by_time[t, start + i - 1];
+        }
         vector[active] known_now = head(known, active);
-        vector[active] joint_known = known_now .* (head(slip_s, active) + y .* head(slip_gain, active));
-        vector[active] norm_const = joint_known
-            + (1 - known_now) .* (head(not_guess, active) + y .* head(guess_gain, active));
+        vector[active] joint_known = known_now .* emit_known[idx[1:active]];
+        vector[active] norm_const = joint_known + (1 - known_now) .* emit_unknown[idx[1:active]];
         target_ += sum(log(norm_const));
         // transition to the next interaction, inactive students keep stale values that are never read
         known[1:active] = head(learn_s, active) + (joint_known ./ norm_const) .* head(transition_gain, active);
@@ -95,6 +101,8 @@ data {
     // Note on correctness matrix: -1 = NA, 0 = incorrect, 1 = correct.
     array[nStudents, nProblems] int<lower=-1, upper=1> correctness; // correctness matrix
     array[nStudents] int<lower=1> interaction_lengths; // lengths of each student's interaction sequence
+    int<lower=1> nObs; // total number of interactions, sum of interaction_lengths
+    int<lower=1> grainsize; // reduce_sum slice size, set from python
 
     // priors for the parameters
     array[nGroups] real prior_pi_know_mu;
@@ -158,7 +166,11 @@ transformed data {
     array[nStudents] int student_order = sort_indices_desc(interaction_lengths);
     array[nStudents] int lengths_sorted;
     array[nStudents] int groups_sorted;
-    matrix[nProblems, nStudents] correct_by_time = rep_matrix(0, nProblems, nStudents);
+    // time major so each time step reads a contiguous run of students
+    array[nProblems, nStudents] int correct_by_time = rep_array(0, nProblems, nStudents);
+    if (nObs != sum(interaction_lengths)) {
+        reject("nObs must equal sum(interaction_lengths), found ", nObs, " and ", sum(interaction_lengths));
+    }
     for (sorted_idx in 1:nStudents) {
         int student_idx = student_order[sorted_idx];
         lengths_sorted[sorted_idx] = interaction_lengths[student_idx];
@@ -264,14 +276,11 @@ model {
         pi_know_student = to_vector(pi_know[groups_sorted]);
     }
 
-    // Parallelized likelihood computation
-    int grainsize = 1; // use internal scheduler
-    target += reduce_sum(partial_sum, lengths_sorted,
+    // Parallelized likelihood computation, grainsize is chosen in python from the number of students and threads
+    target += reduce_sum(partial_sum, to_array_1d(pi_know_student),
                         grainsize,
-                        correct_by_time,
-                        to_vector(learn[groups_sorted]), to_vector(forget[groups_sorted]),
-                        to_vector(guess[groups_sorted]), to_vector(slip[groups_sorted]),
-                        pi_know_student);
+                        lengths_sorted, correct_by_time, groups_sorted,
+                        learn, forget, guess, slip);
 
     // post-test outcome regression on final (filtered) mastery, jointly estimated with the BKT fit above.
     // Runs a second forward pass in original (unsorted) student order since it can't ride on the

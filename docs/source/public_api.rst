@@ -171,6 +171,17 @@ that are passed to :external+cmdstanpy:meth:`cmdstanpy.CmdStanModel.sample`,
    # this will raise an error if the options provided are not compatible with the chosen fit method
    model.fit(data, stan_fit_options=options)
 
+The likelihood of each KC is split into slices of students that run in parallel when the model is compiled
+with ``STAN_THREADS``. Every fit options class has a ``grainsize`` option for the number of students per
+slice. The default ``-1`` picks it per KC: one slice on a single thread, otherwise about four slices per
+thread. A positive value is used as given.
+
+.. code-block:: python
+
+   model = StandardBKT(FitMethod.MCMC, cpp_compile_kwargs={"STAN_THREADS": True})
+   model.fit(data, stan_fit_options=MCMCFitOptions(threads_per_chain=4))  # grainsize=-1
+   model.fit(data, stan_fit_options=MCMCFitOptions(threads_per_chain=4, grainsize=50), overwrite_kcs=True)
+
 .. autosummary::
    :signatures: long
    :caption: Fit Configuration

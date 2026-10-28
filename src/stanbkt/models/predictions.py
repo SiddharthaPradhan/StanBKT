@@ -4,7 +4,7 @@ This module handles posterior prediction and exposes a public wrapper function t
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Literal, Optional, Union, overload
 
 import cmdstanpy as csp
@@ -23,7 +23,10 @@ from stanbkt.utils.data_utils import (
     smallest_int_dtype,
     tile_categorical,
 )
-from stanbkt.utils.posterior_utils import posterior_summary
+from stanbkt.utils.posterior_utils import (
+    _observation_index_arrays,
+    _summary_frame_from_arrays,
+)
 
 if TYPE_CHECKING:
     from stanbkt.models.core.base import BKTModelBase
@@ -47,7 +50,8 @@ def _prepare_posterior_prediction_inputs(
     kc_column_name = resolved_mapping[ColumnNames.KC_ID]
     model.check_data_contains_fitted_kcs(set(data[kc_column_name].astype(str).unique()))
     overlapping_kcs = model.get_kcs_in_fitted_kcs(set(data[kc_column_name].unique()))
-    data_cp = data.copy().loc[data[kc_column_name].isin(overlapping_kcs)]
+    # boolean indexing already returns a new frame
+    data_cp = data.loc[data[kc_column_name].isin(overlapping_kcs)]
     data_cp = model._drop_unseen_students(data_cp, resolved_mapping)
     return data_cp, resolved_mapping
 
@@ -164,39 +168,6 @@ def _build_valid_observation_mask(
     return problem_positions[np.newaxis, :] < lengths[:, np.newaxis]
 
 
-def _build_observation_index_arrays(
-    kc_data: KCData,
-) -> tuple[
-    npt.NDArray[np.object_],
-    npt.NDArray[np.object_],
-    npt.NDArray[np.int8],
-    npt.NDArray[np.int64],
-]:
-    student_ids: list[object] = []
-    problem_ids: list[object] = []
-    correctness_vals: list[int] = []
-    order_vals: list[int] = []
-
-    for student_index, (student_id, interaction) in enumerate(
-        kc_data.student_inter_dict.items()
-    ):
-        interaction_len = int(interaction.length)
-        for problem_index in range(interaction_len):
-            student_ids.append(str(student_id))
-            problem_ids.append(str(interaction.problem_ids[problem_index]))
-            correctness_vals.append(
-                int(kc_data.correctness[student_index, problem_index])
-            )
-            order_vals.append(problem_index)
-
-    return (
-        np.asarray(student_ids, dtype=object),
-        np.asarray(problem_ids, dtype=object),
-        np.asarray(correctness_vals, dtype=np.int8),
-        np.asarray(order_vals, dtype=np.int64),
-    )
-
-
 # cache njit dispatchers per underlying predictor function so repeated calls reuse
 # the same compiled Dispatcher instead of re-wrapping it every call. state_predictor
 # is a staticmethod on BKTModelBase (not imported here to avoid a circular import
@@ -212,27 +183,32 @@ def _get_draws_numba_kernel(state_predictor):
     return kernel
 
 
-def _predict_posterior_draws_numba(
+def _iter_posterior_numba_kc_arrays(
     model: "BKTModelBase",
     data: pd.DataFrame,
     column_mapping: dict[str, str],
     *,
     smoothed: bool,
     student_covariates: Optional[pd.DataFrame] = None,
-) -> dict[str, pd.DataFrame]:
+) -> Iterator[
+    tuple[
+        str,
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+    ]
+]:
+    """Replay the numba recursion for every posterior draw, one KC at a time.
+
+    Yields the KC ID, the observation index arrays and the pKnow and pCorrectness
+    values with shape (n_draws, n_obs).
+    """
     state_predictor = (
         type(model)._predict_hidden_states_smoothed_numba
         if smoothed
         else type(model)._predict_hidden_states_numba
     )
     njit_predictor = _get_draws_numba_kernel(state_predictor)
-
-    kc_col = column_mapping[ColumnNames.KC_ID]
-    student_col = column_mapping[ColumnNames.STUDENT_ID]
-    problem_col = column_mapping[ColumnNames.PROBLEM_ID]
-    correctness_col = column_mapping[ColumnNames.CORRECTNESS]
-
-    posterior_draws: dict[str, pd.DataFrame] = {}
 
     prepared_covariates, covariate_columns = model._prepare_joint_covariates(
         data, student_covariates, column_mapping
@@ -250,7 +226,7 @@ def _predict_posterior_draws_numba(
         kc_data = model._align_kc_group_indices_with_fit_metadata(kc_id_str, kc_data)
         if kc_data.covariates is not None:
             model._check_covariate_columns_match(kc_id_str, kc_data.covariate_columns)
-        kc_fit = model.fits.get_fit(kc_id_str)
+        kc_fit = model.fits._get_fit_transient(kc_id_str)
         if kc_fit is None:
             continue
 
@@ -286,10 +262,55 @@ def _predict_posterior_draws_numba(
                 f"Inconsistent posterior draw counts for KC '{kc_id_str}': {sorted(draw_sizes)}"
             )
 
-        student_ids, problem_ids, correctness_vals, order_vals = (
-            _build_observation_index_arrays(kc_data)
-        )
-        total_obs = len(student_ids)
+        obs_arrays = _observation_index_arrays(kc_data)
+        total_obs = len(obs_arrays[0])
+        pknow_all = np.empty((n_draws, total_obs), dtype=np.float64)
+        pcorr_all = np.empty((n_draws, total_obs), dtype=np.float64)
+        if total_obs:
+            lengths = kc_data.lengths.astype(np.int64)
+            valid_mask = _build_valid_observation_mask(
+                lengths, kc_data.correctness.shape[1]
+            )
+            for draw_index in range(n_draws):
+                p_know, p_correct = njit_predictor(
+                    correctness=kc_data.correctness,
+                    prior=prior_draws[draw_index],
+                    learn=learn_draws[draw_index],
+                    forget=forget_draws[draw_index],
+                    guess=guess_draws[draw_index],
+                    slip=slip_draws[draw_index],
+                    lengths=lengths,
+                )
+                pknow_all[draw_index] = p_know[valid_mask]
+                pcorr_all[draw_index] = p_correct[valid_mask]
+
+        yield kc_id_str, obs_arrays, pknow_all, pcorr_all
+    model.fits._release_transient_fits()
+
+
+def _predict_posterior_draws_numba(
+    model: "BKTModelBase",
+    data: pd.DataFrame,
+    column_mapping: dict[str, str],
+    *,
+    smoothed: bool,
+    student_covariates: Optional[pd.DataFrame] = None,
+) -> dict[str, pd.DataFrame]:
+    kc_col = column_mapping[ColumnNames.KC_ID]
+    student_col = column_mapping[ColumnNames.STUDENT_ID]
+    problem_col = column_mapping[ColumnNames.PROBLEM_ID]
+    correctness_col = column_mapping[ColumnNames.CORRECTNESS]
+
+    posterior_draws: dict[str, pd.DataFrame] = {}
+    for kc_id_str, obs_arrays, pknow_all, pcorr_all in _iter_posterior_numba_kc_arrays(
+        model,
+        data,
+        column_mapping,
+        smoothed=smoothed,
+        student_covariates=student_covariates,
+    ):
+        student_ids, problem_ids, correctness_vals, order_vals = obs_arrays
+        n_draws, total_obs = pknow_all.shape
         if total_obs == 0:
             posterior_draws[kc_id_str] = pd.DataFrame(
                 columns=[
@@ -305,31 +326,9 @@ def _predict_posterior_draws_numba(
             )
             continue
 
-        pknow_all = np.empty(n_draws * total_obs, dtype=np.float64)
-        pcorr_all = np.empty(n_draws * total_obs, dtype=np.float64)
-        lengths = kc_data.lengths.astype(np.int64)
-        valid_mask = _build_valid_observation_mask(
-            lengths, kc_data.correctness.shape[1]
-        )
-
-        for draw_index in range(n_draws):
-            p_know, p_correct = njit_predictor(
-                correctness=kc_data.correctness,
-                prior=prior_draws[draw_index],
-                learn=learn_draws[draw_index],
-                forget=forget_draws[draw_index],
-                guess=guess_draws[draw_index],
-                slip=slip_draws[draw_index],
-                lengths=lengths,
-            )
-            start = draw_index * total_obs
-            end = start + total_obs
-            pknow_all[start:end] = p_know[valid_mask]
-            pcorr_all[start:end] = p_correct[valid_mask]
-
         draw_dtype = smallest_int_dtype(n_draws)
         order_dtype = smallest_int_dtype(int(order_vals.max()))
-        kc_df = pd.DataFrame(
+        posterior_draws[kc_id_str] = pd.DataFrame(
             {
                 "draw__": np.repeat(
                     np.arange(1, n_draws + 1, dtype=draw_dtype), total_obs
@@ -339,14 +338,48 @@ def _predict_posterior_draws_numba(
                 problem_col: tile_categorical(problem_ids, n_draws),
                 correctness_col: np.tile(correctness_vals, n_draws),
                 "_order": np.tile(order_vals.astype(order_dtype), n_draws),
-                "pKnow": pknow_all,
-                "pCorrectness": pcorr_all,
+                "pKnow": pknow_all.ravel(),
+                "pCorrectness": pcorr_all.ravel(),
             },
             copy=False,
         )
-        posterior_draws[kc_id_str] = kc_df
 
     return posterior_draws
+
+
+def _predict_posterior_summary_numba(
+    model: "BKTModelBase",
+    data: pd.DataFrame,
+    column_mapping: dict[str, str],
+    quantiles: list[float],
+    *,
+    smoothed: bool,
+    student_covariates: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Summarise the numba posterior replay per KC without building a draw-level DataFrame."""
+    result_frames: list[pd.DataFrame] = []
+    for kc_id_str, obs_arrays, pknow_all, pcorr_all in _iter_posterior_numba_kc_arrays(
+        model,
+        data,
+        column_mapping,
+        smoothed=smoothed,
+        student_covariates=student_covariates,
+    ):
+        if pknow_all.shape[1] == 0:
+            continue
+        result_frames.append(
+            _summary_frame_from_arrays(
+                kc_id_str,
+                obs_arrays,
+                pknow_all.T,
+                pcorr_all.T,
+                column_mapping,
+                quantiles,
+            )
+        )
+    if not result_frames:
+        return model._empty_posterior_summary_frame(column_mapping, quantiles)
+    return pd.concat(result_frames, ignore_index=True)
 
 
 @overload
@@ -502,17 +535,13 @@ def predict_posterior(
     if backend == "numba":
         if stan_output is not None:
             raise ValueError("'stan_output' cannot be provided when backend='numba'.")
-        draws = _predict_posterior_draws_numba(
+        return _predict_posterior_summary_numba(
             model=model,
             data=data_cp,
             column_mapping=resolved_mapping,
+            quantiles=resolved_quantiles,
             smoothed=smoothed,
             student_covariates=student_covariates,
-        )
-        return posterior_summary(
-            draws,
-            col_mapping=resolved_mapping,
-            quantiles=resolved_quantiles,
         )
 
     if stan_output is not None:

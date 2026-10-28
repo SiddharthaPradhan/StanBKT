@@ -202,7 +202,7 @@ def load_model(
 
         model = resolved_model_class(**parsed_init_kwargs)
         model.fits = model.fit_class._load(extracted_path, lazy=model.low_memory)
-        model.fits.release_after_summary = model.low_memory
+        model.fits.release_reloaded_fits = model.low_memory
         model._is_fitted = model.fits.num_fitted_kcs > 0
 
         # Keep extracted files alive because CmdStan fit objects store CSV paths and

@@ -25,6 +25,10 @@ class BaseFitOptions:
     opencl_ids : tuple[int, int] | None
         OpenCL (platform id, device id) to run on. Requires the model to be compiled
         with ``cpp_compile_kwargs={"STAN_OPENCL": True}``.
+    grainsize : int
+        Number of students per slice of the parallel (``reduce_sum``) likelihood. ``-1`` (default)
+        picks it per KC: one slice when running on a single thread, otherwise about four slices
+        per thread. Any positive value is used as given. Not forwarded to CmdStanPy.
     extra_kwargs : dict[str, Any]
         Additional keyword arguments forwarded directly to CmdStanPy.
         These keys are merged last and therefore override generated defaults
@@ -38,6 +42,42 @@ class BaseFitOptions:
     seed: int | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
     opencl_ids: tuple[int, int] | None = None
+    grainsize: int = -1
+
+    def __post_init__(self) -> None:
+        if isinstance(self.grainsize, bool) or not isinstance(self.grainsize, int) or (
+            self.grainsize != -1 and self.grainsize < 1
+        ):
+            raise ValueError(
+                f"grainsize must be -1 (automatic) or a positive integer, got {self.grainsize!r}."
+            )
+
+    def _likelihood_threads(self) -> int:
+        """Threads available to the likelihood of a single fit."""
+        return 1
+
+    def resolve_grainsize(self, n_students: int) -> int:
+        """Return the ``reduce_sum`` grainsize for a KC with ``n_students`` students.
+
+        Parameters
+        ----------
+        n_students : int
+            Number of students in the KC.
+
+        Returns
+        -------
+        int
+            The user grainsize, or with ``-1`` one slice per KC on a single thread and
+            about four slices per thread otherwise.
+        """
+        if self.grainsize != -1:
+            return self.grainsize
+        n_students = max(1, int(n_students))
+        n_threads = max(1, self._likelihood_threads())
+        if n_threads == 1:
+            return n_students
+        # several slices per thread let the scheduler rebalance, as the slices with the longest sequences cost the most
+        return max(1, -(-n_students // (4 * n_threads)))
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Self:
@@ -77,6 +117,8 @@ class BaseFitOptions:
             Flat kwargs dictionary for CmdStanPy APIs.
         """
         return_dict: dict[str, Any] = asdict(self)
+        # grainsize is passed to Stan as data, not as a CmdStanPy argument
+        return_dict.pop("grainsize", None)
         extras: dict[str, Any] = return_dict.pop("extra_kwargs", {}) or {}
         return_dict.update(extras)
         # Remove any keys with None values so CmdStanPy can apply its own defaults
@@ -131,6 +173,9 @@ class MCMCFitOptions(BaseFitOptions):
     max_treedepth: int | None = None
     show_progress: bool = True
     show_console: bool = False
+
+    def _likelihood_threads(self) -> int:
+        return self.threads_per_chain or 1
 
 
 @dataclass
@@ -273,6 +318,9 @@ class PFFitOptions(BaseFitOptions):
     show_console: bool = False
     refresh: int | None = None
     num_threads: int | None = None
+
+    def _likelihood_threads(self) -> int:
+        return self.num_threads or 1
 
 
 StanFitOptions: TypeAlias = Union[

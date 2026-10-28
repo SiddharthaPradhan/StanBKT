@@ -275,7 +275,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     prefix="stanbkt_fit_cache_"
                 )
             self.fits.set_fit_artifact_base_location(self._fit_artifact_tmpdir.name)
-            self.fits.release_after_summary = True
+            self.fits.release_reloaded_fits = True
 
         if self._stan_model is None:
             self._compile_model(self._stan_model_filename)
@@ -343,6 +343,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 else priors
             )
             data_dict = self._build_stan_data_dict(kc_data, kc_priors)
+            data_dict["grainsize"] = stan_fit_options.resolve_grainsize(data_dict["nStudents"])
             return self._fit_stan_model_using_method(
                 data_dict=data_dict, fit_options=stan_fit_options
             )
@@ -967,7 +968,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 self._check_covariate_columns_match(
                     kc_id_str, kc_data.covariate_columns
                 )
-            kc_fit = self.fits.get_fit(kc_id)
+            kc_fit = self.fits._get_fit_transient(kc_id_str)
             prior, learn, forget, guess, slip = self._extract_bkt_params_from_fit(
                 kc_fit,
                 n_students=kc_data.correctness.shape[0],
@@ -995,6 +996,7 @@ class BKTModelBase(VerboseMixin, ABC):
             )
             kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
             predictions.append(kc_predictions)
+        self.fits._release_transient_fits()
 
         if not predictions:
             return self._empty_point_estimate_prediction_frame()
@@ -1517,7 +1519,9 @@ class BKTModelBase(VerboseMixin, ABC):
         -------
         dict[str, CmdStanGQ]
             Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
-            ``predict_posterior_draws`` to obtain draw-level DataFrames.
+            ``predict_posterior_draws`` to obtain draw-level DataFrames. ``pKnow`` and
+            ``pCorrectness`` are flat vectors with one entry per observation, student by
+            student in interaction order.
         """
         return predict_posterior(
             model=self,
@@ -1600,7 +1604,9 @@ class BKTModelBase(VerboseMixin, ABC):
         -------
         dict[str, CmdStanGQ]
             Mapping from KC ID to raw CmdStanGQ fit objects.  Pass the result to
-            ``predict_smoothed_posterior_draws`` to obtain draw-level DataFrames.
+            ``predict_smoothed_posterior_draws`` to obtain draw-level DataFrames. ``pKnow`` and
+            ``pCorrectness`` are flat vectors with one entry per observation, student by
+            student in interaction order.
         """
         return predict_posterior(
             model=self,
@@ -1890,7 +1896,7 @@ class BKTModelBase(VerboseMixin, ABC):
                         kc_id_str, kc_data.covariate_columns
                     )
 
-                kc_fit_result = self.fits.get_fit(kc_id_str)
+                kc_fit_result = self.fits._get_fit_transient(kc_id_str)
                 if kc_fit_result is None:
                     continue
 
@@ -1912,6 +1918,7 @@ class BKTModelBase(VerboseMixin, ABC):
                         gq_model=gq_model,
                     )
                 )
+            self.fits._release_transient_fits()
 
             return gq_kc_fit
 
@@ -1934,7 +1941,7 @@ class BKTModelBase(VerboseMixin, ABC):
                         kc_id_str, kc_data.covariate_columns
                     )
 
-                kc_fit_result = self.fits.get_fit(kc_id_str)
+                kc_fit_result = self.fits._get_fit_transient(kc_id_str)
                 if kc_fit_result is None:
                     continue
 
@@ -1966,6 +1973,8 @@ class BKTModelBase(VerboseMixin, ABC):
                 done, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
                     _handle_single_kc_result(future.result())
+        # running GQ calls keep their own reference, so evicting a fit early is safe
+        self.fits._release_transient_fits()
 
         return gq_kc_fit
 

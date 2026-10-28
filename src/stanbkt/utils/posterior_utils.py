@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any, Callable, Optional, Union, Mapping, cast
+from itertools import chain
+from typing import Any, Callable, Optional, Sequence, Union, Mapping, cast
 
 import cmdstanpy as csp
 import numpy as np
@@ -22,7 +22,7 @@ from stanbkt.utils.data_utils import (
     tile_categorical,
 )
 
-_COL_PAT = re.compile(r"^([^\[]+)\[(\d+)\s*,\s*(\d+)\]$")
+_STAT_LABELS = ("mean", "std", "median")
 
 
 # parallel only when the threading layer tolerates concurrent launches from KC worker threads
@@ -80,80 +80,133 @@ def _compute_posterior_stats(
     return means, stds, medians, quants
 
 
+def _quantile_label(q: float) -> str:
+    return f"{q * 100:.2f}%"
+
+
+def _observation_index_arrays(
+    kc_data: KCData,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Student IDs, problem IDs, correctness and position within the student of every observation.
+
+    Observations are ordered student by student in interaction order, the same order as the
+    flat generated quantities written by the Stan programs.
+    """
+    lengths = np.asarray(kc_data.lengths, dtype=np.int64)
+    interactions = kc_data.student_inter_dict
+    student_ids = np.repeat(np.asarray(list(interactions.keys()), dtype=object), lengths)
+    problem_ids = np.asarray(
+        list(chain.from_iterable(inter.problem_ids for inter in interactions.values())),
+        dtype=object,
+    )
+    valid_mask = np.arange(kc_data.correctness.shape[1])[np.newaxis, :] < lengths[:, np.newaxis]
+    correctness = np.asarray(kc_data.correctness[valid_mask], dtype=np.int8)
+    order = np.arange(len(student_ids), dtype=np.int64) - np.repeat(
+        np.cumsum(lengths) - lengths, lengths
+    )
+    return student_ids, problem_ids, correctness, order
+
+
+def _flat_gq_slice(col_names: Sequence[str], name: str, n_obs: int) -> Optional[slice]:
+    """Columns of the flat ``name[1]..name[n_obs]`` generated quantity, None when it is absent."""
+    col_names = tuple(col_names)
+    try:
+        start = col_names.index(f"{name}[1]")
+    except ValueError:
+        if f"{name}[1,1]" in col_names:
+            raise ValueError(
+                f"Generated quantity '{name}' uses the padded (student, problem) layout of an older "
+                "StanBKT version. Regenerate the Stan output with this version."
+            ) from None
+        return None
+    stop = start + n_obs
+    if (
+        stop > len(col_names)
+        or col_names[stop - 1] != f"{name}[{n_obs}]"
+        or (stop < len(col_names) and col_names[stop] == f"{name}[{n_obs + 1}]")
+    ):
+        raise ValueError(
+            f"Generated quantity '{name}' does not have one value per observation ({n_obs}). "
+            "The Stan output does not match the data passed with it."
+        )
+    return slice(start, stop)
+
+
+def _summary_frame_from_arrays(
+    kc_id_str: str,
+    obs_arrays: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    pknow_arr: np.ndarray,  # (n_obs, n_draws)
+    pcorr_arr: Optional[np.ndarray],  # (n_obs, n_draws)
+    col_mapping: dict[str, str],
+    quantiles: list[float],
+) -> pd.DataFrame:
+    """Per-observation summary statistics of one KC, sorted by student then interaction order."""
+    obs_student_ids, obs_problem_ids, obs_correctness, obs_order = obs_arrays
+    q_arr = np.asarray(quantiles, dtype=np.float64)
+    result: dict[str, Any] = {
+        "kc_id": np.repeat(kc_id_str, len(obs_student_ids)),
+        col_mapping[ColumnNames.STUDENT_ID]: pd.Categorical(obs_student_ids),
+        col_mapping[ColumnNames.PROBLEM_ID]: pd.Categorical(obs_problem_ids),
+        col_mapping[ColumnNames.CORRECTNESS]: obs_correctness,
+        "_order": obs_order,
+    }
+    for name, arr in ((_PKNOW, pknow_arr), (_PCORRECT, pcorr_arr)):
+        if arr is None:
+            continue
+        means, stds, medians, quants = _compute_posterior_stats(
+            np.ascontiguousarray(arr, dtype=np.float64), q_arr
+        )
+        result[f"{name}_mean"] = means
+        result[f"{name}_std"] = stds
+        result[f"{name}_median"] = medians
+        for qi, q in enumerate(quantiles):
+            result[f"{name}_{_quantile_label(q)}"] = quants[:, qi]
+
+    kc_summary = pd.DataFrame(result)
+    kc_summary.sort_values(by=[col_mapping[ColumnNames.STUDENT_ID], "_order"], inplace=True)
+    kc_summary.drop(columns=["_order"], inplace=True)
+    return kc_summary
+
+
 def _process_single_kc_gq(
     kc_id_str: str,
-    gq_kc_df: pd.DataFrame,
+    gq_kc: Any,
     kc_data: KCData,
     col_mapping: dict,
-    id_cols: Optional[list[str]],
-) -> tuple[pd.DataFrame, list[str]]:
+) -> pd.DataFrame:
     """Convert a single KC's CmdStanGQ output to a long-form draw DataFrame.
 
     Parameters
     ----------
     kc_id_str : str
         KC identifier string.
-    gq_kc_df : pd.DataFrame
+    gq_kc : CmdStanGQ
         Raw generated-quantities fit for this KC.
     kc_data : KCData
         Preprocessed KC interaction data (used for student/problem ID remapping).
     col_mapping : dict
         Resolved column name mapping.
-    id_cols : list[str] or None
-        Meta-columns ending in ``__`` (chain__, iter__, draw__). Shared across KCs;
-        pass ``None`` on the first call and reuse the returned list for subsequent KCs.
 
     Returns
     -------
-    tuple[pd.DataFrame, list[str]]
-        Draw-level DataFrame for this KC, and the detected ``id_cols``.
+    pd.DataFrame
+        Draw-level DataFrame for this KC.
     """
     student_col = col_mapping[ColumnNames.STUDENT_ID]
     problem_col = col_mapping[ColumnNames.PROBLEM_ID]
     correctness_col = col_mapping[ColumnNames.CORRECTNESS]
     kc_col = col_mapping[ColumnNames.KC_ID]
+    id_cols = ["chain__", "iter__", "draw__"]
 
-    if id_cols is None:
-        id_cols = [c for c in gq_kc_df.columns.astype(str) if c.endswith("__")]
-
-    pknow_cols: dict[tuple[int, int], str] = {}
-    pcorr_cols: dict[tuple[int, int], str] = {}
-    for col in gq_kc_df.columns:
-        m = _COL_PAT.match(str(col))
-        if m:
-            param, s, p = m.group(1), int(m.group(2)), int(m.group(3))
-            if param == _PKNOW:
-                pknow_cols[(s, p)] = col
-            elif param == _PCORRECT:
-                pcorr_cols[(s, p)] = col
-
-    n_draws = len(gq_kc_df)
-
-    obs_keys: list[tuple[int, int]] = []
-    obs_order: list[int] = []
-    obs_student_ids: list[str] = []
-    obs_problem_ids: list[str] = []
-    obs_correctness: list[int] = []
-    pknow_obs_cols: list[str] = []
-
-    for s_idx, (student_id, student_inter) in enumerate(
-        kc_data.student_inter_dict.items(), start=1
-    ):
-        for p_idx, problem_id in enumerate(student_inter.problem_ids, start=1):
-            key = (s_idx, p_idx)
-            pknow_col = pknow_cols.get(key)
-            if pknow_col is None:
-                continue
-            obs_keys.append(key)
-            pknow_obs_cols.append(pknow_col)
-            obs_order.append(p_idx - 1)
-            obs_student_ids.append(student_id)
-            obs_problem_ids.append(problem_id)
-            obs_correctness.append(int(kc_data.correctness[s_idx - 1, p_idx - 1]))
-
-    n_obs = len(obs_keys)
-    if n_obs == 0:
-        empty_cols = list(id_cols) + [
+    obs_student_ids, obs_problem_ids, obs_correctness, obs_order = _observation_index_arrays(
+        kc_data
+    )
+    n_obs = len(obs_student_ids)
+    col_names = gq_kc.column_names
+    pknow_cols = _flat_gq_slice(col_names, _PKNOW, n_obs) if n_obs else None
+    pcorr_cols = _flat_gq_slice(col_names, _PCORRECT, n_obs) if n_obs else None
+    if pknow_cols is None:
+        empty_cols = id_cols + [
             kc_col,
             student_col,
             problem_col,
@@ -161,37 +214,39 @@ def _process_single_kc_gq(
             "_order",
             _PKNOW,
         ]
-        if pcorr_cols:
+        if pcorr_cols is not None:
             empty_cols.append(_PCORRECT)
-        return pd.DataFrame(columns=empty_cols), id_cols
+        return pd.DataFrame(columns=empty_cols)
 
-    obs_student_ids_arr = np.asarray(obs_student_ids, dtype=object)
-    obs_problem_ids_arr = np.asarray(obs_problem_ids, dtype=object)
-    obs_correctness_arr = np.asarray(obs_correctness, dtype=np.int8)
-    obs_order_arr = np.asarray(obs_order, dtype=np.int64)
-
-    pknow_values = gq_kc_df[pknow_obs_cols].to_numpy().ravel()
+    # chains are stacked one after another, as in CmdStanGQ.draws_pd
+    raw_draws = gq_kc.draws(concat_chains=True)
+    n_draws = raw_draws.shape[0]
+    n_chains = max(1, int(getattr(gq_kc, "chains", 1)))
+    per_chain = n_draws // n_chains
+    id_values = {
+        "chain__": np.repeat(np.arange(1, n_chains + 1), per_chain),
+        "iter__": np.tile(np.arange(1, per_chain + 1), n_chains),
+        "draw__": np.arange(1, n_draws + 1),
+    }
 
     result: dict[str, Any] = {}
-    for col in id_cols:
-        col_values = gq_kc_df[col].to_numpy()
+    for col, col_values in id_values.items():
         result[col] = np.repeat(
             col_values.astype(smallest_int_dtype(int(col_values.max()))), n_obs
         )
     result[kc_col] = constant_categorical(kc_id_str, n_draws * n_obs)
-    result[student_col] = tile_categorical(obs_student_ids_arr, n_draws)
-    result[problem_col] = tile_categorical(obs_problem_ids_arr, n_draws)
-    result[correctness_col] = np.tile(obs_correctness_arr, n_draws)
+    result[student_col] = tile_categorical(obs_student_ids, n_draws)
+    result[problem_col] = tile_categorical(obs_problem_ids, n_draws)
+    result[correctness_col] = np.tile(obs_correctness, n_draws)
     result["_order"] = np.tile(
-        obs_order_arr.astype(smallest_int_dtype(int(obs_order_arr.max()))), n_draws
+        obs_order.astype(smallest_int_dtype(int(obs_order.max()))), n_draws
     )
-    result[_PKNOW] = pknow_values
-    if pcorr_cols:
-        result[_PCORRECT] = (
-            gq_kc_df[[pcorr_cols[k] for k in obs_keys]].to_numpy().ravel()
-        )
+    # rows are draw major, each draw holds every observation
+    result[_PKNOW] = raw_draws[:, pknow_cols].ravel()
+    if pcorr_cols is not None:
+        result[_PCORRECT] = raw_draws[:, pcorr_cols].ravel()
 
-    return pd.DataFrame(result, copy=False), id_cols
+    return pd.DataFrame(result, copy=False)
 
 
 def gq_to_draws(
@@ -230,7 +285,6 @@ def gq_to_draws(
         ``posterior_summary``.
     """
     col_mapping = ColumnNames.apply_default_mapping(col_mapping)
-    id_cols: list[str] | None = None
 
     posterior_draws: dict[str, pd.DataFrame] = {}
     for kc_id, kc_data in iter_kc_data(
@@ -248,10 +302,9 @@ def gq_to_draws(
                 )
             continue
 
-        kc_df, id_cols = _process_single_kc_gq(
-            kc_id_str, gq_kc.draws_pd(), kc_data, col_mapping, id_cols
+        posterior_draws[kc_id_str] = _process_single_kc_gq(
+            kc_id_str, gq_kc, kc_data, col_mapping
         )
-        posterior_draws[kc_id_str] = kc_df
     return posterior_draws
 
 
@@ -259,7 +312,7 @@ def _summarize_single_kc_draws(
     kc: str,
     kc_df: pd.DataFrame,
     col_mapping: dict[str, str],
-    stat_fns: list[tuple[str, Any]],
+    quantiles: list[float],
 ) -> pd.DataFrame:
     """Summarise one KC's draw-level DataFrame into per-observation statistics."""
     if kc_df.empty:
@@ -271,16 +324,19 @@ def _summarize_single_kc_draws(
         col_mapping.get(ColumnNames.CORRECTNESS),
     ]
     agg_cols = [c for c in [_PKNOW, _PCORRECT] if c in kc_df.columns]
-    agg_kwargs = {
-        f"{col}_{stat}": pd.NamedAgg(column=col, aggfunc=fn)
-        for col in agg_cols
-        for stat, fn in stat_fns
-    }
     has_order_col = "_order" in kc_df.columns
     groupby_cols = param_id_cols + (["_order"] if has_order_col else [])
-    kc_summary: pd.DataFrame = (
-        kc_df.groupby(groupby_cols, sort=False, observed=True).agg(**agg_kwargs).reset_index()
-    )
+    grouped = kc_df.groupby(groupby_cols, sort=False, observed=True)[agg_cols]
+    # built in aggregations, a python callable per quantile would run once per group
+    stats = grouped.agg(list(_STAT_LABELS))
+    quants = grouped.quantile(quantiles).unstack(level=-1).reindex(stats.index)
+    columns: dict[str, Any] = {}
+    for col in agg_cols:
+        for stat in _STAT_LABELS:
+            columns[f"{col}_{stat}"] = stats[(col, stat)].to_numpy()
+        for q in quantiles:
+            columns[f"{col}_{_quantile_label(q)}"] = quants[(col, q)].to_numpy()
+    kc_summary = pd.DataFrame(columns, index=stats.index).reset_index()
     student_col_name = col_mapping.get(ColumnNames.STUDENT_ID)
     sort_cols = [student_col_name] + (["_order"] if has_order_col else [])
     kc_summary.sort_values(by=sort_cols, inplace=True)
@@ -299,101 +355,30 @@ def _summarize_single_kc_gq(
 ) -> pd.DataFrame:
     """Summarise single KC's CmdStanGQ output directly from raw numpy draws.
 
-    Bypasses pandas DataFrame construction by using ``column_names`` for index
-    parsing and ``draws(concat_chains=True)`` for the raw numpy array.
+    Bypasses pandas DataFrame construction by slicing the flat ``pKnow`` and
+    ``pCorrectness`` columns out of ``draws(concat_chains=True)``.
     Stats (mean, std, median, quantiles) are computed by a Numba parallel kernel.
     """
-    student_col = col_mapping[ColumnNames.STUDENT_ID]
-    problem_col = col_mapping[ColumnNames.PROBLEM_ID]
-    correctness_col = col_mapping[ColumnNames.CORRECTNESS]
-
-    col_names: tuple[str, ...] = gq_kc.column_names
-    pknow_col_indices: dict[tuple[int, int], int] = {}
-    pcorr_col_indices: dict[tuple[int, int], int] = {}
-    for i, col in enumerate(col_names):
-        m = _COL_PAT.match(col)
-        if m:
-            param, s, p = m.group(1), int(m.group(2)), int(m.group(3))
-            if param == _PKNOW:
-                pknow_col_indices[(s, p)] = i
-            elif param == _PCORRECT:
-                pcorr_col_indices[(s, p)] = i
-
-    if not pknow_col_indices:
+    obs_arrays = _observation_index_arrays(kc_data)
+    n_obs = len(obs_arrays[0])
+    if n_obs == 0:
         return pd.DataFrame()
-
-    # Build obs list from kc_data, collecting raw column indices in the same pass
-    obs_keys: list[tuple[int, int]] = []
-    obs_order: list[int] = []
-    obs_student_ids: list[str] = []
-    obs_problem_ids: list[str] = []
-    obs_correctness: list[int] = []
-    pknow_raw_col_indices: list[int] = []
-
-    for s_idx, (student_id, student_inter) in enumerate(
-        kc_data.student_inter_dict.items(), start=1
-    ):
-        for p_idx, problem_id in enumerate(student_inter.problem_ids, start=1):
-            key = (s_idx, p_idx)
-            ci = pknow_col_indices.get(key)
-            if ci is None:
-                continue
-            obs_keys.append(key)
-            pknow_raw_col_indices.append(ci)
-            obs_order.append(p_idx - 1)
-            obs_student_ids.append(student_id)
-            obs_problem_ids.append(problem_id)
-            obs_correctness.append(int(kc_data.correctness[s_idx - 1, p_idx - 1]))
-
-    if not obs_keys:
+    col_names = gq_kc.column_names
+    pknow_cols = _flat_gq_slice(col_names, _PKNOW, n_obs)
+    if pknow_cols is None:
         return pd.DataFrame()
+    pcorr_cols = _flat_gq_slice(col_names, _PCORRECT, n_obs)
 
     raw_draws = gq_kc.draws(concat_chains=True)
-
-    # extract pKnow columns and transpose to (n_obs, n_draws) for cache-friendly Numba
-    pknow_idx_arr = np.asarray(pknow_raw_col_indices, dtype=np.intp)
-    pknow_arr = np.ascontiguousarray(
-        raw_draws[:, pknow_idx_arr].T, dtype=np.float64
-    )  # (n_obs, n_draws)
-
-    q_arr = np.asarray(quantiles, dtype=np.float64)
-    pknow_means, pknow_stds, pknow_medians, pknow_quants = _compute_posterior_stats(
-        pknow_arr, q_arr
+    # transposed to (n_obs, n_draws) for cache-friendly Numba
+    return _summary_frame_from_arrays(
+        kc_id_str,
+        obs_arrays,
+        raw_draws[:, pknow_cols].T,
+        raw_draws[:, pcorr_cols].T if pcorr_cols is not None else None,
+        col_mapping,
+        quantiles,
     )
-
-    result: dict[str, Any] = {
-        "kc_id": np.repeat(kc_id_str, len(obs_keys)),
-        student_col: pd.Categorical(obs_student_ids),
-        problem_col: pd.Categorical(obs_problem_ids),
-        correctness_col: np.asarray(obs_correctness, dtype=np.int8),
-        "_order": np.asarray(obs_order, dtype=np.int64),
-        f"{_PKNOW}_mean": pknow_means,
-        f"{_PKNOW}_std": pknow_stds,
-        f"{_PKNOW}_median": pknow_medians,
-    }
-    for qi, q in enumerate(quantiles):
-        result[f"{_PKNOW}_{q * 100:.2f}%"] = pknow_quants[:, qi]
-
-    if pcorr_col_indices:
-        pcorr_raw_col_indices = [pcorr_col_indices.get(k) for k in obs_keys]
-        if all(ci is not None for ci in pcorr_raw_col_indices):
-            pcorr_idx_arr = np.asarray(pcorr_raw_col_indices, dtype=np.intp)
-            pcorr_arr = np.ascontiguousarray(
-                raw_draws[:, pcorr_idx_arr].T, dtype=np.float64
-            )
-            pcorr_means, pcorr_stds, pcorr_medians, pcorr_quants = (
-                _compute_posterior_stats(pcorr_arr, q_arr)
-            )
-            result[f"{_PCORRECT}_mean"] = pcorr_means
-            result[f"{_PCORRECT}_std"] = pcorr_stds
-            result[f"{_PCORRECT}_median"] = pcorr_medians
-            for qi, q in enumerate(quantiles):
-                result[f"{_PCORRECT}_{q * 100:.2f}%"] = pcorr_quants[:, qi]
-
-    kc_summary = pd.DataFrame(result)
-    kc_summary.sort_values(by=[student_col, "_order"], inplace=True)
-    kc_summary.drop(columns=["_order"], inplace=True)
-    return kc_summary
 
 
 def posterior_summary(
@@ -440,14 +425,9 @@ def posterior_summary(
     if not all(0 <= q <= 1 for q in quantiles):
         raise ValueError("Quantiles must be between 0 and 1.")
 
-    stat_fns: list[tuple[str, Any]] = [
-        ("mean", "mean"),
-        ("std", "std"),
-        ("median", "median"),
-    ] + [(f"{q * 100:.2f}%", (lambda s, q=q: s.quantile(q))) for q in quantiles]
-
-    summary_cols = [f"{_PKNOW}_{stat}" for stat, _ in stat_fns]
-    summary_cols += [f"{_PCORRECT}_{stat}" for stat, _ in stat_fns]
+    stat_labels = list(_STAT_LABELS) + [_quantile_label(q) for q in quantiles]
+    summary_cols = [f"{_PKNOW}_{stat}" for stat in stat_labels]
+    summary_cols += [f"{_PCORRECT}_{stat}" for stat in stat_labels]
 
     param_id_cols = [
         col_mapping.get(ColumnNames.STUDENT_ID),
@@ -498,7 +478,7 @@ def posterior_summary(
 
     result_frames: list[pd.DataFrame] = []
     for kc, kc_df in draw_frames.items():
-        kc_summary = _summarize_single_kc_draws(str(kc), kc_df, col_mapping, stat_fns)
+        kc_summary = _summarize_single_kc_draws(str(kc), kc_df, col_mapping, quantiles)
         if not kc_summary.empty:
             result_frames.append(kc_summary)
 

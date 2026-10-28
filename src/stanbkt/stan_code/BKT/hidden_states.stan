@@ -4,10 +4,12 @@
 
 // Run forward to compute the probability of knowing/mastery and correctness.
 generated quantities {    
-    array[nStudents] row_vector[nProblems] pKnow; // P(know/mastery | all previous responses) for each student and problem
-    array[nStudents] row_vector[nProblems] pCorrectness; // P(correctness | all previous responses) for each student and problem
+    // flat over observations, student by student in interaction order, so no padding is written per draw
+    vector[nObs] pKnow; // P(know/mastery | all previous responses) for each observation
+    vector[nObs] pCorrectness; // P(correctness | all previous responses) for each observation
     // create local scope to avoid saving intermediate variables
     {
+        int pos = 0; // offset of the current student's first observation
         for (studentIdx in 1:nStudents) {
             int studentGroupIdx = groups[studentIdx];
             // initial probability of knowing
@@ -21,11 +23,11 @@ generated quantities {
             real oneMinusStudentSlip = 1.0 - studentSlip;
             real oneMinusStudentGuess = 1.0 - studentGuess;
             real oneMinusStudentForget = 1.0 - forget[studentGroupIdx];
-            pKnow[studentIdx, 1] = studentInit; // P(know/mastery) for the first problem is just the prior
-            pCorrectness[studentIdx, 1] = studentInit * oneMinusStudentSlip + (1 - studentInit) * studentGuess; 
+            pKnow[pos + 1] = studentInit; // P(know/mastery) for the first problem is just the prior
+            pCorrectness[pos + 1] = studentInit * oneMinusStudentSlip + (1 - studentInit) * studentGuess; 
 
             for (t in 1:(interaction_lengths[studentIdx] - 1)) {    
-                real currentProbKnow = pKnow[studentIdx, t];
+                real currentProbKnow = pKnow[pos + t];
                 // update the probability of knowing/mastering based on the current response 
                 // P(know/mastery | response) = P(response | know/mastery) * P(know/mastery) / P(response)
                 real numerator, denominator;
@@ -38,15 +40,13 @@ generated quantities {
                 }
                 real pKnowGivenObs = numerator / denominator;
                 // update the probability for knowing/mastering
-                pKnow[studentIdx, t + 1] = pKnowGivenObs * oneMinusStudentForget + (1 - pKnowGivenObs) * studentLearn;
-                pCorrectness[studentIdx, t + 1] = pKnow[studentIdx, t + 1] * oneMinusStudentSlip + 
-                                                  (1 - pKnow[studentIdx, t + 1]) * studentGuess;
+                pKnow[pos + t + 1] = pKnowGivenObs * oneMinusStudentForget + (1 - pKnowGivenObs) * studentLearn;
+                pCorrectness[pos + t + 1] = pKnow[pos + t + 1] * oneMinusStudentSlip + 
+                                            (1 - pKnow[pos + t + 1]) * studentGuess;
 
 
             }
-            int paddingNALength = nProblems - interaction_lengths[studentIdx];
-            pKnow[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
-            pCorrectness[studentIdx, interaction_lengths[studentIdx]+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+            pos += interaction_lengths[studentIdx];
 
 
         }

@@ -31,15 +31,34 @@ def is_sys_windows() -> bool:
     return platform.system() == "Windows"
 
 
-def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
-    """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary."""
+def setup_cmdstanpy(n_cores: int = N_CORES, version: Optional[str] = None) -> None:
+    """Set up CmdStanPy by checking for CmdStan installation and setting the path if necessary.
+
+    Parameters
+    ----------
+    n_cores : int, default=os.cpu_count()
+        Number of cores used to build CmdStan when it has to be installed.
+    version : str or None, default=None
+        CmdStan version to use, e.g. ``"2.37.0"``. Installed if missing. CmdStanPy
+        otherwise uses the newest installed version in each new session, so call
+        this at the start of every session to keep using a pinned version. When
+        None, an existing installation is used, or the latest release is installed.
+    """
 
     try:
-        _ = csp.cmdstan_path()
+        if version is not None:
+            # raises ValueError if this version is not installed
+            csp.set_cmdstan_path(str(Path.home() / ".cmdstan" / f"cmdstan-{version}"))
+        else:
+            _ = csp.cmdstan_path()
         if is_sys_windows():
             cxx_toolchain_path()
     except ValueError:
-        print("CmdStan not found. Installing CmdStan...")
+        print(
+            f"CmdStan {version} not found. Installing..."
+            if version
+            else "CmdStan not found. Installing CmdStan..."
+        )
         try:  # Test for SSL cert issues as CmdStanPy download relies on urllib req to github releases.
             # see https://github.com/stan-dev/cmdstanpy/blob/a2da6369e111c58356300fc7c01323d7f835d191/cmdstanpy/install_cmdstan.py#L487
             import urllib.request
@@ -62,10 +81,10 @@ def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
             print(
                 "Windows OS detected. Installing CmdStan and RTools (for g++ and Mingw)"
             )
-            installed = csp.install_cmdstan(cores=n_cores, compiler=True)
+            installed = csp.install_cmdstan(version=version, cores=n_cores, compiler=True)
 
         else:  # linux or macos
-            installed = csp.install_cmdstan(cores=n_cores)
+            installed = csp.install_cmdstan(version=version, cores=n_cores)
         # cmdstanpy logs a warning and returns False on failure instead of raising
         if not installed:
             raise RuntimeError(

@@ -8,10 +8,12 @@
 
 // Run forward-backward to compute the smoothed probability of knowing/mastery for each student and problem.
 generated quantities {    
-    array[nStudents] row_vector[nProblems] pKnow;        // P(know/mastery | all observations) for each student and problem
-    array[nStudents] row_vector[nProblems] pCorrectness; // P(correct at t | all observations) = f(pKnow[t+1])
+    // flat over observations, student by student in interaction order, so no padding is written per draw
+    vector[nObs] pKnow;        // P(know/mastery | all observations) for each observation
+    vector[nObs] pCorrectness; // P(correct at t | all observations) = f(pKnow[t])
     // create local scope to avoid saving intermediate variables
     {
+        int pos = 0; // offset of the current student's first observation
         
         // group-level transition and emission variables
         // matrix form for HMM functions         
@@ -44,18 +46,16 @@ generated quantities {
             vector[2] piStudent = to_vector([1 - studentInit, studentInit]);
 
             int L = interaction_lengths[studentIdx];
-            int paddingNALength = nProblems - L;
-            pKnow[studentIdx, 1:L] = hmm_hidden_state_prob(logOmegaStudent,
+            pKnow[(pos + 1):(pos + L)] = to_vector(hmm_hidden_state_prob(logOmegaStudent,
                                             A_matrix_group[studentGroupIdx],
-                                            piStudent)[2];
-            pKnow[studentIdx, L+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+                                            piStudent)[2]);
 
             // pCorrectness[t] = pKnow[t] * (1 - slip) + (1 - pKnow[t]) * guess
             real oneMinusStudentSlip = 1.0 - slip[studentGroupIdx];
             real studentGuess = guess[studentGroupIdx];
-            pCorrectness[studentIdx, 1:L] = pKnow[studentIdx, 1:L] * oneMinusStudentSlip
-                                                + (1 - pKnow[studentIdx, 1:L]) * studentGuess;
-            pCorrectness[studentIdx, L+1:nProblems] = rep_row_vector(-1.0, paddingNALength);
+            pCorrectness[(pos + 1):(pos + L)] = pKnow[(pos + 1):(pos + L)] * oneMinusStudentSlip
+                                                + (1 - pKnow[(pos + 1):(pos + L)]) * studentGuess;
+            pos += L;
         }
     }
 }

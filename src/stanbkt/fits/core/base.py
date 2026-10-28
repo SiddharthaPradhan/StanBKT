@@ -100,9 +100,9 @@ class FitBase(VerboseMixin, ABC):
         )
         self._should_cache_summary: bool = cache_summary
         self._fit_artifact_base_location: str | None = fit_artifact_base_location
-        # when set, summaries drop fits they had to reload from disk
-        self.release_after_summary: bool = False
-        self._summary_loaded: set[str] = set()
+        # when set, summaries and predictions drop fits they had to reload from disk
+        self.release_reloaded_fits: bool = False
+        self._transient_loaded: set[str] = set()
         self.num_fitted_kcs = len(self.get_fitted_kcs())
 
     def __str__(self) -> str:
@@ -298,29 +298,37 @@ class FitBase(VerboseMixin, ABC):
                     f"Fit for KC '{kc}' is not loaded in memory and no artifact location is configured."
                 )
 
-            fit_save = self._fit_metadata.fit_saves[kc]
-            kc_fit_save_folder = os.path.join(
-                self._fit_artifact_base_location,
-                FIT_SAVE_FOLDER,
-                str(fit_save.save_folder),
-            )
-            self.stan_fits[kc] = cmdstan_from_csv(kc_fit_save_folder)
+            self.stan_fits[kc] = cmdstan_from_csv(self._persisted_fit_folder(kc))
         return self.stan_fits[kc]
 
-    def _get_fit_for_summary(self, kc: str) -> CmdStanFit:
-        """Get a KC fit for summarizing, dropping the previous summary reload first."""
-        self._release_summary_loaded()
+    def _persisted_fit_folder(self, kc: str) -> str | None:
+        """Folder holding the persisted CSVs of a KC fit, None when no artifact location is set."""
+        if self._fit_artifact_base_location is None or kc not in self._fit_metadata.fit_saves:
+            return None
+        return os.path.join(
+            self._fit_artifact_base_location,
+            FIT_SAVE_FOLDER,
+            str(self._fit_metadata.fit_saves[kc].save_folder),
+        )
+
+    def _get_fit_transient(self, kc: str) -> CmdStanFit:
+        """Get a KC fit for one pass over the KCs, dropping the previous transient reload first.
+
+        Used by summaries and predictions so that, with ``release_reloaded_fits``, at most one
+        fit reloaded from disk stays in memory.
+        """
+        self._release_transient_fits()
         was_resident = kc in self.stan_fits
         kc_fit = self.get_fit(kc)
-        if self.release_after_summary and not was_resident:
-            self._summary_loaded.add(kc)
+        if self.release_reloaded_fits and not was_resident:
+            self._transient_loaded.add(kc)
         return kc_fit
 
-    def _release_summary_loaded(self) -> None:
-        """Evict fits that summary reloaded from disk (they are already persisted)."""
-        for kc in self._summary_loaded:
+    def _release_transient_fits(self) -> None:
+        """Evict fits reloaded from disk by ``_get_fit_transient`` (they are already persisted)."""
+        for kc in self._transient_loaded:
             self.stan_fits.pop(kc, None)
-        self._summary_loaded.clear()
+        self._transient_loaded.clear()
 
     def has_kc(self, kc: str) -> bool:
         """Check if a fit exists for a knowledge component.
@@ -440,15 +448,21 @@ class FitBase(VerboseMixin, ABC):
             )
             return
 
-        # Ensure persisted-only fits are loaded before writing into a new save location.
+        # persisted-only fits are copied from disk instead of being loaded just to copy their CSVs
+        persisted_fit_folders: dict[str, str] = {}
         for kc in self.get_fitted_kcs():
-            if kc not in self.stan_fits:
+            if kc in self.stan_fits:
+                continue
+            folder = self._persisted_fit_folder(kc)
+            if folder is not None and os.path.isdir(folder):
+                persisted_fit_folders[kc] = folder
+            else:
                 self.get_fit(kc)
 
         stale_kcs = {
             fit_save.kc
             for fit_save in self._fit_metadata.fit_saves.values()
-            if fit_save.kc not in self.stan_fits
+            if fit_save.kc not in self.stan_fits and fit_save.kc not in persisted_fit_folders
         }
         for stale_kc in stale_kcs:
             self.log(
@@ -459,7 +473,7 @@ class FitBase(VerboseMixin, ABC):
         self._fit_metadata.fit_saves = {
             fit_save.kc: fit_save
             for fit_save in self._fit_metadata.fit_saves.values()
-            if fit_save.kc in self.stan_fits
+            if fit_save.kc in self.stan_fits or fit_save.kc in persisted_fit_folders
         }
 
         self._fit_metadata = save_fit_artifacts(
@@ -467,6 +481,7 @@ class FitBase(VerboseMixin, ABC):
             fits=self.stan_fits,
             fit_metadata=self._fit_metadata,
             summary_cache=self._summary_cache,
+            persisted_fit_folders=persisted_fit_folders,
         )
 
     def summary(

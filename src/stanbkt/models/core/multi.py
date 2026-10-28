@@ -150,6 +150,9 @@ class MultiBKT(BKTModelBase):
             "nProblems": int(n_problems),
             "correctness": correctness,
             "interaction_lengths": kc_data.lengths,
+            "nObs": int(kc_data.lengths.sum()),
+            # single slice by default, fit() replaces it with the fit options grainsize
+            "grainsize": int(n_students),
             "nGroups": n_groups,
             "groups": kc_data.groups,
             "individual_pi_know": int(self.individual_initial_knowledge),

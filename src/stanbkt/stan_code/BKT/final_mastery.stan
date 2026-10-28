@@ -4,11 +4,9 @@
 
 /**
 Computes P(know) after each student's last observed interaction via the
-standard forward filter (same recursion as hidden_states.stan's per-step
-update), but only the terminal state is kept/returned. Used for the
-post-test outcome regression, so it must be callable from within
-BKT_model.stan's own model block on every posterior draw, not just from
-a generated quantities block.
+standard forward filter (same recursion as hidden_states.stan), 
+but only the last/terminal state is kept/returned. This is used for the
+post-test outcome regression.
 */
 vector final_pknow_forward(array[] int lengths, // interaction_lengths, original student order
                             array[,] int correctness, // original student order (nStudents, nProblems)

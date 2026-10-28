@@ -886,7 +886,7 @@ class TestPredictPosteriorDataPath:
         out = model.predict_posterior_draws(data=data_with_kc)
         assert out == expected
 
-    def test_predict_posterior_draws_uses_original_ids_and_masks_padded_positions(
+    def test_predict_posterior_draws_uses_original_ids_for_flat_outputs(
         self, monkeypatch
     ):
         model = StandardBKT()
@@ -902,17 +902,21 @@ class TestPredictPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
-        # 2 students × 3 max-problems padded matrix (1 draw)
-        # s1 has 2 real obs (p10, p30); s2 has 1 real obs (p20)
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        # flat output, one column per observation (1 draw)
+        # s1 has 2 obs (p10, p30); s2 has 1 obs (p20)
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0],
-                "pKnow[1,1]": [0.1],
-                "pKnow[1,2]": [0.2],
-                "pKnow[1,3]": [0.3],  # padding — should be filtered out
-                "pKnow[2,1]": [0.4],
-                "pKnow[2,2]": [0.5],  # padding
-                "pKnow[2,3]": [0.6],  # padding
+                "pKnow[1]": [0.1],
+                "pKnow[2]": [0.2],
+                "pKnow[3]": [0.4],
             }
         )
 
@@ -966,16 +970,20 @@ class TestPredictPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
-        # 2 draws, 2 students × 3 padded problems
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
+        # 2 draws, flat output for s1 (2 obs) then s2 (1 obs)
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],  # padding
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],  # padding
-                "pKnow[2,3]": [0.6, 0.8],  # padding
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1044,12 +1052,9 @@ class TestPredictPosteriorDataPath:
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],  # padding
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],  # padding
-                "pKnow[2,3]": [0.6, 0.8],  # padding
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1106,12 +1111,9 @@ class TestPredictPosteriorDataPath:
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],
-                "pKnow[2,3]": [0.6, 0.8],
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1172,12 +1174,9 @@ class TestPredictPosteriorDataPath:
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],
-                "pKnow[2,3]": [0.6, 0.8],
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1315,7 +1314,7 @@ class TestPredictSmoothedPosteriorDataPath:
         out = model.predict_smoothed_posterior_draws(data=data_with_kc)
         assert out == expected
 
-    def test_predict_smoothed_draws_uses_original_ids_and_masks_padded_positions(
+    def test_predict_smoothed_draws_uses_original_ids_for_flat_outputs(
         self, monkeypatch
     ):
         model = StandardBKT()
@@ -1331,15 +1330,19 @@ class TestPredictSmoothedPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0],
-                "pKnow[1,1]": [0.1],
-                "pKnow[1,2]": [0.2],
-                "pKnow[1,3]": [0.3],  # padding
-                "pKnow[2,1]": [0.4],
-                "pKnow[2,2]": [0.5],  # padding
-                "pKnow[2,3]": [0.6],  # padding
+                "pKnow[1]": [0.1],
+                "pKnow[2]": [0.2],
+                "pKnow[3]": [0.4],
             }
         )
 
@@ -1389,15 +1392,19 @@ class TestPredictSmoothedPosteriorDataPath:
             def draws_pd(self) -> pd.DataFrame:
                 return self._draws_df
 
+            @property
+            def column_names(self) -> tuple:
+                return tuple(self._draws_df.columns.astype(str))
+
+            def draws(self, *, concat_chains: bool = True) -> np.ndarray:
+                return self._draws_df.to_numpy(dtype=np.float64)
+
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],  # padding
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],  # padding
-                "pKnow[2,3]": [0.6, 0.8],  # padding
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1464,12 +1471,9 @@ class TestPredictSmoothedPosteriorDataPath:
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],
-                "pKnow[2,3]": [0.6, 0.8],
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 
@@ -1532,12 +1536,9 @@ class TestPredictSmoothedPosteriorDataPath:
         gq_draws = pd.DataFrame(
             {
                 "lp__": [0.0, 1.0],
-                "pKnow[1,1]": [0.1, 0.3],
-                "pKnow[1,2]": [0.2, 0.4],
-                "pKnow[1,3]": [0.3, 0.5],
-                "pKnow[2,1]": [0.4, 0.6],
-                "pKnow[2,2]": [0.5, 0.7],
-                "pKnow[2,3]": [0.6, 0.8],
+                "pKnow[1]": [0.1, 0.3],
+                "pKnow[2]": [0.2, 0.4],
+                "pKnow[3]": [0.4, 0.6],
             }
         )
 

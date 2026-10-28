@@ -816,7 +816,8 @@ class TestLowMemoryJoint:
             parallel=False,
             fast_math=False,
         )
-        assert "default_kc" in model.fits.stan_fits
+        # low_memory drops the reloaded fit again once the prediction is done
+        assert "default_kc" not in model.fits.stan_fits
 
         first = out.groupby(out["student_id"].astype(str), observed=True)["pKnow"].first()
         b1 = np.array([1.0, -0.5])

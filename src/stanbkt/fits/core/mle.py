@@ -98,14 +98,15 @@ class MLEFit(FitBase):
         kcs_set = kcs_set.intersection(available_kcs)
         summary_frames: list[pd.DataFrame] = []
         for kc in sorted(kcs_set):
-            kc_stan_fit = self._get_fit_for_summary(kc)
+            # cached summaries need no fit, so an evicted fit is not reloaded for them
+            if kc in self._summary_cache:
+                summary_frames.append(self._summary_cache[kc])
+                continue
+            kc_stan_fit = self._get_fit_transient(kc)
             if kc_stan_fit is None:
                 raise ValueError(
                     f"Stan fit for KC '{kc}' is not available. Failed to generate summary."
                 )
-            if kc in self._summary_cache:
-                summary_frames.append(self._summary_cache[kc])
-                continue
             if not isinstance(kc_stan_fit, CmdStanMLE):
                 raise ValueError(
                     f"Stan fit for KC '{kc}' is not a CmdStanMLE object. Found type '{type(kc_stan_fit).__name__}'. Cannot generate summary."
@@ -140,7 +141,7 @@ class MLEFit(FitBase):
             if self._should_cache_summary:
                 self._update_summary_cache(kc, summary_df)
 
-        self._release_summary_loaded()
+        self._release_transient_fits()
         if summary_frames:
             summary_concat_df: pd.DataFrame = pd.concat(summary_frames, axis=0)
             return summary_concat_df.set_index([kc_col_name, "parameter"])

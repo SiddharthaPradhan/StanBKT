@@ -561,7 +561,7 @@ class TestPredict:
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
         model.fits = MagicMock()
-        model.fits.get_fit.return_value = _mock_fit_mle(n_groups=2)
+        model.fits._get_fit_transient.return_value = _mock_fit_mle(n_groups=2)
 
         out = model.predict(data=_grouped_df(n_groups=2))
         # Students from different groups should have different pKnow values
@@ -575,7 +575,7 @@ class TestPredict:
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
         model.fits = MagicMock()
-        model.fits.get_fit.return_value = _mock_fit_mle(n_groups=2)
+        model.fits._get_fit_transient.return_value = _mock_fit_mle(n_groups=2)
         model.fits.get_fit_save_entry.return_value = FitSaveEntry(
             kc="default_kc",
             save_folder="default_kc_abcd1234",
@@ -617,7 +617,7 @@ class TestPredict:
         monkeypatch.setattr(model, "check_data_contains_fitted_kcs", lambda kcs: None)
         monkeypatch.setattr(model, "get_kcs_in_fitted_kcs", lambda kcs: kcs)
         model.fits = MagicMock()
-        model.fits.get_fit.return_value = _mock_fit_mle(n_groups=2)
+        model.fits._get_fit_transient.return_value = _mock_fit_mle(n_groups=2)
         model.fits.get_fit_save_entry.return_value = FitSaveEntry(
             kc="default_kc",
             save_folder="default_kc_abcd1234",

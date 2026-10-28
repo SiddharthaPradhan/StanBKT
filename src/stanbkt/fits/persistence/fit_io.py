@@ -125,6 +125,17 @@ def _copy_fit_csvfiles_if_available(fit: CmdStanFit, target_dir: str) -> bool:
     return True
 
 
+def _copy_persisted_csvfiles(source_dir: str, target_dir: str) -> None:
+    """Copy the CmdStan CSV files of a persisted fit folder into ``target_dir``."""
+    if os.path.abspath(source_dir) == os.path.abspath(target_dir):
+        return
+    os.makedirs(target_dir, exist_ok=True)
+    for file_name in os.listdir(source_dir):
+        source_file = os.path.join(source_dir, file_name)
+        if file_name.endswith(".csv") and os.path.isfile(source_file):
+            shutil.copy2(source_file, os.path.join(target_dir, file_name))
+
+
 def load_fit_artifacts(
     base_save_location: str,
     expected_fit_method: FitMethod,
@@ -270,6 +281,7 @@ def save_fit_artifacts(
     fits: dict[str, CmdStanFit],
     fit_metadata: FitMetadata,
     summary_cache: dict[str, pd.DataFrame],
+    persisted_fit_folders: dict[str, str] | None = None,
 ) -> FitMetadata:
     """Persist fit CSVs, cache CSVs, and metadata to disk.
 
@@ -283,12 +295,16 @@ def save_fit_artifacts(
         Metadata containing save-folder mapping.
     summary_cache : dict[str, pandas.DataFrame]
         Summary cache DataFrames keyed by KC.
+    persisted_fit_folders : dict[str, str] | None, optional
+        Folders with the already persisted CSVs of KCs that are not in ``fits``,
+        keyed by KC. Their CSVs are copied without loading the fit.
 
     Returns
     -------
     FitMetadata
         Updated metadata with ``summary_cache_available`` flags.
     """
+    persisted_fit_folders = persisted_fit_folders or {}
     fits_base_location = os.path.join(base_save_location, FIT_SAVE_FOLDER)
     cache_base_location = os.path.join(fits_base_location, CACHE_SAVE_FOLDER)
     os.makedirs(fits_base_location, exist_ok=True)
@@ -297,13 +313,15 @@ def save_fit_artifacts(
     updated_fit_saves: FitSaves = {}
     for fit_save in fit_metadata.fit_saves.values():
         kc_name = fit_save.kc
-        if kc_name not in fits:
-            continue
-
-        fit = fits[kc_name]
         kc_fit_save_folder = os.path.join(fits_base_location, str(fit_save.save_folder))
-        if not _copy_fit_csvfiles_if_available(fit, kc_fit_save_folder):
-            fit.save_csvfiles(kc_fit_save_folder)
+        if kc_name in fits:
+            fit = fits[kc_name]
+            if not _copy_fit_csvfiles_if_available(fit, kc_fit_save_folder):
+                fit.save_csvfiles(kc_fit_save_folder)
+        elif kc_name in persisted_fit_folders:
+            _copy_persisted_csvfiles(persisted_fit_folders[kc_name], kc_fit_save_folder)
+        else:
+            continue
 
         cache_file_name = get_summary_cache_file(kc_name)
         cache_file_path = os.path.join(cache_base_location, cache_file_name)

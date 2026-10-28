@@ -22,7 +22,9 @@ Optional extras
   for the parallel posterior summaries when TBB is missing.
 - GPU: Stan can offload some computation through OpenCL. Compile with
   ``cpp_compile_kwargs={"STAN_OPENCL": True}`` and select a device with the ``opencl_ids=(platform, device)``
-  fit option. This needs an OpenCL runtime and drivers, and only helps for large per KC datasets.
+  fit option. This needs an OpenCL runtime and drivers. The BKT likelihood is a custom recursion that OpenCL
+  does not accelerate, so for faster fits use CPU threads instead: compile with
+  ``cpp_compile_kwargs={"STAN_THREADS": True}`` and set ``threads_per_chain``.
 - Numba caches compiled kernels next to the package. On a read only install set ``NUMBA_CACHE_DIR`` to a writable folder.
 
 .. warning::
@@ -96,3 +98,21 @@ once per machine.
     ``setup_cmdstanpy`` downloads CmdStan from GitHub and raises a ``RuntimeError`` if the download fails.
     On shared networks (CI runners, university networks) GitHub may rate limit the request. Set the
     ``GITHUB_PAT`` environment variable to a GitHub token and run it again.
+
+Pinning a CmdStan version
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default ``setup_cmdstanpy`` installs the latest CmdStan release. For reproducible analyses
+(for example, results reported in a paper), pin the version instead. It is installed next to
+any existing versions if it is missing:
+
+.. code-block:: python
+
+    from stanbkt.utils import setup_cmdstanpy
+
+    setup_cmdstanpy(n_cores=4, version="2.37.0")
+
+In a new Python session CmdStanPy uses the newest installed CmdStan, so call
+``setup_cmdstanpy(version=...)`` at the start of every script or notebook that should use the
+pinned version. Once that version is installed the call returns immediately. Check the active
+version with ``cmdstanpy.cmdstan_version()``.

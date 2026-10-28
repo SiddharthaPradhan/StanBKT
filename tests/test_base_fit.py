@@ -413,11 +413,11 @@ class TestSummaryRelease:
         )
         return mock
 
-    def _evicted_fit(self, tmp_path, monkeypatch, release_after_summary):
+    def _evicted_fit(self, tmp_path, monkeypatch, release_reloaded_fits):
         from stanbkt.fits.core.mcmc import MCMCFit
 
         fit = MCMCFit(fit_artifact_base_location=str(tmp_path))
-        fit.release_after_summary = release_after_summary
+        fit.release_reloaded_fits = release_reloaded_fits
         for kc in ("kc_a", "kc_b", "kc_c"):
             fit.add_fit(kc, self._mcmc_mock(kc))
             fit.release_fit_from_memory(kc)
@@ -427,36 +427,75 @@ class TestSummaryRelease:
         return fit
 
     def test_summary_releases_fits_it_reloaded(self, tmp_path, monkeypatch):
-        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
         summary = fit._summary()
         assert set(summary.index.get_level_values("kc_id")) == {"kc_a", "kc_b", "kc_c"}
         assert fit.stan_fits == {}
         assert fit.num_fitted_kcs == 3
 
     def test_summary_keeps_fits_that_were_already_resident(self, tmp_path, monkeypatch):
-        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
         fit.get_fit("kc_b")
         fit._summary()
         assert set(fit.stan_fits) == {"kc_b"}
 
     def test_summary_keeps_reloaded_fits_when_flag_is_off(self, tmp_path, monkeypatch):
-        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=False)
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=False)
         fit._summary()
         assert set(fit.stan_fits) == {"kc_a", "kc_b", "kc_c"}
 
     def test_summary_holds_at_most_one_reloaded_fit_at_a_time(self, tmp_path, monkeypatch):
-        fit = self._evicted_fit(tmp_path, monkeypatch, release_after_summary=True)
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
         peak = []
-        original = fit._get_fit_for_summary
+        original = fit._get_fit_transient
 
         def _spy(kc):
             result = original(kc)
             peak.append(len(fit.stan_fits))
             return result
 
-        monkeypatch.setattr(fit, "_get_fit_for_summary", _spy)
+        monkeypatch.setattr(fit, "_get_fit_transient", _spy)
         fit._summary()
         assert max(peak) == 1
+
+    def test_cached_summary_does_not_reload_the_fit(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
+        fit._summary(kcs="kc_a")
+        loads = []
+        monkeypatch.setattr(
+            fit_base_module,
+            "cmdstan_from_csv",
+            lambda folder: loads.append(folder) or self._mcmc_mock("reload"),
+        )
+        fit._summary(kcs="kc_a")
+        assert loads == []
+
+    def test_transient_fits_are_released_after_the_pass(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
+        fit.get_fit("kc_b")
+        fit._get_fit_transient("kc_a")
+        fit._get_fit_transient("kc_b")
+        fit._get_fit_transient("kc_c")
+        assert set(fit.stan_fits) == {"kc_b", "kc_c"}
+        fit._release_transient_fits()
+        # fits that were resident before the pass are kept
+        assert set(fit.stan_fits) == {"kc_b"}
+
+    def test_save_copies_evicted_fits_without_loading_them(self, tmp_path, monkeypatch):
+        fit = self._evicted_fit(tmp_path / "artifacts", monkeypatch, release_reloaded_fits=True)
+
+        def _fail(_):
+            raise AssertionError("evicted fits should be copied, not loaded")
+
+        monkeypatch.setattr(fit_base_module, "cmdstan_from_csv", _fail)
+        save_dir = tmp_path / "saved"
+        fit._save(str(save_dir))
+        assert fit.stan_fits == {}
+        with open(save_dir / METADATA_SAVE_FILE, encoding="utf-8") as f:
+            assert {entry["kc"] for entry in json.load(f)["fit_saves"]} == {"kc_a", "kc_b", "kc_c"}
+        for kc in ("kc_a", "kc_b", "kc_c"):
+            saved = save_dir / FIT_SAVE_FOLDER / get_fit_save_folder(kc) / "mock_chain.csv"
+            assert saved.read_text(encoding="utf-8") == "lp__\n0\n"
 
 
 # ---------------------------------------------------------------------------

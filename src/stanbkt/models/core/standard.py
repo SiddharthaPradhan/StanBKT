@@ -177,6 +177,9 @@ class StandardBKT(BKTModelBase):
             "nProblems": int(n_problems),
             "correctness": correctness,
             "interaction_lengths": kc_data.lengths,
+            "nObs": int(kc_data.lengths.sum()),
+            # single slice by default, fit() replaces it with the fit options grainsize
+            "grainsize": int(n_students),
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
             "individual_pi_know": int(self.individual_initial_knowledge),
