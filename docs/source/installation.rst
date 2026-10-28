@@ -12,13 +12,13 @@ Requirements
 
 - Python 3.12 or higher
 - `C++` compiler and `make` (For Windows, refer to :ref:`this note <windows_RTools_note>`)
-- Supported OS: Windows, macOS, Linux (x86_64 and ARM)
+- Supported OS: Windows, macOS (Intel and Apple Silicon), Linux (x86_64 and ARM). Intel Macs use numba 0.62.x, the last line with Intel wheels, so they are limited to Python 3.12 and 3.13.
 
 Optional extras
 ---------------
 
 - ``pip install stanbkt[tbb]`` installs Intel TBB, which numba can use as its threading layer. It is only
-  available on x86_64 Linux and Windows and is not required; numba falls back to OpenMP or a serial path
+  available on x86_64 Linux and x86_64 Windows and is not required; numba falls back to OpenMP or a serial path
   for the parallel posterior summaries when TBB is missing.
 - GPU: Stan can offload some computation through OpenCL. Compile with
   ``cpp_compile_kwargs={"STAN_OPENCL": True}`` and select a device with the ``opencl_ids=(platform, device)``
