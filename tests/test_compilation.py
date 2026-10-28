@@ -314,3 +314,19 @@ def test_clear_stan_cache_nonexistent(tmp_path: Path, monkeypatch) -> None:
     # Clear cache that doesn't exist
     count = compilation.clear_stan_cache()
     assert count == 0
+
+
+def test_setup_cmdstanpy_raises_when_install_fails(monkeypatch) -> None:
+    import urllib.request
+
+    def _no_cmdstan():
+        raise ValueError("no cmdstan")
+
+    monkeypatch.setattr(compilation.csp, "cmdstan_path", _no_cmdstan)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(compilation, "is_sys_windows", lambda: False)
+    # cmdstanpy returns False (rather than raising) when the download fails
+    monkeypatch.setattr(compilation.csp, "install_cmdstan", lambda **kwargs: False)
+
+    with pytest.raises(RuntimeError, match="GITHUB_PAT"):
+        compilation.setup_cmdstanpy(n_cores=1)

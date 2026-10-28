@@ -62,10 +62,17 @@ def setup_cmdstanpy(n_cores: int = N_CORES) -> None:
             print(
                 "Windows OS detected. Installing CmdStan and RTools (for g++ and Mingw)"
             )
-            csp.install_cmdstan(cores=n_cores, compiler=True)
+            installed = csp.install_cmdstan(cores=n_cores, compiler=True)
 
         else:  # linux or macos
-            csp.install_cmdstan(cores=n_cores)
+            installed = csp.install_cmdstan(cores=n_cores)
+        # cmdstanpy logs a warning and returns False on failure instead of raising
+        if not installed:
+            raise RuntimeError(
+                "CmdStan installation failed (see the cmdstanpy warning above). "
+                "If GitHub rate limited the download, set the GITHUB_PAT environment "
+                "variable to a GitHub token and retry."
+            )
 
 
 def _as_path(stan_file: str | os.PathLike[str]) -> Path:

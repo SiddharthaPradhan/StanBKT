@@ -19,6 +19,9 @@ jobs:
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --group dev --python ${{ matrix.python }}
       - run: uv run python -c "from stanbkt.utils import setup_cmdstanpy; setup_cmdstanpy(n_cores=2)"
+        env:
+          # cmdstanpy reads GITHUB_PAT; authenticated calls avoid the shared runner rate limit
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       - run: uv run pytest
 
   pip-install:

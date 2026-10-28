@@ -91,3 +91,8 @@ once per machine.
     # replace n_cores with the number of cores available
     setup_cmdstanpy(n_cores=4)
 
+
+.. note::
+    ``setup_cmdstanpy`` downloads CmdStan from GitHub and raises a ``RuntimeError`` if the download fails.
+    On shared networks (CI runners, university networks) GitHub may rate limit the request. Set the
+    ``GITHUB_PAT`` environment variable to a GitHub token and run it again.

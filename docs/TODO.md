@@ -35,7 +35,7 @@ Create `docs/source/guide/` (or a single `guide.rst`) with these pages:
 - [ ] **Saving and loading**: `model.save`, `load_model`, what is persisted (fit CSVs, summary cache, metadata including group and student index maps and covariate schema), version compatibility of old archives.
 - [ ] **Memory and performance**: `low_memory=True` (evicts fits to disk after each KC, lazily reloads, and `summary()` drops fits it had to reload), categorical ID columns and compact integer dtypes (`draw__`, `chain__`, `iter__`, `_order`) in draw-level outputs (about 24 bytes per row, so 80M rows is roughly 2 GB), using `_summary` prediction variants for large data, `n_cores` trade offs for prediction, `fit(n_kcs_workers=-1)` (concurrent KC fitting, on by default in auto mode: the Stan settings take priority, so workers = available CPUs divided by the cores one fit already uses, `parallel_chains * threads_per_chain` for MCMC, capped by the number of KCs; an explicit value raises a `ValueError` if `n_kcs_workers * cores per fit` exceeds the available CPUs, and `1` is always sequential), compilation cache.
 - [ ] **Evaluation metrics**: `accuracy`, `rmse`, `auc` and how to apply them per KC.
-- [ ] **Troubleshooting / FAQ**: CmdStan not installed, compiler issues on Windows, `STAN_THREADS` mismatch error, Pathfinder with posterior prediction, unseen student warnings, duplicate covariate IDs.
+- [ ] **Troubleshooting / FAQ**: CmdStan not installed, `setup_cmdstanpy` raising on a GitHub rate limit (set `GITHUB_PAT`; the installation page has a short note), compiler issues on Windows, `STAN_THREADS` mismatch error, Pathfinder with posterior prediction, unseen student warnings, duplicate covariate IDs.
 
 ## 3. API reference gaps (`public_api.rst`)
 
