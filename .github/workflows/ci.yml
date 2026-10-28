@@ -11,7 +11,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest]
-        python: ["3.12", "3.13"]
+        python: ["3.12", "3.13", "3.14"]
+        exclude:
+          # numba 0.62.x (the last line with Intel Mac wheels) has no Python 3.14 build
+          - os: macos-15-intel
+            python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -28,12 +32,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15-intel, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest, windows-latest, windows-11-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install .
-      - run: python -c "import stanbkt"
+      # the tbb extra is skipped by marker where tbb has no wheels (ARM, macOS)
+      - run: pip install ".[tbb]"
+      - run: python -c "import stanbkt, numba"
+
+  lowest-deps:
+    # checks the lower bounds in pyproject.toml; numba 0.60 predates Python 3.13
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - run: uv venv --python 3.12
+      - run: uv pip install --resolution lowest-direct . "pytest>=8.4.2"
+      - run: .venv/bin/python -c "from stanbkt.utils import setup_cmdstanpy; setup_cmdstanpy(n_cores=2)"
+        env:
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      - run: .venv/bin/python -m pytest

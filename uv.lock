@@ -2190,7 +2190,7 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.4.0" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "tbb", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'tbb') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'tbb') or (platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'tbb')", specifier = ">=2022.3.1" },
-    { name = "xarray", specifier = ">=2024.7.0" },
+    { name = "xarray", specifier = ">=2024.11.0" },
 ]
 provides-extras = ["tbb"]
 
