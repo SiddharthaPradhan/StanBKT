@@ -320,6 +320,7 @@ class TestSave:
             "low_memory": False,
             "individual_initial_knowledge": False,
             "init_knowledge_strategy": "correctness_only",
+            "post_outcome_regression": False,
         }
 
 

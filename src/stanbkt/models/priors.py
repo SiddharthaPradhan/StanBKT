@@ -47,6 +47,19 @@ CORRECTNESS_ONLY_STRATEGY_KEYS: list[str] = [
     "pi_know_std",
 ]
 
+# keys that relate to the post-test outcome regression. Unlike the JOINT keys above,
+# these are independent of InitKnowledgeStrategy and are never popped in to_dict();
+# _build_stan_data_dict decides whether to forward them based on post_outcome_regression.
+POST_OUTCOME_STRATEGY_KEYS: list[str] = [
+    "post_b0_mu",
+    "post_b0_std",
+    "post_b_mastery_mu",
+    "post_b_mastery_std",
+    "post_b1_mu",
+    "post_b1_std",
+    "post_sigma_lambda",
+]
+
 USE_DEFAULTS_KEY = "use_defaults"
 
 
@@ -63,6 +76,16 @@ class PriorsBase(ABC):
     pi_b1_know_mu: float | list[float] | None | _UnsetType = _UNSET
     pi_b1_know_std: float | list[float] | None | _UnsetType = _UNSET
     pi_sigma_lambda: float | None | _UnsetType = _UNSET
+
+    # priors for the post-test outcome regression, independent of InitKnowledgeStrategy
+    # post_outcome ~ post_b0 + post_b_mastery * final_pknow + post_b1 * post_covariate, residual std post_sigma
+    post_b0_mu: float | None | _UnsetType = _UNSET
+    post_b0_std: float | None | _UnsetType = _UNSET
+    post_b_mastery_mu: float | None | _UnsetType = _UNSET
+    post_b_mastery_std: float | None | _UnsetType = _UNSET
+    post_b1_mu: float | list[float] | None | _UnsetType = _UNSET
+    post_b1_std: float | list[float] | None | _UnsetType = _UNSET
+    post_sigma_lambda: float | None | _UnsetType = _UNSET
 
     # whether to fill in missing values with defaults or None (non-informative)
     use_defaults: bool = True
@@ -195,6 +218,13 @@ class PriorsBase(ABC):
             "pi_b1_know_mu": 0.0,
             "pi_b1_know_std": 5.0,
             "pi_sigma_lambda": 0.5,
+            "post_b0_mu": 0.0,
+            "post_b0_std": 5.0,
+            "post_b_mastery_mu": 0.0,
+            "post_b_mastery_std": 5.0,
+            "post_b1_mu": 0.0,
+            "post_b1_std": 5.0,
+            "post_sigma_lambda": 0.5,
         }
         if not return_none:
             return default_dict
@@ -363,8 +393,8 @@ class StandardPriors(PriorsBase):
                     f"Invalid model class: {StandardPriors.__name__} should be used with {StandardPriors.expected_class().__name__}, "
                     f"got {model_class.__name__}"
                 )
-            # pi_b1_know_mu/std are per-covariate and may be a list; every other key is scalar
-            if key in ("pi_b1_know_mu", "pi_b1_know_std") and isinstance(value, list):
+            # pi_b1_know_mu/std and post_b1_mu/std are per-covariate and may be a list; every other key is scalar
+            if key in ("pi_b1_know_mu", "pi_b1_know_std", "post_b1_mu", "post_b1_std") and isinstance(value, list):
                 if not all(isinstance(v, (int, float, type(None))) for v in value):
                     raise ValueError(
                         f"Invalid prior value type for {key}: expected a list of float or None values."
@@ -512,8 +542,10 @@ class MultiPriors(PriorsBase):
                     f"Invalid prior value type for {key}: expected float, list, or None, got {type(value).__name__}"
                 )
             # if value is a list, check that its length matches n_groups, except for
-            # pi_b1_know_mu/std which are per-covariate lists, not per-group
-            if isinstance(value, list) and key not in ("pi_b1_know_mu", "pi_b1_know_std"):
+            # pi_b1_know_mu/std and post_b1_mu/std which are per-covariate lists, not per-group
+            if isinstance(value, list) and key not in (
+                "pi_b1_know_mu", "pi_b1_know_std", "post_b1_mu", "post_b1_std",
+            ):
                 if len(value) != n_groups:
                     msg = f"Bayesian Prior {key} for KC '{kc_id}' must be a list of length {n_groups}, "
                     msg += f"got list of length {len(value)}"
@@ -565,8 +597,8 @@ class MultiPriors(PriorsBase):
         return {
             prior: (
                 value
-                if prior
-                in JOINT_STRATEGY_KEYS  # leave as is if priors is for joint strategy
+                if prior in JOINT_STRATEGY_KEYS  # leave as is if priors is for joint strategy
+                or prior in POST_OUTCOME_STRATEGY_KEYS  # or for the post-outcome regression
                 or isinstance(value, list)  # or is already a list
                 or n_groups < 1  # or no groups specified
                 else ([value] * n_groups)

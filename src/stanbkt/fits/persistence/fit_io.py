@@ -329,6 +329,7 @@ def save_fit_artifacts(
                 else None
             ),
             covariate_columns=fit_save.covariate_columns,
+            post_covariate_columns=fit_save.post_covariate_columns,
         )
 
     fit_metadata.fit_saves = updated_fit_saves

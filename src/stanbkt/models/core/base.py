@@ -42,6 +42,7 @@ from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     iter_kc_data,
     prepare_student_covariates,
+    prepare_post_outcome,
     ColumnNames,
     KCData,
     _DEFAULT_KC_ID,
@@ -92,6 +93,12 @@ class BKTModelBase(VerboseMixin, ABC):
         When `JOINT`, model requires student level covariate (e.g. pretest) to jointly estimate initial knowledge (uses correctness and covariate).
         For example, `CORRECTNESS_ONLY` uses only the correctness of the first interaction for each student to inform
         initial knowledge estimates, while `FIRST_INTERACTION` uses the correctness of the first interaction with each KC for each student.
+    post_outcome_regression : bool
+        Whether to jointly estimate a regression of a post-test outcome on each student's
+        final (filtered) mastery probability, optionally plus additional post-test covariates.
+        Independent of `individual_initial_knowledge`/`init_knowledge_strategy` and can be
+        combined with either. Requires `post_outcome` (and optionally `student_post_covariates`)
+        to be passed to `fit`.
     verbose : VerbosityLevel
         Verbosity level for logging.
     stan_compile_kwargs : dict
@@ -109,6 +116,7 @@ class BKTModelBase(VerboseMixin, ABC):
         fit_method: FitMethod | str = FitMethod.MCMC,
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
+        post_outcome_regression: bool = False,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
@@ -138,6 +146,9 @@ class BKTModelBase(VerboseMixin, ABC):
         self.cpp_compile_kwargs: dict[str, Any] = cpp_compile_kwargs or {}
         self.individual_initial_knowledge: bool = individual_initial_knowledge
         self.init_knowledge_strategy: InitKnowledgeStrategy = init_knowledge_strategy
+        # whether to jointly estimate a regression of a post-test outcome on each
+        # student's final (filtered) mastery, independent of init_knowledge_strategy
+        self.post_outcome_regression: bool = post_outcome_regression
         # Flag to control whether the model uses group-specific parameters
         self._use_groups: bool = False
         # Model is instantiated lazily during first fit and cached
@@ -191,6 +202,8 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_fit_options: Optional[Union[StanFitOptions, dict[str, Any]]] = None,
         overwrite_kcs: bool = False,
         student_covariates: Optional[pd.DataFrame] = None,
+        post_outcome: Optional[pd.DataFrame] = None,
+        student_post_covariates: Optional[pd.DataFrame] = None,
         n_kcs_workers: int = -1,
     ) -> BKTModelBase:
         """
@@ -226,6 +239,16 @@ class BKTModelBase(VerboseMixin, ABC):
             ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``. All columns
             other than the student ID column are treated as covariates, in the
             DataFrame's own column order.
+        post_outcome : pd.DataFrame, optional
+            One row per student: a student ID column plus exactly one outcome
+            column, required when ``post_outcome_regression=True``. Jointly
+            estimated as a regression of the outcome on each student's final
+            (filtered) mastery probability, plus ``student_post_covariates`` if given.
+        student_post_covariates : pd.DataFrame, optional
+            One row per student with additional covariate columns for the
+            post-test outcome regression. Optional even when
+            ``post_outcome_regression=True`` - zero covariates is a valid
+            configuration (outcome regressed on final mastery alone).
         n_kcs_workers : int, default=-1
             Number of KCs fitted concurrently. Each KC is an independent Stan run, so results
             match a sequential fit. The Stan settings take priority: one fit already uses
@@ -299,6 +322,11 @@ class BKTModelBase(VerboseMixin, ABC):
         prepared_covariates, covariate_columns = self._prepare_joint_covariates(
             data, student_covariates, resolved_mapping
         )
+        prepared_post_outcome, post_outcome_column, prepared_post_covariates, post_covariate_columns = (
+            self._prepare_post_outcome_data(
+                data, post_outcome, student_post_covariates, resolved_mapping
+            )
+        )
 
         data_kcs = self._data_kc_ids(data, resolved_mapping)
         n_kcs_workers = self._resolve_n_kcs_workers(
@@ -336,6 +364,7 @@ class BKTModelBase(VerboseMixin, ABC):
                     else None
                 ),
                 covariate_columns=kc_data.covariate_columns,
+                post_covariate_columns=kc_data.post_covariate_columns,
             )
             if self.low_memory:
                 self.fits.release_fit_from_memory(str(kc_id))
@@ -361,6 +390,10 @@ class BKTModelBase(VerboseMixin, ABC):
                     print_fn=self.log,
                     student_covariates=prepared_covariates,
                     covariate_columns=covariate_columns,
+                    post_outcome=prepared_post_outcome,
+                    post_outcome_column=post_outcome_column,
+                    post_covariates=prepared_post_covariates,
+                    post_covariate_columns=post_covariate_columns,
                 ):
                     self.log(f"Fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
                     if n_kcs_workers == 1:
@@ -474,6 +507,42 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates, all_students, student_id_col=student_col
         )
 
+    def _prepare_post_outcome_data(
+        self,
+        data: pd.DataFrame,
+        post_outcome: Optional[pd.DataFrame],
+        student_post_covariates: Optional[pd.DataFrame],
+        resolved_mapping: dict[str, str],
+    ) -> tuple[
+        Optional[pd.DataFrame], Optional[str], Optional[pd.DataFrame], Optional[list[str]]
+    ]:
+        """Validate and index post-test outcome data for the post-outcome regression.
+
+        Returns ``(None, None, None, None)`` when ``post_outcome_regression`` is
+        False. Raises if it's True and no ``post_outcome`` was supplied.
+        """
+        if not self.post_outcome_regression:
+            return None, None, None, None
+        if post_outcome is None:
+            raise ValueError(
+                "'post_outcome' must be provided when post_outcome_regression=True."
+            )
+        student_col = resolved_mapping[ColumnNames.STUDENT_ID]
+        all_students = data[student_col].astype(str).unique()
+        indexed_outcome, outcome_column = prepare_post_outcome(
+            post_outcome, all_students, student_id_col=student_col
+        )
+        if student_post_covariates is None:
+            return indexed_outcome, outcome_column, None, []
+        indexed_covariates, covariate_columns = prepare_student_covariates(
+            student_post_covariates,
+            all_students,
+            student_id_col=student_col,
+            arg_name="student_post_covariates",
+            require_covariate_columns=False,
+        )
+        return indexed_outcome, outcome_column, indexed_covariates, covariate_columns
+
     def _check_covariate_columns_match(
         self, kc_id: str, covariate_columns: Optional[list[str]]
     ) -> None:
@@ -490,6 +559,71 @@ class BKTModelBase(VerboseMixin, ABC):
                 f"'student_covariates' columns for KC '{kc_id}' do not match the columns "
                 f"used at fit time. Expected {expected}, got {actual}."
             )
+
+    def _post_outcome_stan_data(
+        self, kc_data: KCData, raw_priors: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build the post-test outcome regression portion of the Stan data dict.
+
+        Shared by StandardBKT/MultiBKT's ``_build_stan_data_dict`` since the
+        post-test outcome regression is independent of grouping/init-knowledge
+        strategy. Zero-sized/inert when ``post_outcome_regression`` is False,
+        following the same pattern as the JOINT init-knowledge data above.
+        """
+        n_students = kc_data.correctness.shape[0]
+        enabled = self.post_outcome_regression
+        n_post_covariates = (
+            kc_data.post_covariates.shape[1] if kc_data.post_covariates is not None else 0
+        )
+        data: dict[str, Any] = {
+            "post_outcome_regression": int(enabled),
+            "post_outcome": (
+                kc_data.post_outcome
+                if enabled and kc_data.post_outcome is not None
+                else np.zeros(n_students if enabled else 0, dtype=np.float64)
+            ),
+            "nPostCovariates": int(n_post_covariates),
+            "post_covariates": (
+                kc_data.post_covariates
+                if kc_data.post_covariates is not None
+                else np.zeros((n_students, 0), dtype=np.float64)
+            ),
+        }
+        if not enabled:
+            data["prior_post_b0_mu"] = 0.0
+            data["prior_post_b0_std"] = 5.0
+            data["prior_post_b_mastery_mu"] = 0.0
+            data["prior_post_b_mastery_std"] = 5.0
+            data["prior_post_b1_mu"] = [0.0] * n_post_covariates
+            data["prior_post_b1_std"] = [5.0] * n_post_covariates
+            data["prior_post_sigma_lambda"] = 0.5
+            data["unif_prior_post_b0"] = 1
+            data["unif_prior_post_b_mastery"] = 1
+            data["unif_prior_post_b1"] = 1
+            return data
+
+        b0_mu = raw_priors.get("post_b0_mu")
+        b0_std = raw_priors.get("post_b0_std")
+        data["prior_post_b0_mu"] = b0_mu if b0_mu is not None else 0.0
+        data["prior_post_b0_std"] = b0_std if b0_std is not None else 5.0
+        data["unif_prior_post_b0"] = int(b0_mu is None or b0_std is None)
+
+        bm_mu = raw_priors.get("post_b_mastery_mu")
+        bm_std = raw_priors.get("post_b_mastery_std")
+        data["prior_post_b_mastery_mu"] = bm_mu if bm_mu is not None else 0.0
+        data["prior_post_b_mastery_std"] = bm_std if bm_std is not None else 5.0
+        data["unif_prior_post_b_mastery"] = int(bm_mu is None or bm_std is None)
+
+        b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+            raw_priors.get("post_b1_mu"), raw_priors.get("post_b1_std"), n_post_covariates
+        )
+        data["prior_post_b1_mu"] = b1_mu if b1_mu is not None else [0.0] * n_post_covariates
+        data["prior_post_b1_std"] = b1_std if b1_std is not None else [5.0] * n_post_covariates
+        data["unif_prior_post_b1"] = int(b1_mu is None or b1_std is None)
+
+        sigma_lambda = raw_priors.get("post_sigma_lambda")
+        data["prior_post_sigma_lambda"] = sigma_lambda if sigma_lambda is not None else 0.5
+        return data
 
     @abstractmethod
     def _default_priors(self) -> PriorsBase:
@@ -603,6 +737,9 @@ class BKTModelBase(VerboseMixin, ABC):
             covariate_columns={
                 kc: e.covariate_columns if e else None for kc, e in kc_entries.items()
             },
+            post_covariate_columns={
+                kc: e.post_covariate_columns if e else None for kc, e in kc_entries.items()
+            },
             group_col_name=column_mapping.get(ColumnNames.GROUP, ColumnNames.GROUP),
             student_col_name=column_mapping.get(
                 ColumnNames.STUDENT_ID, ColumnNames.STUDENT_ID
@@ -626,6 +763,7 @@ class BKTModelBase(VerboseMixin, ABC):
             "low_memory": self.low_memory,
             "individual_initial_knowledge": self.individual_initial_knowledge,
             "init_knowledge_strategy": self.init_knowledge_strategy.value,
+            "post_outcome_regression": self.post_outcome_regression,
         }
 
     def save(self, save_base_location: str | os.PathLike[str]) -> None:

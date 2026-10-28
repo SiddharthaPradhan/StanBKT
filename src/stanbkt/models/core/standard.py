@@ -39,6 +39,10 @@ class StandardBKT(BKTModelBase):
         Strategy for estimating initial knowledge when `individual_initial_knowledge` is True. This determines how the initial knowledge parameters are informed by the data:
         - InitKnowledgeStrategy.CORRECTNESS_ONLY: Initial knowledge is informed solely by the correctness of the first interaction for each student.
         - InitKnowledgeStrategy.JOINT: Initial knowledge is informed by both the correctness
+    post_outcome_regression : bool, default False
+        Whether to jointly estimate a regression of a post-test outcome on each student's
+        final (filtered) mastery, optionally plus post-test covariates. Independent of
+        `individual_initial_knowledge`/`init_knowledge_strategy`.
     verbose : VerbosityLevel, default=VerbosityLevel.INFO
         Verbosity level for logging during fitting and prediction.
     stan_compile_kwargs : dict, optional
@@ -59,6 +63,7 @@ class StandardBKT(BKTModelBase):
         fit_method: FitMethod = FitMethod.MCMC,
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
+        post_outcome_regression: bool = False,
         verbose: VerbosityLevel = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
@@ -96,6 +101,7 @@ class StandardBKT(BKTModelBase):
             fit_method=fit_method,
             individual_initial_knowledge=individual_initial_knowledge,
             init_knowledge_strategy=init_knowledge_strategy,
+            post_outcome_regression=post_outcome_regression,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
             low_memory=low_memory,
@@ -255,6 +261,9 @@ class StandardBKT(BKTModelBase):
                         f"mu={type(mu_value).__name__}, std={type(std_value).__name__}. "
                         "Expected scalar values or None."
                     )
+            data_dict.update(self._post_outcome_stan_data(kc_data, raw_priors))
+        else:
+            data_dict.update(self._post_outcome_stan_data(kc_data, {}))
         return data_dict
 
     def _extract_bkt_params_from_fit(

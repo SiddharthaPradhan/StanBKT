@@ -143,6 +143,7 @@ class FitBase(VerboseMixin, ABC):
         groups: set[str] | None = None,
         student2index: dict[str, int] | None = None,
         covariate_columns: list[str] | None = None,
+        post_covariate_columns: list[str] | None = None,
     ) -> None:
         """Add a fit for a knowledge component to the model's fit state.
 
@@ -163,6 +164,9 @@ class FitBase(VerboseMixin, ABC):
         covariate_columns : list[str] | None, optional
             Optional ordered covariate column names used for this KC's fit under
             the JOINT init-knowledge strategy.
+        post_covariate_columns : list[str] | None, optional
+            Optional ordered covariate column names used for this KC's post-test
+            outcome regression.
 
         Raises
         ------
@@ -212,6 +216,9 @@ class FitBase(VerboseMixin, ABC):
             ),
             covariate_columns=(
                 tuple(covariate_columns) if covariate_columns is not None else None
+            ),
+            post_covariate_columns=(
+                tuple(post_covariate_columns) if post_covariate_columns is not None else None
             ),
         )
         self.num_fitted_kcs = len(self.get_fitted_kcs())

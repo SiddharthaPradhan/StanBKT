@@ -140,6 +140,16 @@ class KCData:
         row order matching ``student_ids``.
     covariate_columns : Optional[list[str]], default None
         Optional ordered covariate column names corresponding to ``covariates`` columns.
+    post_outcome : Optional[np.ndarray], default None
+        Optional post-test outcome regression target, shape (num_students,),
+        row order matching ``student_ids``. Present only when
+        ``post_outcome_regression`` is enabled.
+    post_covariates : Optional[np.ndarray], default None
+        Optional post-test outcome regression covariate matrix, shape
+        (num_students, num_post_covariates), row order matching ``student_ids``.
+    post_covariate_columns : Optional[list[str]], default None
+        Optional ordered covariate column names corresponding to
+        ``post_covariates`` columns.
     """
 
     # correctness matrix of shape (num_students, num_problems)
@@ -159,14 +169,24 @@ class KCData:
     # optional JOINT-strategy covariate matrix, row order matching student_ids
     covariates: Optional[np.ndarray] = None
     covariate_columns: Optional[list[str]] = None
+    # optional post-test outcome regression target, row order matching student_ids
+    post_outcome: Optional[np.ndarray] = None
+    # optional post-test outcome regression covariate matrix, row order matching student_ids
+    post_covariates: Optional[np.ndarray] = None
+    post_covariate_columns: Optional[list[str]] = None
 
 
 def prepare_student_covariates(
     student_covariates: pd.DataFrame,
     all_student_ids: Iterable[str],
     student_id_col: str = ColumnNames.STUDENT_ID,
+    arg_name: str = "student_covariates",
+    require_covariate_columns: bool = True,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Validate and index a student-level covariate DataFrame for the JOINT strategy.
+    """Validate and index a student-level covariate DataFrame.
+
+    Used both for the JOINT initial-knowledge strategy's pre-test covariates
+    and for the post-test outcome regression's (optional) covariates.
 
     Parameters
     ----------
@@ -178,6 +198,13 @@ def prepare_student_covariates(
         interaction data being fit/predicted on).
     student_id_col : str, default ColumnNames.STUDENT_ID
         Column name identifying the student in ``student_covariates``.
+    arg_name : str, default "student_covariates"
+        Name to use in error messages, so this can be reused for a
+        differently-named argument (e.g. ``student_post_covariates``).
+    require_covariate_columns : bool, default True
+        Whether at least one covariate column besides ``student_id_col`` is
+        required. Set to False for the post-test outcome regression, where
+        zero covariates (mastery-only regression) is a valid configuration.
 
     Returns
     -------
@@ -188,13 +215,14 @@ def prepare_student_covariates(
     Raises
     ------
     ValueError
-        If ``student_id_col`` is missing, there are no covariate columns, a
-        covariate column is non-numeric, any required student is missing a
-        covariate row, or a required student has a NaN or infinite value.
+        If ``student_id_col`` is missing, there are no covariate columns (and
+        ``require_covariate_columns`` is True), a covariate column is
+        non-numeric, any required student is missing a covariate row, or a
+        required student has a NaN or infinite value.
     """
     if student_id_col not in student_covariates.columns:
         raise ValueError(
-            f"'student_covariates' is missing the student ID column '{student_id_col}'."
+            f"'{arg_name}' is missing the student ID column '{student_id_col}'."
         )
 
     working = student_covariates.copy()
@@ -204,7 +232,7 @@ def prepare_student_covariates(
     if duplicate_mask.any():
         duplicate_ids = sorted(working.loc[duplicate_mask, student_id_col].unique())
         warnings.warn(
-            f"'student_covariates' contains duplicate student IDs: {duplicate_ids}. "
+            f"'{arg_name}' contains duplicate student IDs: {duplicate_ids}. "
             "Keeping the first occurrence of each and dropping the rest.",
             UserWarning,
             stacklevel=2,
@@ -212,9 +240,9 @@ def prepare_student_covariates(
         working = working.drop_duplicates(subset=student_id_col, keep="first")
 
     covariate_columns = [col for col in working.columns if col != student_id_col]
-    if not covariate_columns:
+    if require_covariate_columns and not covariate_columns:
         raise ValueError(
-            "'student_covariates' must contain at least one covariate column besides "
+            f"'{arg_name}' must contain at least one covariate column besides "
             f"'{student_id_col}'."
         )
     non_numeric = [
@@ -224,7 +252,7 @@ def prepare_student_covariates(
     ]
     if non_numeric:
         raise ValueError(
-            f"'student_covariates' has non-numeric covariate column(s): {non_numeric}."
+            f"'{arg_name}' has non-numeric covariate column(s): {non_numeric}."
         )
     indexed = working.set_index(student_id_col)
 
@@ -232,9 +260,12 @@ def prepare_student_covariates(
     missing = [sid for sid in required_ids if sid not in indexed.index]
     if missing:
         raise ValueError(
-            "'student_covariates' is missing rows for student(s) present in the "
+            f"'{arg_name}' is missing rows for student(s) present in the "
             f"interaction data: {missing}."
         )
+
+    if not covariate_columns:
+        return indexed.loc[required_ids], covariate_columns
 
     required = indexed.loc[required_ids, covariate_columns]
     values = np.column_stack(
@@ -245,11 +276,89 @@ def prepare_student_covariates(
         bad_columns = [col for col, flag in zip(covariate_columns, bad.any(axis=0)) if flag]
         bad_students = [sid for sid, flag in zip(required_ids, bad.any(axis=1)) if flag]
         raise ValueError(
-            "'student_covariates' has NaN or infinite values in column(s) "
+            f"'{arg_name}' has NaN or infinite values in column(s) "
             f"{bad_columns} for student(s) {bad_students[:5]}"
             f"{' and more' if len(bad_students) > 5 else ''}."
         )
     return indexed, covariate_columns
+
+
+def prepare_post_outcome(
+    post_outcome: pd.DataFrame,
+    all_student_ids: Iterable[str],
+    student_id_col: str = ColumnNames.STUDENT_ID,
+) -> tuple[pd.DataFrame, str]:
+    """Validate and index a student-level post-test outcome DataFrame.
+
+    Parameters
+    ----------
+    post_outcome : pandas.DataFrame
+        One row per student: ``student_id_col`` plus exactly one outcome column.
+    all_student_ids : Iterable[str]
+        Student IDs that must be covered (typically every student in the
+        interaction data being fit on).
+    student_id_col : str, default ColumnNames.STUDENT_ID
+        Column name identifying the student in ``post_outcome``.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, str]
+        The outcome DataFrame indexed by student ID, and the outcome column name.
+
+    Raises
+    ------
+    ValueError
+        If ``student_id_col`` is missing, there isn't exactly one outcome
+        column, the outcome column is non-numeric, any required student is
+        missing an outcome row, or a required student has a NaN/infinite value.
+    """
+    if student_id_col not in post_outcome.columns:
+        raise ValueError(
+            f"'post_outcome' is missing the student ID column '{student_id_col}'."
+        )
+
+    working = post_outcome.copy()
+    working[student_id_col] = working[student_id_col].astype(str)
+
+    duplicate_mask = working[student_id_col].duplicated(keep=False)
+    if duplicate_mask.any():
+        duplicate_ids = sorted(working.loc[duplicate_mask, student_id_col].unique())
+        warnings.warn(
+            f"'post_outcome' contains duplicate student IDs: {duplicate_ids}. "
+            "Keeping the first occurrence of each and dropping the rest.",
+            UserWarning,
+            stacklevel=2,
+        )
+        working = working.drop_duplicates(subset=student_id_col, keep="first")
+
+    outcome_columns = [col for col in working.columns if col != student_id_col]
+    if len(outcome_columns) != 1:
+        raise ValueError(
+            "'post_outcome' must contain exactly one outcome column besides "
+            f"'{student_id_col}', got {outcome_columns}."
+        )
+    outcome_col = outcome_columns[0]
+    if not pd.api.types.is_numeric_dtype(working[outcome_col]):
+        raise ValueError(f"'post_outcome' column '{outcome_col}' must be numeric.")
+    indexed = working.set_index(student_id_col)
+
+    required_ids = sorted(set(str(sid) for sid in all_student_ids))
+    missing = [sid for sid in required_ids if sid not in indexed.index]
+    if missing:
+        raise ValueError(
+            f"'post_outcome' is missing rows for student(s) present in the "
+            f"interaction data: {missing}."
+        )
+
+    values = indexed.loc[required_ids, outcome_col].to_numpy(dtype=np.float64, na_value=np.nan)
+    bad = ~np.isfinite(values)
+    if bad.any():
+        bad_students = [sid for sid, flag in zip(required_ids, bad) if flag]
+        raise ValueError(
+            f"'post_outcome' has NaN or infinite values for student(s) {bad_students[:5]}"
+            f"{' and more' if len(bad_students) > 5 else ''}."
+        )
+    return indexed, outcome_col
 
 
 def validate_data(
@@ -311,6 +420,10 @@ def format_kc_data(
     print_fn: Optional[Callable] = None,
     student_covariates: Optional[pd.DataFrame] = None,
     covariate_columns: Optional[list[str]] = None,
+    post_outcome: Optional[pd.DataFrame] = None,
+    post_outcome_column: Optional[str] = None,
+    post_covariates: Optional[pd.DataFrame] = None,
+    post_covariate_columns: Optional[list[str]] = None,
 ) -> dict[str, KCData]:
     """
     Format input data for BKT model fitting.
@@ -331,6 +444,16 @@ def format_kc_data(
         (see :func:`prepare_student_covariates`).
     covariate_columns : list[str], optional
         Ordered covariate column names present in ``student_covariates``.
+    post_outcome : pandas.DataFrame, optional
+        Already-validated post-test outcome, indexed by student ID
+        (see :func:`prepare_post_outcome`).
+    post_outcome_column : str, optional
+        Outcome column name present in ``post_outcome``.
+    post_covariates : pandas.DataFrame, optional
+        Already-validated post-test outcome regression covariates, indexed by
+        student ID (see :func:`prepare_student_covariates`).
+    post_covariate_columns : list[str], optional
+        Ordered covariate column names present in ``post_covariates``.
     Returns
     -------
     dict[str, KCData]
@@ -344,6 +467,10 @@ def format_kc_data(
             print_fn=print_fn,
             student_covariates=student_covariates,
             covariate_columns=covariate_columns,
+            post_outcome=post_outcome,
+            post_outcome_column=post_outcome_column,
+            post_covariates=post_covariates,
+            post_covariate_columns=post_covariate_columns,
         )
     )
 
@@ -361,6 +488,10 @@ def iter_kc_data(
     print_fn: Optional[Callable] = None,
     student_covariates: Optional[pd.DataFrame] = None,
     covariate_columns: Optional[list[str]] = None,
+    post_outcome: Optional[pd.DataFrame] = None,
+    post_outcome_column: Optional[str] = None,
+    post_covariates: Optional[pd.DataFrame] = None,
+    post_covariate_columns: Optional[list[str]] = None,
 ) -> Iterator[tuple[str, KCData]]:
     """
     Yield formatted KC data one KC at a time.
@@ -380,6 +511,16 @@ def iter_kc_data(
         (see :func:`prepare_student_covariates`).
     covariate_columns : list[str], optional
         Ordered covariate column names present in ``student_covariates``.
+    post_outcome : pandas.DataFrame, optional
+        Already-validated post-test outcome, indexed by student ID
+        (see :func:`prepare_post_outcome`).
+    post_outcome_column : str, optional
+        Outcome column name present in ``post_outcome``.
+    post_covariates : pandas.DataFrame, optional
+        Already-validated post-test outcome regression covariates, indexed by
+        student ID (see :func:`prepare_student_covariates`).
+    post_covariate_columns : list[str], optional
+        Ordered covariate column names present in ``post_covariates``.
 
     Yields
     ------
@@ -519,6 +660,33 @@ def iter_kc_data(
                 ) from exc
             kc_data_dict["covariates"] = covariates_array
             kc_data_dict["covariate_columns"] = list(covariate_columns)
+
+        if post_outcome is not None and post_outcome_column is not None:
+            try:
+                outcome_array = post_outcome.loc[student_ids, post_outcome_column].to_numpy(
+                    dtype=np.float64
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"KC '{kc}' contains student(s) with no matching row in 'post_outcome': {exc}"
+                ) from exc
+            kc_data_dict["post_outcome"] = outcome_array
+
+        if post_covariates is not None and post_covariate_columns is not None:
+            if post_covariate_columns:
+                try:
+                    post_covariates_array = post_covariates.loc[
+                        student_ids, post_covariate_columns
+                    ].to_numpy(dtype=np.float64)
+                except KeyError as exc:
+                    raise ValueError(
+                        f"KC '{kc}' contains student(s) with no matching row in "
+                        f"'student_post_covariates': {exc}"
+                    ) from exc
+            else:
+                post_covariates_array = np.zeros((n_students, 0), dtype=np.float64)
+            kc_data_dict["post_covariates"] = post_covariates_array
+            kc_data_dict["post_covariate_columns"] = list(post_covariate_columns)
 
         kc_data = KCData(**kc_data_dict)
 

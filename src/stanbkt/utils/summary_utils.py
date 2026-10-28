@@ -79,6 +79,7 @@ _GROUP_PARAMS = {
 }
 _PI_KNOW_PARAMS = {"pi_know", "logit_pi_know_group"}
 _JOINT_SCALAR_PARAMS = {"pi_b0_know_param", "pi_sigma_param"}
+_POST_OUTCOME_SCALAR_PARAMS = {"post_b0_param", "post_b_mastery_param", "post_sigma_param"}
 
 
 def label_summary_index(
@@ -89,6 +90,7 @@ def label_summary_index(
     group_col_name: str,
     student_col_name: str,
     covariate_axis_name: str = "covariate",
+    post_covariate_columns: dict[str, tuple[str, ...] | None] | None = None,
 ) -> pd.DataFrame:
     """Replace Stan integer indexes in a summary with the labels they represent.
 
@@ -104,6 +106,7 @@ def label_summary_index(
     kc_level, param_level = summary_df.index.names
     kcs = summary_df.index.get_level_values(kc_level)
     names = summary_df.index.get_level_values(param_level)
+    post_covariate_columns = post_covariate_columns or {}
 
     base_names: list[str] = []
     axes: list[str] = []
@@ -116,7 +119,7 @@ def label_summary_index(
             labels.append("")
             continue
         base, idx = match.group(1), int(match.group(2))
-        if base in _JOINT_SCALAR_PARAMS:
+        if base in _JOINT_SCALAR_PARAMS or base in _POST_OUTCOME_SCALAR_PARAMS:
             base_names.append(base)
             axes.append("")
             labels.append("")
@@ -124,6 +127,7 @@ def label_summary_index(
         student_map = student2index.get(str(kc))
         group_map = group2index.get(str(kc))
         cov_cols = covariate_columns.get(str(kc))
+        post_cov_cols = post_covariate_columns.get(str(kc))
 
         axis, lookup = "", None
         if base in _GROUP_PARAMS:
@@ -138,6 +142,9 @@ def label_summary_index(
         elif base == "pi_b1_know_param" and cov_cols is not None:
             axis = covariate_axis_name
             lookup = {col: i + 1 for i, col in enumerate(cov_cols)}
+        elif base == "post_b1_param" and post_cov_cols is not None:
+            axis = covariate_axis_name
+            lookup = {col: i + 1 for i, col in enumerate(post_cov_cols)}
 
         index2label = {v: k for k, v in lookup.items()} if lookup else {}
         base_names.append(base)

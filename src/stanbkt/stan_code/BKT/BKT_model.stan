@@ -1,4 +1,6 @@
 functions{
+#include "final_mastery.stan"
+
   /**
   Compute the log density for a slice of students with a scaled forward recursion.
   The recursion runs over time steps with vector operations across students, so the number of
@@ -132,6 +134,23 @@ data {
     int<lower=0, upper=1> unif_prior_pi_b0_know;
     int<lower=0, upper=1> unif_prior_pi_b1_know;
     int<lower=0, upper=1> unif_prior_pi_sigma;
+
+    // post-test outcome regression on final mastery, independent of the init-knowledge strategy above
+    int<lower=0, upper=1> post_outcome_regression; // 1 == post-test outcome regression enabled
+    vector[post_outcome_regression == 1 ? nStudents : 0] post_outcome; // post-test outcome, original student order
+    int<lower=0> nPostCovariates;                 // number of post-test covariates (0 when post_outcome_regression == 0)
+    matrix[nStudents, nPostCovariates] post_covariates; // post-test covariates, original student order
+
+    real prior_post_b0_mu;
+    real<lower=0> prior_post_b0_std;
+    real prior_post_b_mastery_mu;
+    real<lower=0> prior_post_b_mastery_std;
+    array[nPostCovariates] real prior_post_b1_mu;
+    array[nPostCovariates] real<lower=0> prior_post_b1_std;
+    real<lower=0> prior_post_sigma_lambda;
+    int<lower=0, upper=1> unif_prior_post_b0;
+    int<lower=0, upper=1> unif_prior_post_b_mastery;
+    int<lower=0, upper=1> unif_prior_post_b1;
 }
 
 transformed data {
@@ -164,6 +183,12 @@ parameters {
     vector[joint_pi_know == 1 ? nCovariates : 0] pi_b1_know_param;
     vector<lower=0>[joint_pi_know] pi_sigma_param;
     row_vector[joint_pi_know == 1 ? nTrainStudents : 0] logit_pi_know_z;
+
+    // post-test outcome regression parameters, 0-size when post_outcome_regression == 0
+    vector[post_outcome_regression] post_b0_param;
+    vector[post_outcome_regression] post_b_mastery_param;
+    vector[post_outcome_regression == 1 ? nPostCovariates : 0] post_b1_param;
+    vector<lower=0>[post_outcome_regression] post_sigma_param;
 }
 
 transformed parameters {
@@ -204,6 +229,19 @@ model {
     handle_normal_priors_lp(unif_prior_guess, logit_guess_group, prior_guess_mu, prior_guess_std);
     handle_normal_priors_lp(unif_prior_slip, logit_slip_group, prior_slip_mu, prior_slip_std);
 
+    if (post_outcome_regression == 1) {
+        if (unif_prior_post_b0 != 1) {
+            post_b0_param ~ normal(prior_post_b0_mu, prior_post_b0_std);
+        }
+        if (unif_prior_post_b_mastery != 1) {
+            post_b_mastery_param ~ normal(prior_post_b_mastery_mu, prior_post_b_mastery_std);
+        }
+        if (unif_prior_post_b1 != 1 && nPostCovariates > 0) {
+            post_b1_param ~ normal(prior_post_b1_mu, prior_post_b1_std);
+        }
+        post_sigma_param ~ exponential(prior_post_sigma_lambda);
+    }
+
 
     // The following variables are based on the parameters and converted into suitable vector or matrix form.
     // While this could have been technically been done in the transformed parameters block,
@@ -234,5 +272,38 @@ model {
                         to_vector(learn[groups_sorted]), to_vector(forget[groups_sorted]),
                         to_vector(guess[groups_sorted]), to_vector(slip[groups_sorted]),
                         pi_know_student);
+
+    // post-test outcome regression on final (filtered) mastery, jointly estimated with the BKT fit above.
+    // Runs a second forward pass in original (unsorted) student order since it can't ride on the
+    // reduce_sum call above: reduce_sum only ever combines its shards into a single summed real, so a
+    // per-student vector of terminal states can't be extracted from it.
+    if (post_outcome_regression == 1) {
+        vector[nStudents] pi_know_student_orig;
+        if (joint_pi_know == 1) {
+            vector[nStudents] logit_pi_know_vec = rep_vector(pi_b0_know_param[1], nStudents)
+                + pi_sigma_param[1] * to_vector(logit_pi_know_z);
+            if (nCovariates > 0) {
+                logit_pi_know_vec += covariates * pi_b1_know_param;
+            }
+            pi_know_student_orig = inv_logit(logit_pi_know_vec);
+        } else if (individual_pi_know == 1) {
+            pi_know_student_orig = to_vector(pi_know);
+        } else {
+            pi_know_student_orig = to_vector(pi_know[groups]);
+        }
+
+        vector[nStudents] final_pknow = final_pknow_forward(
+            interaction_lengths, correctness,
+            to_vector(learn[groups]), to_vector(forget[groups]),
+            to_vector(guess[groups]), to_vector(slip[groups]),
+            pi_know_student_orig);
+
+        vector[nStudents] post_mu = rep_vector(post_b0_param[1], nStudents)
+            + post_b_mastery_param[1] * final_pknow;
+        if (nPostCovariates > 0) {
+            post_mu += post_covariates * post_b1_param;
+        }
+        post_outcome ~ normal(post_mu, post_sigma_param[1]);
+    }
 
 }

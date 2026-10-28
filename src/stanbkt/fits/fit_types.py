@@ -91,6 +91,9 @@ class FitSaveEntry:
     covariate_columns : tuple[str, ...] | None, default=None
         Optional ordered covariate column names used to fit this KC under the
         JOINT strategy. Defines the order of the ``pi_b1_know`` coefficients.
+    post_covariate_columns : tuple[str, ...] | None, default=None
+        Optional ordered covariate column names used to fit this KC's post-test
+        outcome regression. Defines the order of the ``post_b1`` coefficients.
     """
 
     kc: str
@@ -100,6 +103,7 @@ class FitSaveEntry:
     groups: Union[set[str], None] = None
     student2index: Union[dict[str, int], None] = None
     covariate_columns: Union[tuple[str, ...], None] = None
+    post_covariate_columns: Union[tuple[str, ...], None] = None
 
     def __hash__(self) -> int:
         """Compute a stable hash even when optional mapping/set fields are present."""
@@ -127,6 +131,7 @@ class FitSaveEntry:
                 groups_hashable,
                 student2index_hashable,
                 self.covariate_columns,
+                self.post_covariate_columns,
             )
         )
 

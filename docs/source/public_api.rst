@@ -64,6 +64,32 @@ Example Usage:
 
    InitKnowledgeStrategy
 
+Post-Test Outcome Regression
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Mirrors the JOINT initial knowledge strategy in the opposite direction: jointly estimate a
+regression of a post-test outcome on each student's final (filtered) mastery probability,
+optionally plus additional post-test covariates. Independent of
+``individual_initial_knowledge``/``init_knowledge_strategy`` and can be combined with either.
+
+Example Usage:
+
+.. code-block:: python
+   :emphasize-lines: 1,4,8
+
+   from stanbkt.models import StandardBKT
+
+   # instantiate a model that jointly estimates final mastery's effect on a post-test outcome
+   model = StandardBKT(post_outcome_regression=True)
+
+   # post_outcome: one row per student, a student ID column plus exactly one outcome column.
+   # student_post_covariates is optional (zero or more additional covariate columns).
+   model.fit(data, post_outcome=post_outcome_df, student_post_covariates=post_covariates_df)
+
+   # post_b0_param, post_b_mastery_param, post_b1_param (per covariate), post_sigma_param
+   # appear as additional rows in model.summary() when post_outcome_regression=True.
+   model.summary()
+
 Bayesian Priors
 ^^^^^^^^^^^^^^^
 

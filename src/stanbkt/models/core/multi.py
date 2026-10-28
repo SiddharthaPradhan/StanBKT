@@ -61,6 +61,10 @@ class MultiBKT(BKTModelBase):
         Strategy for estimating initial knowledge when `individual_initial_knowledge` is True. This determines how the initial knowledge parameters are informed by the data:
         - InitKnowledgeStrategy.CORRECTNESS_ONLY: Initial knowledge is informed solely by the correctness of the first interaction for each student.
         - InitKnowledgeStrategy.JOINT: Initial knowledge is informed by both the correctness and a supplied student-level covariate.
+    post_outcome_regression : bool, default False
+        Whether to jointly estimate a regression of a post-test outcome on each student's
+        final (filtered) mastery, optionally plus post-test covariates. Independent of
+        `individual_initial_knowledge`/`init_knowledge_strategy`.
     low_memory : bool
         Whether to evict each KC's fit to disk after fitting, reloading it lazily on
         next access. Reduces peak memory usage when fitting many KCs at the cost of
@@ -75,6 +79,7 @@ class MultiBKT(BKTModelBase):
         cpp_compile_kwargs: dict | None = None,
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
+        post_outcome_regression: bool = False,
         low_memory: bool = False,
     ):
         super().__init__(
@@ -82,6 +87,7 @@ class MultiBKT(BKTModelBase):
             fit_method=fit_method,
             individual_initial_knowledge=individual_initial_knowledge,
             init_knowledge_strategy=init_knowledge_strategy,
+            post_outcome_regression=post_outcome_regression,
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
             low_memory=low_memory,
@@ -229,6 +235,7 @@ class MultiBKT(BKTModelBase):
                 data_dict[f"prior_{std_key}"] = std_list
                 data_dict[f"unif_prior_{param}"] = 0
 
+        data_dict.update(self._post_outcome_stan_data(kc_data, raw_priors))
         return data_dict
 
     @staticmethod

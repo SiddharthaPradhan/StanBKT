@@ -56,6 +56,11 @@ def fit_metadata_to_json(fit_metadata: FitMetadata, *, indent: int = 2) -> str:
                     if fit_save.covariate_columns not in (None, ())
                     else {}
                 ),
+                **(
+                    {"post_covariate_columns": list(fit_save.post_covariate_columns)}
+                    if fit_save.post_covariate_columns not in (None, ())
+                    else {}
+                ),
             }
             for fit_save in natsort.natsorted(
                 fit_metadata.fit_saves.values(),
@@ -202,6 +207,18 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
                 )
             parsed_covariate_columns = tuple(covariate_columns_raw)
 
+        post_covariate_columns_raw = entry.get("post_covariate_columns", None)
+        if post_covariate_columns_raw is None:
+            parsed_post_covariate_columns: tuple[str, ...] | None = None
+        else:
+            if not isinstance(post_covariate_columns_raw, list) or not all(
+                isinstance(col, str) for col in post_covariate_columns_raw
+            ):
+                raise ValueError(
+                    f"Error parsing fit metadata: metadata for KC '{kc}' field 'post_covariate_columns' must be an array of strings when provided."
+                )
+            parsed_post_covariate_columns = tuple(post_covariate_columns_raw)
+
         parsed_fit_saves[kc] = FitSaveEntry(
             kc=kc,
             save_folder=save_folder,
@@ -210,6 +227,7 @@ def fit_metadata_from_json(raw_text: str) -> FitMetadata:
             groups=parsed_groups,
             student2index=parsed_student2index,
             covariate_columns=parsed_covariate_columns,
+            post_covariate_columns=parsed_post_covariate_columns,
         )
 
     return FitMetadata(
