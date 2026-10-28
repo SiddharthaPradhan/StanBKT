@@ -279,7 +279,7 @@ def _summarize_single_kc_draws(
     has_order_col = "_order" in kc_df.columns
     groupby_cols = param_id_cols + (["_order"] if has_order_col else [])
     kc_summary: pd.DataFrame = (
-        kc_df.groupby(groupby_cols, sort=False).agg(**agg_kwargs).reset_index()
+        kc_df.groupby(groupby_cols, sort=False, observed=True).agg(**agg_kwargs).reset_index()
     )
     student_col_name = col_mapping.get(ColumnNames.STUDENT_ID)
     sort_cols = [student_col_name] + (["_order"] if has_order_col else [])

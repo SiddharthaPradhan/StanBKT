@@ -69,7 +69,7 @@ Existing: `01_setup`, `02_simple_example`, `03_multi_BKT_example`. Add, in the g
 
 ## 5. Build and site housekeeping
 
-- [ ] Add a Changelog page (`docs/source/changelog.rst`) and link it from `index.rst`; record the memory work (including compact dtypes and the constant categorical KC column in draw-level prediction output), JOINT strategy, and `low_memory` as they ship.
+- [ ] Add a Changelog page (`docs/source/changelog.rst`) and link it from `index.rst`; record the memory work (including compact dtypes and the constant categorical KC column in draw-level prediction output), JOINT strategy, `low_memory`, and the `predict_posterior_summary` fix for pandas 2.x (categorical IDs produced extra all-NaN rows) as they ship.
 - [ ] Add a Contributing/Development page (uv commands, running tests, slow tests marker, docs build, Stan code layout) sourced from CLAUDE.md.
 - [ ] Decide whether nbsphinx should execute notebooks on build (`nbsphinx_execute`) or keep stored outputs; document the choice.
 - [ ] Set `fail_on_warning` to true in `.readthedocs.yaml` once the stale references above are fixed.
