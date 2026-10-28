@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.core.standard import StandardBKT
 from stanbkt.utils.data_utils import KCData, StudentInteraction
 
@@ -20,31 +23,55 @@ def _simple_data(n_students=4, n_problems=3):
     return pd.DataFrame(rows)
 
 
+def _mock_fit(model, monkeypatch):
+    monkeypatch.setattr(
+        model, "_compile_model", lambda _: setattr(model, "_stan_model", object())
+    )
+    captured: list[dict] = []
+
+    def _fake_fit(data_dict, fit_options):
+        captured.append(data_dict)
+        return MagicMock()
+
+    monkeypatch.setattr(model, "_fit_stan_model_using_method", _fake_fit)
+    monkeypatch.setattr(
+        FitMethod,
+        "infer_fit_method_from_stan_fit",
+        staticmethod(lambda _: FitMethod.MCMC),
+    )
+    return captured
+
+
 class TestFitValidation:
-    def test_missing_post_outcome_raises(self):
+    def test_missing_post_outcome_raises(self, monkeypatch):
         model = StandardBKT(post_outcome_regression=True)
+        _mock_fit(model, monkeypatch)
         with pytest.raises(ValueError, match="post_outcome"):
             model.fit(_simple_data())
 
-    def test_post_outcome_missing_student_raises(self):
+    def test_post_outcome_missing_student_raises(self, monkeypatch):
         model = StandardBKT(post_outcome_regression=True)
+        _mock_fit(model, monkeypatch)
         post_outcome = pd.DataFrame({"student_id": [0, 1, 2], "score": [1.0, 2.0, 3.0]})
         with pytest.raises(ValueError, match="missing rows"):
             model.fit(_simple_data(), post_outcome=post_outcome)
 
-    def test_post_outcome_multiple_outcome_columns_raises(self):
+    def test_post_outcome_multiple_outcome_columns_raises(self, monkeypatch):
         model = StandardBKT(post_outcome_regression=True)
+        _mock_fit(model, monkeypatch)
         post_outcome = pd.DataFrame(
             {"student_id": [0, 1, 2, 3], "a": [1.0, 2.0, 3.0, 4.0], "b": [1.0, 2.0, 3.0, 4.0]}
         )
         with pytest.raises(ValueError, match="exactly one outcome column"):
             model.fit(_simple_data(), post_outcome=post_outcome)
 
-    def test_disabled_by_default_ignores_post_outcome_kwarg(self):
+    def test_disabled_by_default_ignores_post_outcome_kwarg(self, monkeypatch):
         # post_outcome_regression=False (default): fit succeeds even without post_outcome.
         model = StandardBKT()
-        model.fit(_simple_data(), stan_fit_options={"show_console": False})
+        captured = _mock_fit(model, monkeypatch)
+        model.fit(_simple_data())
         assert model.fits.has_kc("default_kc")
+        assert captured[0]["post_outcome_regression"] == 0
 
 
 class TestStanDataDict:
