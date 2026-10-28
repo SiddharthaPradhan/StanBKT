@@ -70,7 +70,7 @@ Existing: `01_setup`, `02_simple_example`, `03_multi_BKT_example`. Add, in the g
 ## 5. Build and site housekeeping
 
 - [ ] Add a Changelog page (`docs/source/changelog.rst`) and link it from `index.rst`; record the memory work (including compact dtypes and the constant categorical KC column in draw-level prediction output), JOINT strategy, `low_memory`, and the `predict_posterior_summary` fix for pandas 2.x (categorical IDs produced extra all-NaN rows) as they ship.
-- [ ] Add a Contributing/Development page (uv commands, running tests, slow tests marker, docs build, Stan code layout) sourced from CLAUDE.md.
+- [ ] Add a Contributing/Development page (uv commands, running tests, slow tests marker, docs build, Stan code layout, release process: bump `pyproject.toml`, push a `v<version>` or `<version>` tag, `release.yml` runs CI then publishes to PyPI and creates a GitHub Release) sourced from CLAUDE.md.
 - [ ] Decide whether nbsphinx should execute notebooks on build (`nbsphinx_execute`) or keep stored outputs; document the choice.
 - [ ] Set `fail_on_warning` to true in `.readthedocs.yaml` once the stale references above are fixed.
 - [ ] Draw-level prediction output (`predict_*posterior_draws`): optional `dtype=np.float32` for `pKnow` and `pCorrectness` (halves the float columns), student chunking for the Stan backend (`draws_pd()` is wide, peak is about 2.5x the final frame), and a possible wide (draw by observation) `output_format`. Not implemented; the full itv data (80M rows) now peaks at about 2 GB (numba) and 5.5 GB (stan).
