@@ -494,6 +494,10 @@ class TestMultiPriorsValidateSingle:
         with pytest.raises(TypeError, match="Invalid model class"):
             MultiPriors._validate_single(p, StandardBKT, CO)
 
+    def test_list_length_not_checked_without_n_groups(self):
+        p = MultiPriors(learn_mu=[0.0, 1.0, 2.0])
+        MultiPriors._validate(p, MultiBKT, CO)  # should not raise
+
     def test_list_wrong_length_raises_value_error(self):
         p = MultiPriors(learn_mu=[0.0, 1.0, 2.0])  # length 3
         with pytest.raises(ValueError, match="length 2"):

@@ -134,7 +134,7 @@ class PriorsBase(ABC):
         priors: Union[PriorsBase, dict[str, PriorsBase]],
         model_class: type[BKTModelBase],
         estimation_strategy: InitKnowledgeStrategy,
-        n_groups: int = 0,
+        n_groups: int | None = None,
     ) -> None:
         """
         Validate the provided priors. This mainly checks the lambda and std parameters to ensure they are positive and non-zero.
@@ -177,7 +177,7 @@ class PriorsBase(ABC):
         model_class: type[BKTModelBase],
         estimation_strategy: InitKnowledgeStrategy,
         kc_id: str | None = None,
-        n_groups=0,  # unused in standard priors, but left here for signature consistency
+        n_groups: int | None = None,  # unused in standard priors, but left here for signature consistency
     ) -> None:
         """Validate that the prior values are compatible with expected types and model structure."""
         raise NotImplementedError(
@@ -378,7 +378,7 @@ class StandardPriors(PriorsBase):
         model_class: type[BKTModelBase],
         estimation_strategy: InitKnowledgeStrategy,
         kc_id: str | None = None,
-        n_groups=0,  # unused in standard priors, but left here for signature consistency
+        n_groups: int | None = None,  # unused in standard priors, but left here for signature consistency
     ) -> None:
         """Validate that the prior values are compatible with expected types and model structure.
 
@@ -522,7 +522,7 @@ class MultiPriors(PriorsBase):
         model_class: type[BKTModelBase],
         estimation_strategy: InitKnowledgeStrategy,
         kc_id: str | None = None,
-        n_groups=0,  # unused in standard priors, but left here for signature consistency
+        n_groups: int | None = None,  # None skips the list length check (groups not known yet)
     ) -> None:
         """Validate that the prior values are compatible with expected types and model structure.
 
@@ -543,7 +543,7 @@ class MultiPriors(PriorsBase):
                 )
             # if value is a list, check that its length matches n_groups, except for
             # pi_b1_know_mu/std and post_b1_mu/std which are per-covariate lists, not per-group
-            if isinstance(value, list) and key not in (
+            if n_groups is not None and isinstance(value, list) and key not in (
                 "pi_b1_know_mu", "pi_b1_know_std", "post_b1_mu", "post_b1_std",
             ):
                 if len(value) != n_groups:

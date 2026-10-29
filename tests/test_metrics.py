@@ -150,12 +150,23 @@ class TestAUC:
         with pytest.raises(ValueError, match="AUC is undefined"):
             auc([0, 0, 0], [0.5, 0.6, 0.7])
 
-    def test_ties_handled(self):
-        # All predictions equal — random tie-breaking, but AUC should be computable.
-        y = [0, 1, 0, 1]
-        p = [0.5, 0.5, 0.5, 0.5]
-        result = auc(y, p)
-        assert 0.0 <= result <= 1.0
+    def test_all_tied_predictions_return_half(self):
+        assert auc([0, 1, 0, 1], [0.5, 0.5, 0.5, 0.5]) == pytest.approx(0.5)
+
+    def test_ties_do_not_depend_on_row_order(self):
+        assert auc([1, 0], [0.5, 0.5]) == pytest.approx(0.5)
+        assert auc([0, 1], [0.5, 0.5]) == pytest.approx(0.5)
+
+    def test_partial_ties_count_half(self):
+        # pairs (pos, neg): (0.9, 0.5) correct, (0.5, 0.5) tie, (0.9, 0.1) and (0.5, 0.1) correct
+        assert auc([1, 0, 1, 0], [0.9, 0.5, 0.5, 0.1]) == pytest.approx(0.875)
+
+    def test_matches_sklearn_with_ties(self):
+        sklearn_metrics = pytest.importorskip("sklearn.metrics")
+        rng = np.random.default_rng(3)
+        y = rng.integers(0, 2, size=300)
+        p = rng.integers(0, 10, size=300) / 10  # heavy ties
+        assert auc(y, p) == pytest.approx(sklearn_metrics.roc_auc_score(y, p))
 
     def test_known_two_point_case(self):
         # One positive, one negative, positive ranked first.

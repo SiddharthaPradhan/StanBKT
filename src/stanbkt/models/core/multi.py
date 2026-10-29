@@ -268,7 +268,7 @@ class MultiBKT(BKTModelBase):
         """
         stan_var_fn = getattr(fit, "stan_variable", None)
         if callable(stan_var_fn):
-            arr = np.asarray(stan_var_fn(param_name), dtype=np.float64)
+            arr = np.asarray(MultiBKT._stan_variable_draws(fit, param_name), dtype=np.float64)
             if arr.ndim == 1:
                 # MLE/MAP: single value per group
                 return arr

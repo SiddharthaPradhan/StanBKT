@@ -342,6 +342,15 @@ class BKTModelBase(VerboseMixin, ABC):
                 if isinstance(priors, dict)
                 else priors
             )
+            # per group list lengths can only be checked once the KC's groups are known
+            if kc_data.group_2_index is not None:
+                self._default_priors_class()._validate_single(
+                    kc_priors,
+                    type(self),
+                    self.init_knowledge_strategy,
+                    kc_id=str(kc_id),
+                    n_groups=len(kc_data.group_2_index),
+                )
             data_dict = self._build_stan_data_dict(kc_data, kc_priors)
             data_dict["grainsize"] = stan_fit_options.resolve_grainsize(data_dict["nStudents"])
             return self._fit_stan_model_using_method(
@@ -377,7 +386,7 @@ class BKTModelBase(VerboseMixin, ABC):
             for kc in data_kcs:
                 if self.fits.has_kc(kc):
                     raise ValueError(
-                        f"Fit for KC '{kc}' already exists. Set 'overwrite=True' to overwrite."
+                        f"Fit for KC '{kc}' already exists. Set 'overwrite_kcs=True' to overwrite."
                     )
 
         # fits are recorded in KC order so the fit state matches a sequential run
@@ -1303,6 +1312,13 @@ class BKTModelBase(VerboseMixin, ABC):
         raise NotImplementedError
 
     @staticmethod
+    def _stan_variable_draws(fit: Any, param_name: str) -> Any:
+        """Return a Stan variable's draws, ``CmdStanVB.stan_variable`` returns the mean unless asked."""
+        if isinstance(fit, csp.CmdStanVB):
+            return fit.stan_variable(param_name, mean=False)
+        return fit.stan_variable(param_name)
+
+    @staticmethod
     def _extract_named_param_matrix(
         fit: CmdStanFit, param_name: str
     ) -> npt.NDArray[np.float64]:
@@ -1313,7 +1329,9 @@ class BKTModelBase(VerboseMixin, ABC):
         """
         stan_variable_fn = getattr(fit, "stan_variable", None)
         if callable(stan_variable_fn):
-            values = np.asarray(stan_variable_fn(param_name), dtype=np.float64)
+            values = np.asarray(
+                BKTModelBase._stan_variable_draws(fit, param_name), dtype=np.float64
+            )
         else:
             values = np.asarray(
                 BKTModelBase._extract_param_draws(fit, param_name), dtype=np.float64
@@ -1429,7 +1447,7 @@ class BKTModelBase(VerboseMixin, ABC):
         stan_variable_fn = getattr(fit, "stan_variable", None)
         if callable(stan_variable_fn):
             try:
-                return _to_1d(stan_variable_fn(param_name))
+                return _to_1d(BKTModelBase._stan_variable_draws(fit, param_name))
             except Exception:
                 pass
 

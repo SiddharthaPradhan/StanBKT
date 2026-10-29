@@ -86,7 +86,7 @@ def _extract_param_draw_matrix(
 ) -> npt.NDArray[np.float64]:
     stan_variable_fn = getattr(fit, "stan_variable", None)
     if callable(stan_variable_fn):
-        values = np.asarray(stan_variable_fn(param_name), dtype=np.float64)
+        values = np.asarray(model._stan_variable_draws(fit, param_name), dtype=np.float64)
     else:
         values = np.asarray(
             model._extract_param_draws(fit, param_name), dtype=np.float64

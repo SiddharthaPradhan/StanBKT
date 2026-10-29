@@ -481,6 +481,45 @@ class TestFitGuards:
             model.fit(_grouped_df())
 
 
+def _capture_fit_data(model, monkeypatch):
+    monkeypatch.setattr(
+        model, "_compile_model", lambda _: setattr(model, "_stan_model", object())
+    )
+    monkeypatch.setattr(
+        FitMethod, "infer_fit_method_from_stan_fit", staticmethod(lambda _: FitMethod.MCMC)
+    )
+    captured: list[dict] = []
+
+    def _fake_fit(data_dict, fit_options):
+        captured.append(data_dict)
+        return MagicMock()
+
+    monkeypatch.setattr(model, "_fit_stan_model_using_method", _fake_fit)
+    return captured
+
+
+class TestFitGroupListPriors:
+    def test_per_group_list_priors_reach_stan_data(self, monkeypatch):
+        model = MultiBKT(verbose=VerbosityLevel.WARN)
+        captured = _capture_fit_data(model, monkeypatch)
+        model.fit(_grouped_df(n_groups=3), priors=MultiPriors(learn_mu=[-2.0, -1.0, 0.0]))
+        assert captured[0]["prior_learn_mu"] == [-2.0, -1.0, 0.0]
+
+    def test_per_kc_dict_of_list_priors(self, monkeypatch):
+        model = MultiBKT(verbose=VerbosityLevel.WARN)
+        captured = _capture_fit_data(model, monkeypatch)
+        df = _grouped_df(n_groups=2).assign(kc_id="kc_a")
+        model.fit(df, priors={"kc_a": MultiPriors(slip_std=[1.0, 2.0])})
+        assert captured[0]["prior_slip_std"] == [1.0, 2.0]
+
+    def test_wrong_length_list_raises_with_kc_id(self, monkeypatch):
+        model = MultiBKT(verbose=VerbosityLevel.WARN)
+        _capture_fit_data(model, monkeypatch)
+        df = _grouped_df(n_groups=2).assign(kc_id="kc_a")
+        with pytest.raises(ValueError, match="KC 'kc_a' must be a list of length 2"):
+            model.fit(df, priors=MultiPriors(learn_mu=[0.0, 1.0, 2.0]))
+
+
 # ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------

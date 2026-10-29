@@ -46,6 +46,8 @@ def rmse(correctness: npt.ArrayLike, predictions: npt.ArrayLike) -> float:
 def auc(correctness: npt.ArrayLike, predictions: npt.ArrayLike) -> float:
     """Compute the area under the ROC curve (AUC).
 
+    Matches ``sklearn.metrics.roc_auc_score``: tied predictions form a single ROC point,
+    so a tie between a positive and a negative counts as half a correct ranking.
 
     Parameters
     ----------
@@ -63,7 +65,8 @@ def auc(correctness: npt.ArrayLike, predictions: npt.ArrayLike) -> float:
     predictions = np.asarray(predictions)
 
     # sort by descending predicted probability
-    desc_order = np.argsort(-predictions)
+    desc_order = np.argsort(-predictions, kind="mergesort")
+    sorted_preds = predictions[desc_order]
     sorted_labels = correctness[desc_order]
 
     n_pos = int(np.sum(sorted_labels == 1))
@@ -74,8 +77,10 @@ def auc(correctness: npt.ArrayLike, predictions: npt.ArrayLike) -> float:
             "AUC is undefined when only one class is present in correctness."
         )
 
-    tps = np.cumsum(sorted_labels == 1)
-    fps = np.cumsum(sorted_labels == 0)
+    # one ROC point per distinct prediction, at the last index of each run of ties
+    threshold_idxs = np.r_[np.flatnonzero(np.diff(sorted_preds)), sorted_preds.size - 1]
+    tps = np.cumsum(sorted_labels == 1)[threshold_idxs]
+    fps = np.cumsum(sorted_labels == 0)[threshold_idxs]
 
     tpr = tps / n_pos
     fpr = fps / n_neg

@@ -382,3 +382,27 @@ class TestGetKCInFittedKCs:
         m = _ConcreteModel()
         with pytest.raises(RuntimeError):
             m.get_kcs_in_fitted_kcs({"kc_a"})
+
+
+class TestStanVariableDraws:
+    def test_vb_fit_requests_draws_not_mean(self):
+        import cmdstanpy as csp
+
+        fit = MagicMock(spec=csp.CmdStanVB)
+        fit.stan_variable.return_value = np.zeros((10, 1))
+        BKTModelBase._stan_variable_draws(fit, "learn")
+        fit.stan_variable.assert_called_once_with("learn", mean=False)
+
+    def test_other_fits_use_default_call(self):
+        fit = MagicMock()
+        BKTModelBase._stan_variable_draws(fit, "learn")
+        fit.stan_variable.assert_called_once_with("learn")
+
+    def test_vb_draw_matrix_keeps_every_draw(self):
+        import cmdstanpy as csp
+
+        fit = MagicMock(spec=csp.CmdStanVB)
+        fit.stan_variable.side_effect = lambda name, mean=None: (
+            np.arange(5.0).reshape(5, 1) if mean is False else np.array(2.0)
+        )
+        assert BKTModelBase._extract_named_param_matrix(fit, "learn").shape == (5, 1)
