@@ -125,6 +125,7 @@ Download this notebook from {GITHUB_ROOT_URL}/docs/source/{{{{ env.doc2path(env.
 html_js_files = [
     ("readTheDocsSearch.js", {"defer": "defer"}),
 ]
+html_css_files = ["custom.css"]
 
 # Application Events
 

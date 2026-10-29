@@ -1,0 +1,12 @@
+/* example gallery card titles */
+.example-card .sd-card-title {
+    color: var(--pst-color-primary);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.25em;
+}
+
+.example-card:hover .sd-card-title {
+    color: var(--pst-color-secondary);
+    text-decoration-thickness: 2px;
+}
