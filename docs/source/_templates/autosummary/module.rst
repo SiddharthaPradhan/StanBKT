@@ -7,6 +7,7 @@
 
 .. autosummary::
    :toctree: _autosummary
+   :template: autosummary/internal_function.rst
 
 {% for item in functions %}
    {{ item }}
@@ -18,6 +19,7 @@
 
 .. autosummary::
    :toctree: _autosummary
+   :template: autosummary/internal_class.rst
 
 {% for item in classes %}
    {{ item }}
@@ -29,6 +31,7 @@
 
 .. autosummary::
    :toctree: _autosummary
+   :template: autosummary/internal_class.rst
 
 {% for item in exceptions %}
    {{ item }}
@@ -42,3 +45,4 @@
    :undoc-members:
    :inherited-members:
    :show-inheritance:
+   :no-index:

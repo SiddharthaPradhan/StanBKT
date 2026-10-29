@@ -8,6 +8,7 @@
 import os
 import sys
 import enum
+import importlib
 import stanbkt
 
 project = "StanBKT"
@@ -47,6 +48,45 @@ exclude_patterns = []
 autosummary_generate = True
 autosummary_imported_members = True
 
+INTERNAL_API_MODULES = ["stanbkt.models", "stanbkt.fits", "stanbkt.plot", "stanbkt.utils"]
+
+
+def _public_api_objects() -> list:
+    """Objects listed in the autosummary tables of public_api.rst."""
+    path = os.path.join(os.path.dirname(__file__), "public_api.rst")
+    objects, module, in_table = [], None, False
+    with open(path) as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith(".. currentmodule::"):
+                module = stripped.split("::", 1)[1].strip()
+            elif stripped.startswith(".. autosummary::"):
+                in_table = True
+            elif in_table and line[:1] not in (" ", "\n"):
+                in_table = False
+            elif in_table and stripped and not stripped.startswith(":"):
+                obj = importlib.import_module(module)
+                for part in stripped.split("."):
+                    obj = getattr(obj, part)
+                objects.append(obj)
+    return objects
+
+
+def _internal_names_of_public_objects() -> list[str]:
+    """Internal API names that point to a public object, e.g. both FitMethodMismatchError re-exports."""
+    public_ids = {id(obj) for obj in _public_api_objects()}
+    names = []
+    for module_name in INTERNAL_API_MODULES:
+        module = importlib.import_module(module_name)
+        for name, obj in vars(module).items():
+            if not name.startswith("_") and id(obj) in public_ids:
+                names.append(f"{module_name}.{name}")
+    return sorted(names)
+
+
+# the public pages own the cross reference targets, internal stubs of public objects use :no-index:
+autosummary_context = {"public_names": _internal_names_of_public_objects()}
+
 # TOC tree config
 toc_object_entries_show_parents = "hide"
 
@@ -85,6 +125,7 @@ sphinx_gallery_conf = {
 # html_theme = "furo"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 html_favicon = "_static/favicon.ico"
 
 # html_theme_options = {
@@ -125,7 +166,6 @@ Download this notebook from {GITHUB_ROOT_URL}/docs/source/{{{{ env.doc2path(env.
 html_js_files = [
     ("readTheDocsSearch.js", {"defer": "defer"}),
 ]
-html_css_files = ["custom.css"]
 
 # Application Events
 
