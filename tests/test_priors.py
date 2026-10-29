@@ -116,7 +116,7 @@ class TestStandardPriorsConstruction:
         assert p.pi_b0_know_std == 5.0
         assert p.pi_b1_know_mu == 0.0
         assert p.pi_b1_know_std == 5.0
-        assert p.pi_sigma_lambda == 0.5
+        assert p.pi_sigma_lambda == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +270,7 @@ class TestStandardPriorsGetDefaultPriors:
 
     def test_default_pi_sigma_lambda_in_joint(self):
         d = StandardPriors.get_default_priors(JOINT)
-        assert d["pi_sigma_lambda"] == 0.5
+        assert d["pi_sigma_lambda"] == 5.0
 
 
 # ---------------------------------------------------------------------------

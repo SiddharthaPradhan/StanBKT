@@ -217,7 +217,7 @@ class PriorsBase(ABC):
             "pi_b0_know_std": 5.0,
             "pi_b1_know_mu": 0.0,
             "pi_b1_know_std": 5.0,
-            "pi_sigma_lambda": 0.5,
+            "pi_sigma_lambda": 5.0,  # mean 0.2, sigma and b1 are weakly identified from one initial state per student
             "post_b0_mu": 0.0,
             "post_b0_std": 5.0,
             "post_b_mastery_mu": 0.0,
@@ -286,8 +286,8 @@ class StandardPriors(PriorsBase):
     non-informative priors for all parameters, which implies the MAP solllution will be
     equivalent to maximum likelihood estimation.
 
-    Each parameter can be specified as a scalar (standard model), a list of
-    values (grouped model), or None (non-informative priors).
+    Each parameter can be specified as a scalar or None (non-informative prior). Use
+    :class:`MultiPriors` for per group values with :class:`MultiBKT`.
 
     Guess and slip are modeled on the half-logit scale to constrain them to [0, 0.5].
     All other parameters are modeled on the logit scale.
@@ -304,32 +304,47 @@ class StandardPriors(PriorsBase):
     forget_std : float |  None, default 5.0
         Prior std dev for logit-scale forgetting rate.
     guess_mu : float |  None, default -1.0
-        Prior mean for logit-scale guessing probability.
+        Prior mean for half-logit-scale guessing probability.
     guess_std : float |  None, default 5.0
-        Prior std dev for logit-scale guessing probability.
+        Prior std dev for half-logit-scale guessing probability.
     slip_mu : float |  None, default -1.0
-        Prior mean for logit-scale slipping probability.
+        Prior mean for half-logit-scale slipping probability.
     slip_std : float |  None, default 5.0
-        Prior std dev for logit-scale slipping probability.
+        Prior std dev for half-logit-scale slipping probability.
     pi_know_mu : float |  None, default -2.0
         Prior mean for logit-scale initial knowledge probability.
     pi_know_std : float |  None, default 5.0
         Prior std dev for logit-scale initial knowledge probability.
-    pi_b0_know_mu: float | None, default 0.0
-        Prior mean for the intercept (b0) in the linear regression of logit initial knowledge.
-        Used only when estimation_type=:attr: InitKnowledgeStrategy.JOINT.
-    pi_b0_know_std: float | None, default 5.0
-        Prior std dev for the intercept (b0) in the linear regression of logit initial knowledge.
-        Used only when estimation_type=:attr: stanbkt.models.model_types.InitKnowledgeStrategy.JOINT.
-    pi_b1_know_mu: float | None, default 0.0
-        Prior mean for the slope (b1) in the linear regression of logit initial knowledge.
-        Used only when estimation_type=:attr: stanbkt.models.model_types.InitKnowledgeStrategy.JOINT.
-    pi_b1_know_std: float | None, default 5.0
-        Prior std dev for the slope (b1) in the linear regression of logit initial knowledge.
-        Used only when estimation_type=:attr: stanbkt.models.model_types.InitKnowledgeStrategy.JOINT.
-    pi_sigma_lambda: float | None, default 1.0
-        Prior for the standard deviation of the linear regression residuals.
-        Used only when estimation_type=:attr: stanbkt.models.model_types.InitKnowledgeStrategy.JOINT.
+    pi_b0_know_mu : float | None, default 0.0
+        Prior mean for the intercept (b0) in the regression of logit initial knowledge.
+        Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b0_know_std : float | None, default 5.0
+        Prior std dev for the intercept (b0). Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b1_know_mu : float | list[float] | None, default 0.0
+        Prior mean for the covariate slopes (b1). A scalar applies to every covariate, a list
+        gives one value per covariate. Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b1_know_std : float | list[float] | None, default 5.0
+        Prior std dev for the covariate slopes (b1), scalar or one value per covariate.
+        Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_sigma_lambda : float | None, default 5.0
+        Rate of the Exponential prior on the regression residual std dev (sigma), prior mean 0.2.
+        Kept tight because sigma and the b1 slopes are weakly identified, a loose prior inflates
+        both. Used only with `InitKnowledgeStrategy.JOINT`.
+    post_b0_mu : float | None, default 0.0
+        Prior mean for the intercept of the post-test outcome regression.
+        Used only when `post_outcome_regression=True`.
+    post_b0_std : float | None, default 5.0
+        Prior std dev for the post-test outcome intercept.
+    post_b_mastery_mu : float | None, default 0.0
+        Prior mean for the effect of final mastery on the post-test outcome.
+    post_b_mastery_std : float | None, default 5.0
+        Prior std dev for the effect of final mastery on the post-test outcome.
+    post_b1_mu : float | list[float] | None, default 0.0
+        Prior mean for the post-test covariate slopes, scalar or one value per covariate.
+    post_b1_std : float | list[float] | None, default 5.0
+        Prior std dev for the post-test covariate slopes, scalar or one value per covariate.
+    post_sigma_lambda : float | None, default 0.5
+        Rate of the Exponential prior on the post-test outcome residual std dev.
     use_defaults : bool, default True
         Whether to fill in missing prior values with defaults (True) or None (False).
         If True, any parameter not explicitly set will be filled with a default value.
@@ -477,10 +492,72 @@ class StandardPriors(PriorsBase):
 
 @dataclass
 class MultiPriors(PriorsBase):
-    """Bayesian priors for joint estimation of initial knowledge and other parameters.
+    """Bayesian priors for the grouped (MultiBKT) model parameters.
 
-    Adds b0 and b1 parameters for modeling the linear relationship between initial knowledge logit
-    and additional data used in the `InitKnowledgeStrategy.JOINT` estimation strategy.
+    Same fields and defaults as :class:`StandardPriors`, but the core BKT parameters
+    (learn, forget, guess, slip and pi_know) also accept a list with one value per
+    group. Groups are indexed per KC in order of first appearance, with students in
+    natural sort order (see ``summary()`` labels). A scalar applies to every group, and
+    None gives a non-informative uniform prior. The JOINT regression and post-test
+    outcome priors are shared across groups.
+
+    Parameters
+    ----------
+    learn_mu : float | list[float] | None, default 0.0
+        Prior mean for logit-scale learning rate.
+    learn_std : float | list[float] | None, default 5.0
+        Prior std dev for logit-scale learning rate.
+    forget_mu : float | list[float] | None, default -2.0
+        Prior mean for logit-scale forgetting rate.
+    forget_std : float | list[float] | None, default 5.0
+        Prior std dev for logit-scale forgetting rate.
+    guess_mu : float | list[float] | None, default -1.0
+        Prior mean for half-logit-scale guessing probability.
+    guess_std : float | list[float] | None, default 5.0
+        Prior std dev for half-logit-scale guessing probability.
+    slip_mu : float | list[float] | None, default -1.0
+        Prior mean for half-logit-scale slipping probability.
+    slip_std : float | list[float] | None, default 5.0
+        Prior std dev for half-logit-scale slipping probability.
+    pi_know_mu : float | list[float] | None, default -2.0
+        Prior mean for logit-scale initial knowledge probability.
+    pi_know_std : float | list[float] | None, default 5.0
+        Prior std dev for logit-scale initial knowledge probability.
+    pi_b0_know_mu : float | None, default 0.0
+        Prior mean for the intercept (b0) in the regression of logit initial knowledge.
+        Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b0_know_std : float | None, default 5.0
+        Prior std dev for the intercept (b0). Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b1_know_mu : float | list[float] | None, default 0.0
+        Prior mean for the covariate slopes (b1). A scalar applies to every covariate, a list
+        gives one value per covariate. Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_b1_know_std : float | list[float] | None, default 5.0
+        Prior std dev for the covariate slopes (b1), scalar or one value per covariate.
+        Used only with `InitKnowledgeStrategy.JOINT`.
+    pi_sigma_lambda : float | None, default 5.0
+        Rate of the Exponential prior on the regression residual std dev (sigma), prior mean 0.2.
+        Kept tight because sigma and the b1 slopes are weakly identified, a loose prior inflates
+        both. Used only with `InitKnowledgeStrategy.JOINT`.
+    post_b0_mu : float | None, default 0.0
+        Prior mean for the intercept of the post-test outcome regression.
+        Used only when `post_outcome_regression=True`.
+    post_b0_std : float | None, default 5.0
+        Prior std dev for the post-test outcome intercept.
+    post_b_mastery_mu : float | None, default 0.0
+        Prior mean for the effect of final mastery on the post-test outcome.
+    post_b_mastery_std : float | None, default 5.0
+        Prior std dev for the effect of final mastery on the post-test outcome.
+    post_b1_mu : float | list[float] | None, default 0.0
+        Prior mean for the post-test covariate slopes, scalar or one value per covariate.
+    post_b1_std : float | list[float] | None, default 5.0
+        Prior std dev for the post-test covariate slopes, scalar or one value per covariate.
+    post_sigma_lambda : float | None, default 0.5
+        Rate of the Exponential prior on the post-test outcome residual std dev.
+    use_defaults : bool, default True
+        Whether to fill in missing prior values with defaults (True) or None (False).
+        If True, any parameter not explicitly set will be filled with a default value.
+        If False, any parameter not explicitly set will be set to None, indicating a non-informative uniform prior.
+
     """
 
     # Note: any changes here should also be reflected in the default priors returned by _get_default_priors()

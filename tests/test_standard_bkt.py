@@ -1739,7 +1739,7 @@ class TestBuildStanDataDictJoint:
         assert data["joint_pi_know"] == 1
         assert data["prior_pi_b0_know_mu"] == 0.0
         assert data["prior_pi_b0_know_std"] == 5.0
-        assert data["prior_pi_sigma_lambda"] == 0.5
+        assert data["prior_pi_sigma_lambda"] == 5.0
         assert data["unif_prior_pi_b0_know"] == 0
         assert data["unif_prior_pi_b1_know"] == 0
         assert data["unif_prior_pi_sigma"] == 0
