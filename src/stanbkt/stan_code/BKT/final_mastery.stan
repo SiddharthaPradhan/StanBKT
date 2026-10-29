@@ -3,10 +3,10 @@
 // allow more than one top-level `functions` block per compiled program).
 
 /**
-Computes P(know) after each student's last observed interaction via the
-standard forward filter (same recursion as hidden_states.stan), 
-but only the last/terminal state is kept/returned. This is used for the
-post-test outcome regression.
+Computes P(know) at time T+1 for each student, i.e. after conditioning on all T
+observed responses and applying one more learn/forget transition, via the
+standard forward filter (same recursion as hidden_states.stan). Only the
+terminal state is kept/returned. This is used for the post-test outcome regression.
 */
 vector final_pknow_forward(array[] int lengths, // interaction_lengths, original student order
                             array[,] int correctness, // original student order (nStudents, nProblems)
@@ -17,7 +17,7 @@ vector final_pknow_forward(array[] int lengths, // interaction_lengths, original
   vector[n] known = pi_know_student;
   for (student_idx in 1:n) {
       real k = known[student_idx];
-      for (t in 1:(lengths[student_idx] - 1)) {
+      for (t in 1:lengths[student_idx]) {
           real num, denom;
           if (correctness[student_idx, t] == 1) {
               num = k * (1 - slip_student[student_idx]);

@@ -80,3 +80,73 @@ def test_combined_with_joint_init_knowledge():
     params = summary.index.get_level_values("parameter").unique()
     assert "pi_b1_know_param" in params
     assert "post_b_mastery_param" in params
+
+
+_FINAL_MASTERY_HARNESS = """
+functions {
+#include "final_mastery.stan"
+}
+data {
+    int<lower=1> n;
+    int<lower=1> T;
+    array[n] int<lower=1> lengths;
+    array[n, T] int<lower=-1, upper=1> correctness;
+    vector[n] learn;
+    vector[n] forget;
+    vector[n] guess;
+    vector[n] slip;
+    vector[n] pi_know;
+}
+generated quantities {
+    vector[n] final_pknow = final_pknow_forward(lengths, correctness, learn, forget, guess, slip, pi_know);
+}
+"""
+
+
+def _final_pknow_reference(responses, pi_know, learn, forget, guess, slip):
+    # filter on every response, then one more transition: P(know) at T+1
+    k = pi_know
+    for y in responses:
+        num = k * (1 - slip) if y == 1 else k * slip
+        denom = num + (1 - k) * (guess if y == 1 else 1 - guess)
+        k = learn + (num / denom) * (1 - forget - learn)
+    return k
+
+
+def test_final_pknow_uses_last_response_and_projects_to_t_plus_one(tmp_path):
+    from importlib.resources import files
+
+    import cmdstanpy
+
+    logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
+    stan_dir = str(files("stanbkt").joinpath("stan_code", "BKT"))
+    stan_file = tmp_path / "final_mastery_harness.stan"
+    stan_file.write_text(_FINAL_MASTERY_HARNESS)
+    harness = cmdstanpy.CmdStanModel(
+        stan_file=str(stan_file), stanc_options={"include-paths": [stan_dir]}
+    )
+
+    # the two students differ only in their last response, so the last response must matter
+    sequences = [[0, 1, 1], [0, 1, 0], [1]]
+    params = dict(pi_know=0.3, learn=0.2, forget=0.05, guess=0.2, slip=0.1)
+    T = max(len(s) for s in sequences)
+    correctness = [s + [-1] * (T - len(s)) for s in sequences]
+    n = len(sequences)
+    gq = harness.sample(
+        data={
+            "n": n,
+            "T": T,
+            "lengths": [len(s) for s in sequences],
+            "correctness": correctness,
+            **{key: [value] * n for key, value in params.items()},
+        },
+        fixed_param=True,
+        chains=1,
+        iter_sampling=1,
+        show_progress=False,
+    )
+    result = gq.stan_variable("final_pknow")[0]
+    expected = [_final_pknow_reference(s, **params) for s in sequences]
+    # CmdStan writes CSV output with 6 significant digits
+    np.testing.assert_allclose(result, expected, rtol=1e-6)
+    assert result[0] > result[1]
