@@ -11,6 +11,7 @@ from dataclasses import replace
 import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.fit_types import (
     CmdStanFit,
     FitMetadata,
@@ -161,7 +162,7 @@ def load_fit_artifacts(
     ------
     FileNotFoundError
         If root folder or metadata file is missing.
-    ValueError
+    FitMethodMismatchError
         If metadata fit method mismatches ``expected_fit_method``.
     """
     if not os.path.exists(base_save_location):
@@ -180,7 +181,7 @@ def load_fit_artifacts(
         loaded_fit_metadata = fit_metadata_from_json(metadata_file.read())
 
     if loaded_fit_metadata.fit_method != expected_fit_method:
-        raise ValueError(
+        raise FitMethodMismatchError(
             f"Cannot load fit metadata with method '{loaded_fit_metadata.fit_method.value}' "
             f"into loader expecting method '{expected_fit_method.value}'."
         )

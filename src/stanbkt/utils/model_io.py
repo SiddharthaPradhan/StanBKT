@@ -8,6 +8,7 @@ import os
 import tempfile
 from typing import Any
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.persistence.fit_io import METADATA_SAVE_FILE
 from stanbkt.fits.persistence.metadata import fit_metadata_from_json
 from stanbkt.fits.fit_types import FitMethod
@@ -172,6 +173,8 @@ def load_model(
         If fit metadata or model metadata is missing.
     ValueError
         If model metadata exists but is invalid.
+    FitMethodMismatchError
+        If the model metadata and fit metadata disagree on the fit method.
     TypeError
         If resolved model class is not a ``BKTModelBase`` subclass.
     """
@@ -195,7 +198,7 @@ def load_model(
         parsed_init_kwargs = _parse_model_init_kwargs(init_kwargs)
         saved_fit_method = parsed_init_kwargs.get("fit_method")
         if saved_fit_method != fit_metadata.fit_method:
-            raise ValueError(
+            raise FitMethodMismatchError(
                 "Saved model metadata and fit metadata disagree on fit_method. "
                 f"Model metadata: '{saved_fit_method}', fit metadata: '{fit_metadata.fit_method}'."
             )

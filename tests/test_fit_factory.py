@@ -2,6 +2,7 @@
 
 import pytest
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.fit_factory import FitFactory
 from stanbkt.fits.fit_options import (
     MCMCFitOptions,
@@ -191,7 +192,7 @@ class TestVerifyFitOptionsCompatibility:
 
     def test_raises_for_incompatible_options(self):
         mcmc_options = MCMCFitOptions()
-        with pytest.raises(TypeError, match="Incompatible fit options type"):
+        with pytest.raises(FitMethodMismatchError, match="Incompatible fit options type"):
             FitFactory.verify_fit_options_compatibility(mcmc_options, FitMethod.VB)
 
     def test_raises_with_correct_expected_type_in_message(self):

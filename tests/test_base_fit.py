@@ -805,3 +805,31 @@ class TestFitMetadataFromJson:
         )
         with pytest.raises(ValueError, match="summary_percentiles"):
             fit_metadata_from_json(raw)
+
+
+# ---------------------------------------------------------------------------
+# fit method mismatches
+# ---------------------------------------------------------------------------
+
+
+class TestFitMethodMismatch:
+    def test_add_fit_from_other_method_raises(self):
+        from stanbkt.fits.errors import FitMethodMismatchError
+
+        # the autouse fixture infers every fit as MCMC, the container expects VB
+        with pytest.raises(FitMethodMismatchError, match="Cannot add fit with method 'mcmc'"):
+            _VBConcreteFit().add_fit("kc_a", MagicMock())
+
+    def test_loading_artifacts_saved_with_other_method_raises(self, tmp_path):
+        from stanbkt.fits.errors import FitMethodMismatchError
+
+        metadata = FitMetadata(fit_method=FitMethod.MCMC, fit_saves={})
+        (tmp_path / METADATA_SAVE_FILE).write_text(fit_metadata_to_json(metadata))
+        with pytest.raises(FitMethodMismatchError, match="expecting method 'vb'"):
+            persistence_io.load_fit_artifacts(str(tmp_path), FitMethod.VB)
+
+    def test_mismatch_error_is_value_and_type_error(self):
+        from stanbkt.fits.errors import FitMethodMismatchError
+
+        assert issubclass(FitMethodMismatchError, ValueError)
+        assert issubclass(FitMethodMismatchError, TypeError)

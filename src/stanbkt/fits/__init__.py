@@ -20,6 +20,7 @@ from stanbkt.fits.fit_options import (
     StanFitOptions,
 )
 from stanbkt.fits.fit_factory import FitFactory
+from stanbkt.fits.errors import FitMethodMismatchError
 
 __all__ = [
     # Fit classes
@@ -40,4 +41,6 @@ __all__ = [
     "StanFitOptions",
     # Factory
     "FitFactory",
+    # Errors
+    "FitMethodMismatchError",
 ]

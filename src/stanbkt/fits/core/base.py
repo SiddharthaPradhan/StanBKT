@@ -9,6 +9,7 @@ from typing import Union
 import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.fit_types import CmdStanFit, FitMetadata, FitMethod, FitSaveEntry
 from stanbkt.fits.persistence.fit_io import (
     CACHE_SAVE_FOLDER,
@@ -170,15 +171,16 @@ class FitBase(VerboseMixin, ABC):
 
         Raises
         ------
+        FitMethodMismatchError
+            If the fit's method is incompatible with the model's fit method.
         ValueError
-            If the fit's method is incompatible with the model's fit method, or if a fit
-            for the KC already exists and ``overwrite_kcs=False``.
+            If a fit for the KC already exists and ``overwrite_kcs=False``.
 
         """
         # check if the fit method matches the class's fit method
         kc_fit_method = FitMethod.infer_fit_method_from_stan_fit(fit)
         if kc_fit_method != self._fit_method:
-            raise ValueError(
+            raise FitMethodMismatchError(
                 (
                     f"Cannot add fit with method '{kc_fit_method.value}' when already fitted with method "
                     f"'{self._fit_metadata.fit_method.value}'."

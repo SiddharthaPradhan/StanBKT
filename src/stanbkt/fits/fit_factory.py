@@ -1,5 +1,6 @@
 """ "" Factory for creating fit classes and options based on fit method."""
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.fit_options import (
     StanFitOptions,
     MCMCFitOptions,
@@ -137,7 +138,7 @@ class FitFactory:
 
         Raises
         ------
-        TypeError
+        FitMethodMismatchError
             If fit options are not compatible with the specified fit method.
         ValueError
             If fit method is unsupported.
@@ -145,7 +146,7 @@ class FitFactory:
         try:
             fit_option_class = FitFactory.FIT_METHOD_TO_OPTION_MAPPING[fit_method]
             if not isinstance(fit_options, fit_option_class):
-                raise TypeError(
+                raise FitMethodMismatchError(
                     f"Incompatible fit options type {type(fit_options).__name__} for fit method '{fit_method}'. Expected {fit_option_class.__name__}."
                 )
             if (

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from stanbkt.fits.errors import FitMethodMismatchError
 from stanbkt.fits.core.base import FitBase
 from stanbkt.fits.persistence.fit_io import METADATA_SAVE_FILE
 from stanbkt.fits.persistence.metadata import fit_metadata_to_json
@@ -212,5 +213,5 @@ class TestLoadModel:
         artifact_path = tmp_path / f"model{MODEL_ARCHIVE_SUFFIX}"
         _pack_archive(str(artifact_dir), str(artifact_path))
 
-        with pytest.raises(ValueError, match="disagree on fit_method"):
+        with pytest.raises(FitMethodMismatchError, match="disagree on fit_method"):
             load_model(load_base_location=artifact_path)
