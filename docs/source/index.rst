@@ -19,6 +19,7 @@ Quick Start
    :maxdepth: 2
 
    installation
+   quickstart
 
 
 User's Guide
@@ -27,7 +28,7 @@ User's Guide
 .. toctree::
    :maxdepth: 2
 
-   guide
+   guide/index
    example_root
 
 API Reference

@@ -82,6 +82,39 @@ class MultiBKT(BKTModelBase):
         post_outcome_regression: bool = False,
         low_memory: bool = False,
     ):
+        """Initialize a MultiBKT model instance.
+
+        Data passed to ``fit`` and ``predict*`` must include a group column
+        (``ColumnNames.GROUP``); each group gets its own BKT parameters.
+
+        Parameters
+        ----------
+        fit_method : FitMethod, default=FitMethod.MCMC
+            The method used for fitting the model (MCMC, VB, MLE or Pathfinder).
+        individual_initial_knowledge : bool, default=False
+            Whether initial knowledge is individualized to the student. If False,
+            a single initial knowledge parameter is estimated for all students in a group.
+        init_knowledge_strategy : InitKnowledgeStrategy, default=InitKnowledgeStrategy.CORRECTNESS_ONLY
+            Strategy for estimating individual initial knowledge. Must be `CORRECTNESS_ONLY`
+            unless `individual_initial_knowledge` is True. With `CORRECTNESS_ONLY` each fitted
+            student gets a free `pi_know` estimated from correctness alone, and unseen students
+            are dropped at predict time with a warning. With `JOINT`, logit `pi_know` is
+            regressed on student level covariates (e.g. a pretest) passed as `student_covariates`.
+        post_outcome_regression : bool, default=False
+            Whether to jointly estimate a regression of a post-test outcome on each student's
+            final (filtered) mastery probability at T+1, after their last response. Requires `post_outcome` at fit time.
+        verbose : VerbosityLevel, default=VerbosityLevel.INFO
+            Verbosity level for logging.
+        stan_compile_kwargs : dict, optional
+            Additional keyword arguments for Stan model compilation, forwarded as ``stanc_options``.
+        cpp_compile_kwargs : dict, optional
+            Additional keyword arguments for C++ compilation of the Stan model, forwarded as
+            ``cpp_options``. Set ``STAN_THREADS`` here to use ``threads_per_chain > 1``.
+        low_memory : bool, default=False
+            Whether to evict each KC's fit to disk after fitting, reloading it lazily on
+            next access. Reduces peak memory usage when fitting many KCs at the cost of
+            some performance.
+        """
         super().__init__(
             verbose=verbose,
             fit_method=fit_method,

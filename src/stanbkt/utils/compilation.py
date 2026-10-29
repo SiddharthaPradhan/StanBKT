@@ -411,6 +411,8 @@ def compile_stan_model(
         C++ compiler options forwarded to CmdStanPy.
     stanc_options : dict[str, Any] or None, default=None
         Stan compiler options forwarded to CmdStanPy.
+    print_fn : Callable, optional
+        Logging function used to report cache hits and recompilation.
 
     Returns
     -------

@@ -87,12 +87,11 @@ class BKTModelBase(VerboseMixin, ABC):
     individual_initial_knowledge : bool
         Whether to initial know states are individualized to the student. If False,
         a single initial knowledge parameter is estimated for all students.
-    initital_knowledge_strategy : InitKnowledgeStrategy
-        Strategy for estimating initial knowledge. This is only applicable if `individual_initial_knowledge` is True.
-        When  this is set to `CORRECTNESS_ONLY`, only the correctness data is used to estimate initial knowledge.
-        When `JOINT`, model requires student level covariate (e.g. pretest) to jointly estimate initial knowledge (uses correctness and covariate).
-        For example, `CORRECTNESS_ONLY` uses only the correctness of the first interaction for each student to inform
-        initial knowledge estimates, while `FIRST_INTERACTION` uses the correctness of the first interaction with each KC for each student.
+    init_knowledge_strategy : InitKnowledgeStrategy
+        Strategy for estimating individual initial knowledge. Must be `CORRECTNESS_ONLY`
+        unless `individual_initial_knowledge` is True. With `CORRECTNESS_ONLY` each fitted
+        student gets a free `pi_know` estimated from correctness alone. With `JOINT`, logit
+        `pi_know` is regressed on student level covariates (e.g. a pretest).
     post_outcome_regression : bool
         Whether to jointly estimate a regression of a post-test outcome on each student's
         final (filtered) mastery probability, optionally plus additional post-test covariates.
@@ -687,6 +686,9 @@ class BKTModelBase(VerboseMixin, ABC):
         percentiles : tuple of float, default=(2.5, 97.5)
             Percentiles to include in summary. Values should be in range [1, 99].
             Ignored when the fit method is MLE, MLE produces a point estimate only.
+        column_mapping : dict, optional
+            Column name mapping used to name the KC, group and student index levels.
+            Defaults to the standard ``ColumnNames`` defaults.
         clear_cache : bool, default=False
             Whether to refresh the cached summaries.
         label_indexes : bool, default=True
@@ -810,8 +812,15 @@ class BKTModelBase(VerboseMixin, ABC):
             pack_model_directory(temp_dir, archive_path)
 
     def check_data_contains_fitted_kcs(self, kcs: set[str]) -> None:
-        """Check if data contains any KC that was fitted.
-        Raises an error if data contains KCs that were not fitted.
+        """Check that the data contains at least one fitted KC.
+
+        Raises an error if none of the KCs were fitted, and logs a warning for
+        the KCs that were not fitted.
+
+        Parameters
+        ----------
+        kcs : set[str]
+            KC IDs present in the data.
         """
         self._fit_check()
         fitted_kcs: set[str] = self.fits.get_fitted_kcs()
@@ -1034,7 +1043,35 @@ class BKTModelBase(VerboseMixin, ABC):
         fast_math: bool = True,
         student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
-        """Predict hidden states using point-estimate parameters from fitted posteriors."""
+        """Predict hidden states using point-estimate parameters from fitted posteriors.
+
+        Runs the BKT forward pass with a single point estimate per parameter, so
+        ``pKnow`` at each interaction is conditioned only on earlier responses.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data for KCs that have been fitted. Required.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        point_estimate : {"mean", "median", "mode"}, default="mean"
+            Statistic of each parameter's posterior draws used as the point estimate.
+        parallel : bool, default=True
+            Whether to run the numba kernel in parallel over students.
+        fast_math : bool, default=True
+            Whether to compile the numba kernel with ``fastmath``.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per interaction with KC ID, student ID, problem ID, ``pKnow``,
+            ``pCorrectness``, and the observed correctness.
+        """
         self._fit_check(referrer="predict")
         return self._predict_point_estimate_common(
             data=data,
@@ -1061,7 +1098,35 @@ class BKTModelBase(VerboseMixin, ABC):
         fast_math: bool = True,
         student_covariates: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
-        """Predict smoothed hidden states using point-estimate parameters."""
+        """Predict smoothed hidden states using point-estimate parameters.
+
+        Runs the forward-backward pass with a single point estimate per parameter,
+        so ``pKnow`` at each interaction is conditioned on the full response sequence.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Student interaction data for KCs that have been fitted. Required.
+        column_mapping : dict, optional
+            Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        point_estimate : {"mean", "median", "mode"}, default="mean"
+            Statistic of each parameter's posterior draws used as the point estimate.
+        parallel : bool, default=True
+            Whether to run the numba kernel in parallel over students.
+        fast_math : bool, default=True
+            Whether to compile the numba kernel with ``fastmath``.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per interaction with KC ID, student ID, problem ID, ``pKnow``,
+            ``pCorrectness``, and the observed correctness.
+        """
         self._fit_check(referrer="predict_smoothed")
         return self._predict_point_estimate_common(
             data=data,
@@ -1540,6 +1605,11 @@ class BKTModelBase(VerboseMixin, ABC):
             correctness columns for the KCs of interest.
         column_mapping : dict, optional
             Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------
@@ -1587,6 +1657,11 @@ class BKTModelBase(VerboseMixin, ABC):
             Backend used to produce posterior draws.
             - ``stan``: use Stan generated quantities output (current behavior).
             - ``numba``: run deterministic hidden-state recursion for each posterior parameter draw.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------
@@ -1625,6 +1700,11 @@ class BKTModelBase(VerboseMixin, ABC):
             Student interaction data.
         column_mapping : dict, optional
             Column name mapping.  Defaults to the standard ``ColumnNames`` defaults.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------
@@ -1672,6 +1752,11 @@ class BKTModelBase(VerboseMixin, ABC):
             Backend used to produce posterior draws.
             - ``stan``: use Stan generated quantities output (current behavior).
             - ``numba``: run deterministic hidden-state recursion for each posterior parameter draw.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------
@@ -1726,6 +1811,11 @@ class BKTModelBase(VerboseMixin, ABC):
             Backend used to produce posterior summaries.
             - ``stan``: summarize Stan generated quantities output.
             - ``numba``: generate draw-level predictions via numba and summarize them.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------
@@ -1787,6 +1877,11 @@ class BKTModelBase(VerboseMixin, ABC):
             Backend used to produce posterior summaries.
             - ``stan``: summarize Stan generated quantities output.
             - ``numba``: generate draw-level predictions via numba and summarize them.
+        student_covariates : pd.DataFrame, optional
+            One row per student with the same covariate columns used at fit time,
+            required when ``init_knowledge_strategy=InitKnowledgeStrategy.JOINT``.
+            Students seen at fit time reuse their fitted residual ``z``, unseen
+            students use the regression mean.
 
         Returns
         -------

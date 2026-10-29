@@ -379,6 +379,8 @@ def validate_data(
         If None, default column names are used.
     check_groups : bool, default=False
         Whether to check for group column in the data.
+    additional_required_cols : set[str], optional
+        Extra columns that must be present, looked up through ``col_mapping``.
 
     Raises
     ------

@@ -71,26 +71,30 @@ class StandardBKT(BKTModelBase):
     ):
         """Initialize a StandardBKT model instance.
 
-        Attributes
+        Parameters
         ----------
-        fit_method : FitMethod
-            The method used for fitting the model (e.g., MCMC, VB, MAP).
-        individual_initial_knowledge : bool
-            Whether to initial know states are individualized to the student. If False,
+        fit_method : FitMethod, default=FitMethod.MCMC
+            The method used for fitting the model (MCMC, VB, MLE or Pathfinder).
+        individual_initial_knowledge : bool, default=False
+            Whether initial knowledge is individualized to the student. If False,
             a single initial knowledge parameter is estimated for all students.
-        initital_knowledge_strategy : InitKnowledgeStrategy
-            Strategy for estimating initial knowledge. This is only applicable if `individual_initial_knowledge` is True.
-            When  this is set to `CORRECTNESS_ONLY`, only the correctness data is used to estimate initial knowledge.
-            When `JOINT`, model requires student level covariate (e.g. pretest) to jointly estimate initial knowledge (uses correctness and covariate).
-            For example, `CORRECTNESS_ONLY` uses only the correctness of the first interaction for each student to inform
-            initial knowledge estimates, while `FIRST_INTERACTION` uses the correctness of the first interaction with each KC for each student.
-        verbose : VerbosityLevel
+        init_knowledge_strategy : InitKnowledgeStrategy, default=InitKnowledgeStrategy.CORRECTNESS_ONLY
+            Strategy for estimating individual initial knowledge. Must be `CORRECTNESS_ONLY`
+            unless `individual_initial_knowledge` is True. With `CORRECTNESS_ONLY` each fitted
+            student gets a free `pi_know` estimated from correctness alone, and unseen students
+            are dropped at predict time with a warning. With `JOINT`, logit `pi_know` is
+            regressed on student level covariates (e.g. a pretest) passed as `student_covariates`.
+        post_outcome_regression : bool, default=False
+            Whether to jointly estimate a regression of a post-test outcome on each student's
+            final (filtered) mastery probability at T+1, after their last response. Requires `post_outcome` at fit time.
+        verbose : VerbosityLevel, default=VerbosityLevel.INFO
             Verbosity level for logging.
-        stan_compile_kwargs : dict
-            Additional keyword arguments for Stan model compilation.
-        cpp_compile_kwargs : dict
-            Additional keyword arguments for C++ compilation of the Stan model.
-        low_memory : bool
+        stan_compile_kwargs : dict, optional
+            Additional keyword arguments for Stan model compilation, forwarded as ``stanc_options``.
+        cpp_compile_kwargs : dict, optional
+            Additional keyword arguments for C++ compilation of the Stan model, forwarded as
+            ``cpp_options``. Set ``STAN_THREADS`` here to use ``threads_per_chain > 1``.
+        low_memory : bool, default=False
             Whether to evict each KC's fit to disk after fitting, reloading it lazily on
             next access. Reduces peak memory usage when fitting many KCs at the cost of
             some performance.

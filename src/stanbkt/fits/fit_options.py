@@ -159,6 +159,12 @@ class MCMCFitOptions(BaseFitOptions):
         Whether to show sampling progress.
     show_console : bool
         Whether to stream CmdStan console output.
+    opencl_ids : tuple[int, int] | None
+        OpenCL (platform id, device id), see :class:`BaseFitOptions`.
+    grainsize : int
+        Students per ``reduce_sum`` slice, ``-1`` (default) picks it per KC. See :class:`BaseFitOptions`.
+    extra_kwargs : dict[str, Any]
+        Additional keyword arguments forwarded directly to CmdStanPy.
     """
 
     chains: int = 4
@@ -198,6 +204,14 @@ class VBFitOptions(BaseFitOptions):
         Number of approximate posterior draws to save.
     seed : int | None
         RNG seed.
+    require_converged : bool, default=True
+        Whether to raise if the variational algorithm does not converge.
+    opencl_ids : tuple[int, int] | None
+        OpenCL (platform id, device id), see :class:`BaseFitOptions`.
+    grainsize : int
+        Students per ``reduce_sum`` slice, ``-1`` (default) picks it per KC. See :class:`BaseFitOptions`.
+    extra_kwargs : dict[str, Any]
+        Additional keyword arguments forwarded directly to CmdStanPy.
     """
 
     algorithm: str = "meanfield"
@@ -238,6 +252,12 @@ class MLEFitOptions(BaseFitOptions):
         dimensionality.
     seed : int | None
         RNG seed for reproducibility.
+    opencl_ids : tuple[int, int] | None
+        OpenCL (platform id, device id), see :class:`BaseFitOptions`.
+    grainsize : int
+        Students per ``reduce_sum`` slice, ``-1`` (default) picks it per KC. See :class:`BaseFitOptions`.
+    extra_kwargs : dict[str, Any]
+        Additional keyword arguments forwarded directly to CmdStanPy.
     """
 
     algorithm: str | None = None
@@ -293,6 +313,12 @@ class PFFitOptions(BaseFitOptions):
         Frequency of progress messages written by CmdStan.
     num_threads : int | None
         Number of threads available to the CmdStan process.
+    opencl_ids : tuple[int, int] | None
+        OpenCL (platform id, device id), see :class:`BaseFitOptions`.
+    grainsize : int
+        Students per ``reduce_sum`` slice, ``-1`` (default) picks it per KC. See :class:`BaseFitOptions`.
+    extra_kwargs : dict[str, Any]
+        Additional keyword arguments forwarded directly to CmdStanPy.
 
     Notes
     -----

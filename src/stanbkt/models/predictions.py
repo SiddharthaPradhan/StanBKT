@@ -466,6 +466,9 @@ def predict_posterior(
         Precomputed Stan generated quantities output.
     n_cores : int, default=1
         Number of cores used for summary processing.
+    student_covariates : pd.DataFrame, optional
+        One row per student with the same covariate columns used at fit time,
+        required when the model uses ``InitKnowledgeStrategy.JOINT``.
     """
     if output == "stan":
         referrer = (

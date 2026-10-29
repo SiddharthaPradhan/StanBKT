@@ -57,7 +57,7 @@ def plot_posterior_correctness(
         The lower and upper percentiles to display as error bars. Values should be in range [1, 99].
     frac : float, optional
         Fraction of problems to use for plotting. The problems will be linearly spaced. Useful for large datasets to reduce overplotting.
-    col_mapping : dict, optional
+    column_mapping : dict, optional
         Mapping of expected column names. Keys should be 'student_id', 'problem_id', 'correct', and 'kc_id'.
         If None, default column names are used.
     offset : float, default 0.0.

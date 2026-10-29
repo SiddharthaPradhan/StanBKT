@@ -12,6 +12,16 @@ def summary_parameter_names(column_names: Sequence[str]) -> list[str]:
 
     Mirrors CmdStan's MCMC summary behavior by retaining ``lp__`` and
     excluding method variables (which conventionally end with ``__``).
+
+    Parameters
+    ----------
+    column_names : Sequence[str]
+        Column names of a CmdStan draws DataFrame.
+
+    Returns
+    -------
+    list[str]
+        The parameter names to summarize, in their original order.
     """
     return [
         name for name in column_names if name == "lp__" or not name.endswith("__")
@@ -27,6 +37,21 @@ def summarize_draws(
 
     Returns a DataFrame with one row per parameter and a stable set of
     descriptive columns aligned with the fit-level summary API.
+
+    Parameters
+    ----------
+    draws : np.ndarray
+        2-D array of shape (draws, parameters).
+    parameter_names : Sequence[str]
+        Name of each column of ``draws``.
+    percentiles : tuple[float, float]
+        Lower and upper percentiles to report, e.g. ``(2.5, 97.5)``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per parameter with ``mean``, ``sd``, the lower percentile, ``50%`` and
+        the upper percentile.
     """
     if draws.ndim != 2:
         raise ValueError(

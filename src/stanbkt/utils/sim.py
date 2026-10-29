@@ -24,22 +24,22 @@ def sim_simple_BKT(
 
     Parameters
     ----------
-    nStudents : int, default 10
+    n_students : int, default 10
         Number of students to simulate.
-    nProblems : int, default 20
+    n_problems : int, default 20
         Number of problems to simulate.
-    nKcs : int, default 1
+    n_kcs : int, default 1
         Number of knowledge components (KCs).
     prior : float or array-like, default 0.1
-        Initial knowledge probability. Scalar broadcasted to all KCs or array of length nKcs.
+        Initial knowledge probability. Scalar broadcasted to all KCs or array of length n_kcs.
     learn : float or array-like, default 0.01
-        Learning (mastery) probability. Scalar or array of length nKcs.
+        Learning (mastery) probability. Scalar or array of length n_kcs.
     forget : float or array-like, default 0.05
-        Forgetting probability. Scalar or array of length nKcs.
+        Forgetting probability. Scalar or array of length n_kcs.
     guess : float or array-like, default 0.2
-        Guessing probability (correct response without knowledge). Scalar or array of length nKcs.
+        Guessing probability (correct response without knowledge). Scalar or array of length n_kcs.
     slip : float or array-like, default 0.1
-        Slipping probability (incorrect response despite knowledge). Scalar or array of length nKcs.
+        Slipping probability (incorrect response despite knowledge). Scalar or array of length n_kcs.
     rng_seed : int or None, optional
         Random seed for reproducibility.
     kc_sequence : array-like of int or None, optional

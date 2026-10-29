@@ -39,6 +39,88 @@ Example Usage:
     StandardBKT
     MultiBKT
 
+Constructor Options
+^^^^^^^^^^^^^^^^^^^
+
+``StandardBKT`` and ``MultiBKT`` take the same constructor arguments. ``MultiBKT`` additionally expects a
+group column (``ColumnNames.GROUP``) in the data passed to ``fit`` and every ``predict*`` method.
+
+- ``fit_method``: inference method, see :ref:`Fit Method <public_api_fit_method>`.
+- ``individual_initial_knowledge`` and ``init_knowledge_strategy``: per student initial knowledge, see
+  :ref:`Initial Knowledge Strategy <public_api_init_knowledge>`.
+- ``post_outcome_regression``: jointly estimate a post-test outcome regression, see
+  :ref:`Post-Test Outcome Regression <public_api_post_outcome>`.
+- ``verbose``: logging level, see :ref:`Logging Control <public_api_logging>`.
+- ``stan_compile_kwargs`` and ``cpp_compile_kwargs``: forwarded to CmdStanPy as ``stanc_options`` and
+  ``cpp_options``. ``STAN_THREADS`` must be set in ``cpp_compile_kwargs`` to use ``threads_per_chain > 1``.
+- ``low_memory``: evict each KC's fit to disk after fitting and reload it lazily when needed.
+
+.. code-block:: python
+
+   from stanbkt.models import MultiBKT
+   from stanbkt.fits import FitMethod
+
+   model = MultiBKT(
+       fit_method=FitMethod.MCMC,
+       cpp_compile_kwargs={"STAN_THREADS": True},  # allow within chain threading
+       low_memory=True,  # keep fits on disk when fitting many KCs
+   )
+
+Model Methods
+^^^^^^^^^^^^^
+
+All model variants share these methods. Each KC in the data is fitted, predicted and summarized independently.
+
+.. code-block:: python
+
+   # fit every KC in the data, refitting KCs that were already fitted
+   model.fit(data, overwrite_kcs=True)
+
+   # posterior summaries of the BKT parameters, indexed by [kc, parameter, axis, label]
+   model.summary()
+
+   # point-estimate predictions (numba forward pass, or forward-backward for smoothed)
+   model.predict(data, point_estimate="median")
+   model.predict_smoothed(data)
+
+   # full posterior predictions: raw Stan output, draw-level DataFrames, or per-observation summaries
+   model.predict_posterior_stan(data)
+   model.predict_posterior_draws(data, backend="numba")
+   model.predict_posterior_summary(data, quantiles=[0.05, 0.95], n_cores=4)
+
+   # save to a compressed archive, reload with stanbkt.load_model
+   model.save("my_model")
+
+The ``predict_smoothed_posterior_*`` methods mirror the ``predict_posterior_*`` methods with forward-backward
+(smoothed) states. The ``_summary`` variants avoid materializing all draws and are recommended for large data.
+
+Full parameter documentation for each method is on the :class:`StandardBKT` page:
+
+- :meth:`StandardBKT.fit`
+- :meth:`StandardBKT.summary`
+- :meth:`StandardBKT.predict`
+- :meth:`StandardBKT.predict_smoothed`
+- :meth:`StandardBKT.predict_posterior_stan`
+- :meth:`StandardBKT.predict_posterior_draws`
+- :meth:`StandardBKT.predict_posterior_summary`
+- :meth:`StandardBKT.predict_smoothed_posterior_stan`
+- :meth:`StandardBKT.predict_smoothed_posterior_draws`
+- :meth:`StandardBKT.predict_smoothed_posterior_summary`
+- :meth:`StandardBKT.save`
+- :meth:`StandardBKT.set_verbosity`
+
+The module level :func:`predict_posterior` is the shared implementation behind every ``predict*_posterior_*``
+method and takes the model as its first argument.
+
+.. autosummary::
+    :signatures: long
+    :caption: Posterior Prediction
+    :toctree: generated
+
+    predict_posterior
+
+.. _public_api_init_knowledge:
+
 Initial Knowledge Strategy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -47,15 +129,20 @@ Strategy enum for modeling initial knowledge behavior.
 Example Usage:
 
 .. code-block:: python
-   :emphasize-lines: 1,5
+   :emphasize-lines: 1,6,11,12
 
    from stanbkt.models import StandardBKT, InitKnowledgeStrategy
 
-   # instantiate a model that jointly estimates initial knowledge using student level pretest and correctess data
+   # instantiate a model that jointly estimates initial knowledge from correctness and student level covariates
    model = StandardBKT(
        individual_initial_knowledge=True,
        init_knowledge_strategy=InitKnowledgeStrategy.JOINT,
    )
+
+   # student_covariates: one row per student, a student ID column plus one or more numeric covariate columns
+   # (e.g. a pretest score). Covariate columns and their order are fixed at fit time.
+   model.fit(data, student_covariates=covariates_df)
+   model.predict(data, student_covariates=covariates_df)
 
 .. autosummary::
    :signatures: long
@@ -63,6 +150,8 @@ Example Usage:
    :toctree: generated
 
    InitKnowledgeStrategy
+
+.. _public_api_post_outcome:
 
 Post-Test Outcome Regression
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -98,7 +187,7 @@ Bayesian prior specification.
 Example Usage:
 
 .. code-block:: python
-   :emphasize-lines: 5,7,11,15
+   :emphasize-lines: 1,5,9,13
 
    from stanbkt.models import StandardBKT, StandardPriors
    from stanbkt.fits import FitMethod
@@ -108,20 +197,51 @@ Example Usage:
    
    # change the prior for pi_know (i.e. probability of knowing the skill at the start) to have 
    # a mean of 0.2 and a sd of 0.1 on the logit scale.
-   priors = StandardPriors(pi_know_mu=0.2, pi_know_sigma=0.1)
+   priors = StandardPriors(pi_know_mu=0.2, pi_know_std=0.1)
    # Fit the model to the data
    # Note: Passing a single prior object will apply the same prior to all KCs in the data.
    #       To apply different priors to different KCs, pass a dict mapping KC ID to a prior object instead. 
    model.fit(data, priors=priors)
 
-       
+Use ``StandardPriors`` with ``StandardBKT`` and ``MultiPriors`` with ``MultiBKT``. ``MultiPriors`` fields accept a
+scalar (shared by every group) or a list with one value per group. A list must match the number of groups in
+every KC it is applied to (use a per KC dict when KCs have different groups). Passing ``None`` for a field gives a
+non-informative uniform prior, and ``use_defaults=False`` sets every unspecified field to ``None``.
+
+.. code-block:: python
+
+   from stanbkt.models import MultiBKT, MultiPriors
+
+   # three groups: a different prior mean for learn in each group, shared default std
+   priors = MultiPriors(learn_mu=[-2.0, -1.0, 0.0])
+   MultiBKT().fit(grouped_data, priors=priors)
+
+   # uniform priors on every parameter
+   uniform = MultiPriors(use_defaults=False)
 
 .. autosummary::
     :signatures: long
     :caption: Bayesian Priors
     :toctree: generated
-   
-   StandardPriors
+
+    StandardPriors
+    MultiPriors
+
+Model Types and Errors
+^^^^^^^^^^^^^^^^^^^^^^
+
+``ModelType`` identifies the model variant. ``FitMethodMismatchError`` is raised when something does not match the
+model's ``fit_method``: fit options of another method (for example ``VBFitOptions`` for an MCMC model), a fit
+object from another method, or saved artifacts whose model and fit metadata disagree on the method. It subclasses
+both ``ValueError`` and ``TypeError``. It is also importable from ``stanbkt.fits``.
+
+.. autosummary::
+    :signatures: long
+    :caption: Model Types and Errors
+    :toctree: generated
+
+    ModelType
+    FitMethodMismatchError
 
 Fits (``stanbkt.fits``)
 -----------------------
@@ -129,6 +249,8 @@ Module containing fit methods, fit configuration options, and fit result classes
 
 .. currentmodule:: stanbkt.fits
 
+
+.. _public_api_fit_method:
 
 Fit Method
 ^^^^^^^^^^
@@ -193,6 +315,11 @@ thread. A positive value is used as given.
    MLEFitOptions
    PFFitOptions
 
+``StanFitOptions`` is the type alias for any of the four options classes, used in type hints such as
+``fit(stan_fit_options: StanFitOptions | dict)``. Options passed as a ``dict`` are forwarded to CmdStanPy as is.
+Passing an options class that does not match the model's fit method raises a ``FitMethodMismatchError``, and
+``threads_per_chain > 1`` without ``STAN_THREADS`` in ``cpp_compile_kwargs`` raises a ``ValueError``.
+
 
 Fit Results
 ^^^^^^^^^^^
@@ -201,6 +328,13 @@ Fit result objects for different inference methods.
 
 These classes encapsulate the results of fitting a model to data, including parameter estimates, diagnostics, and other relevant information.
 They are typically not used directly by users, however they can be used to access the underlying CmdStanPy Fit objects if needed.
+``model.fits`` is always a fit container of the class matching the model's fit method, empty before the first ``fit``.
+
+.. code-block:: python
+
+   model.fits.get_fitted_kcs()  # set of fitted KC IDs
+   fit = model.fits.get_fit("kc_0")  # CmdStanMCMC, CmdStanVB, CmdStanMLE or CmdStanPathfinder
+   fit.draws_pd()
 
 .. autosummary::
    :signatures: long
@@ -213,6 +347,21 @@ They are typically not used directly by users, however they can be used to acces
    MLEFit
    VBFit
    PathfinderFit
+
+Fit Internals
+^^^^^^^^^^^^^
+
+``FitFactory`` maps a fit method to its fit class and options class and validates fit options.
+``FitMetadata`` is the metadata saved alongside fit artifacts (fit method, saved fit files and summary percentiles).
+Both are used internally by the models and by save/load.
+
+.. autosummary::
+   :signatures: long
+   :caption: Fit Internals
+   :toctree: generated
+
+   FitFactory
+   FitMetadata
 
 Plotting (``stanbkt.plot``)
 ---------------------------
@@ -229,6 +378,24 @@ Posterior visualization of model correctness, including:
    :toctree: generated
    
    plot_posterior_correctness
+
+Parameter plots take the CmdStanPy fit for one KC and use ArviZ. ``plot_trace`` is for MCMC fits.
+
+.. code-block:: python
+
+   from stanbkt.plot import plot_dist, plot_trace
+
+   fit = model.fits.get_fit("kc_0")
+   plot_dist(fit, params=["learn", "guess", "slip"], ci_prob=0.9)
+   plot_trace(fit, params=["learn"])
+
+.. autosummary::
+   :signatures: long
+   :caption: Parameter Plots
+   :toctree: generated
+
+   plot_dist
+   plot_trace
 
 Utilities (``stanbkt.utils``)
 -----------------------------
@@ -282,6 +449,8 @@ Utility class to map expected column names to the actual user provided column na
 
    ColumnNames
 
+.. _public_api_logging:
+
 Logging Control
 ^^^^^^^^^^^^^^^
 
@@ -293,7 +462,7 @@ Three levels are available: DEBUG, INFO, and WARN, listed in decreasing order of
   
    from stanbkt.utils import VerbosityLevel
    # Create Model with verbosity level set to WARNING
-   model = StandardBKT(verbosity=VerbosityLevel.WARN)
+   model = StandardBKT(verbose=VerbosityLevel.WARN)
    ...
    # this can be changed anytime
    model.set_verbosity(VerbosityLevel.DEBUG)
@@ -318,4 +487,107 @@ StanBKT caches compiled Stan models to speed up subsequent fits and will automat
    get_stan_model_cache_dir
    get_cache_root
    list_cached_models
+   compile_stan_model
 
+Saving and Loading
+^^^^^^^^^^^^^^^^^^
+``model.save(path)`` writes the fits, cached summaries and model metadata to a single archive. ``load_model``
+reconstructs the model, including the fit method and constructor options. It is importable from ``stanbkt`` or ``stanbkt.utils.model_io``.
+
+.. code-block:: python
+
+   from stanbkt import load_model
+
+   model.save("my_model")
+   model = load_model("my_model")
+
+.. currentmodule:: stanbkt.utils.model_io
+
+.. autosummary::
+   :signatures: long
+   :caption: Saving and Loading
+   :toctree: generated
+
+   load_model
+
+.. currentmodule:: stanbkt.utils
+
+Simulation
+^^^^^^^^^^
+Simulate long format interaction data from standard or grouped BKT parameters.
+
+.. code-block:: python
+
+   from stanbkt.utils import sim_simple_BKT, sim_grouped_BKT
+
+   data = sim_simple_BKT(n_students=50, n_problems=40, n_kcs=2, learn=[0.05, 0.1], rng_seed=1234)
+   # grouped parameters are a scalar, one value per group, or a [group][kc] nested list
+   grouped = sim_grouped_BKT(n_students=60, n_problems=40, n_kcs=1, n_groups=2, learn=[0.03, 0.08])
+   per_kc = sim_grouped_BKT(n_students=60, n_problems=40, n_kcs=2, n_groups=2, learn=[[0.03, 0.05], [0.08, 0.1]])
+
+.. autosummary::
+   :signatures: long
+   :caption: Simulation
+   :toctree: generated
+
+   sim_simple_BKT
+   sim_grouped_BKT
+
+Evaluation Metrics
+^^^^^^^^^^^^^^^^^^
+Compare observed correctness to predicted probabilities of correctness.
+
+.. code-block:: python
+
+   from stanbkt.utils import accuracy, rmse, auc
+
+   preds = model.predict(test_data)
+   for kc, kc_preds in preds.groupby("kc_id", observed=True):
+       print(kc, auc(kc_preds["correct"], kc_preds["pCorrectness"]), rmse(kc_preds["correct"], kc_preds["pCorrectness"]))
+
+.. autosummary::
+   :signatures: long
+   :caption: Evaluation Metrics
+   :toctree: generated
+
+   accuracy
+   rmse
+   auc
+
+Posterior Utilities
+^^^^^^^^^^^^^^^^^^^
+``posterior_summary`` turns the output of ``predict_posterior_draws`` or ``predict_posterior_stan`` (and the
+smoothed variants) into per-observation statistics. ``gq_to_draws`` converts raw Stan output into draw-level
+DataFrames. ``summarize_draws`` and ``summary_parameter_names`` build the parameter summaries used by
+``model.summary()`` for non-MCMC fits.
+
+.. code-block:: python
+
+   from stanbkt.utils import posterior_summary, gq_to_draws
+
+   stan_out = model.predict_posterior_stan(data)
+   draws = gq_to_draws(stan_out, data)
+   posterior_summary(draws, quantiles=[0.05, 0.95])
+
+.. autosummary::
+   :signatures: long
+   :caption: Posterior Utilities
+   :toctree: generated
+
+   posterior_summary
+   gq_to_draws
+   summarize_draws
+   summary_parameter_names
+
+Data Utilities
+^^^^^^^^^^^^^^
+``validate_data`` runs the input checks used by ``fit`` and ``predict*``. ``KCData`` is the per-KC bundle
+(dense correctness matrix, sequence lengths and ID maps) built from long format data.
+
+.. autosummary::
+   :signatures: long
+   :caption: Data Utilities
+   :toctree: generated
+
+   validate_data
+   KCData
