@@ -371,6 +371,16 @@ class TestExtractGroupParamEstimates:
         result = MultiBKT._extract_group_param_estimates(fit, "pi_know", 2, "mean")
         np.testing.assert_allclose(result, [0.3, 0.6])
 
+    def test_real_mle_fit_with_one_group(self):
+        import cmdstanpy as csp
+        import stanio
+
+        fit = MagicMock(spec=csp.CmdStanMLE)
+        fit.metadata.stan_vars = stanio.parse_header("lp__,pi_know.1")
+        fit.optimized_params_np = np.array([-1.0, 0.3])
+        result = MultiBKT._extract_group_param_estimates(fit, "pi_know", 1, "mean")
+        np.testing.assert_allclose(result, [0.3])
+
     def test_mcmc_mean_is_in_valid_range(self):
         fit = _mock_fit_mcmc(n_groups=3)
         for param in ("pi_know", "learn", "forget", "guess", "slip"):

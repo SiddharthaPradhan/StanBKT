@@ -398,6 +398,38 @@ class TestStanVariableDraws:
         BKTModelBase._stan_variable_draws(fit, "learn")
         fit.stan_variable.assert_called_once_with("learn")
 
+    def test_mle_fit_reshapes_estimates_without_stan_variable(self):
+        import cmdstanpy as csp
+        import stanio
+
+        fit = MagicMock(spec=csp.CmdStanMLE)
+        fit.metadata.stan_vars = stanio.parse_header("lp__,sigma,learn.1,learn.2")
+        fit.optimized_params_np = np.array([-1.0, 0.5, 0.1, 0.2])
+        assert np.asarray(BKTModelBase._stan_variable_draws(fit, "sigma")).shape == ()
+        np.testing.assert_allclose(
+            BKTModelBase._stan_variable_draws(fit, "learn"), [0.1, 0.2]
+        )
+        fit.stan_variable.assert_not_called()
+
+    def test_mle_single_value_vector_stays_an_array(self):
+        import cmdstanpy as csp
+        import stanio
+
+        # CmdStanMLE.stan_variable returns a float for shape (1,), this keeps the vector
+        fit = MagicMock(spec=csp.CmdStanMLE)
+        fit.metadata.stan_vars = stanio.parse_header("lp__,learn.1")
+        fit.optimized_params_np = np.array([-1.0, 0.3])
+        assert BKTModelBase._stan_variable_draws(fit, "learn").shape == (1,)
+
+    def test_mle_unknown_variable_raises(self):
+        import cmdstanpy as csp
+        import stanio
+
+        fit = MagicMock(spec=csp.CmdStanMLE)
+        fit.metadata.stan_vars = stanio.parse_header("lp__,learn")
+        with pytest.raises(ValueError, match="Unknown variable name"):
+            BKTModelBase._stan_variable_draws(fit, "slip")
+
     def test_vb_draw_matrix_keeps_every_draw(self):
         import cmdstanpy as csp
 

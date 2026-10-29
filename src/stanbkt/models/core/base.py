@@ -1389,6 +1389,13 @@ class BKTModelBase(VerboseMixin, ABC):
         """Return a Stan variable's draws, ``CmdStanVB.stan_variable`` returns the mean unless asked."""
         if isinstance(fit, csp.CmdStanVB):
             return fit.stan_variable(param_name, mean=False)
+        if isinstance(fit, csp.CmdStanMLE):
+            # CmdStanMLE.stan_variable logs a deprecation warning for scalars, so reshape
+            # the estimates directly (always an array, as in future cmdstanpy releases)
+            stan_vars = fit.metadata.stan_vars
+            if param_name not in stan_vars:
+                raise ValueError(f"Unknown variable name: {param_name}")
+            return stan_vars[param_name].extract_reshape(fit.optimized_params_np)
         return fit.stan_variable(param_name)
 
     @staticmethod

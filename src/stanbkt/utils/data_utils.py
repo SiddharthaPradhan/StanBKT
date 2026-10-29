@@ -593,16 +593,15 @@ def iter_kc_data(
             subset[student_col].unique().tolist(), key=natsort_key
         )
 
-        observed_subset = subset.loc[subset[correctness_col].notna()]
         n_students = len(student_ids)
 
-        # position of each observed row's student in the natural sorted student order
+        # position of each row's student in the natural sorted student order
         categories = subset[student_col].cat.categories
         position_by_code = np.full(len(categories), -1, dtype=np.int64)
         position_by_code[categories.get_indexer(student_ids)] = np.arange(n_students)
-        row_positions = position_by_code[observed_subset[student_col].cat.codes.to_numpy()]
+        row_positions = position_by_code[subset[student_col].cat.codes.to_numpy()]
         # rows are already ordered within student, so the running count is the column index
-        columns = observed_subset.groupby(student_col, sort=False, observed=True).cumcount().to_numpy()
+        columns = subset.groupby(student_col, sort=False, observed=True).cumcount().to_numpy()
 
         lengths: npt.NDArray[np.int32] = np.bincount(
             row_positions, minlength=n_students
@@ -610,12 +609,12 @@ def iter_kc_data(
         max_len = int(lengths.max()) if n_students else 0
 
         correctness_array = np.full((n_students, max_len), _NA_FILL_VALUE, dtype=np.int8)
-        correctness_array[row_positions, columns] = observed_subset[correctness_col].to_numpy(
+        correctness_array[row_positions, columns] = subset[correctness_col].to_numpy(
             dtype=np.int8
         )
 
         by_student = np.argsort(row_positions, kind="stable")
-        attempted_problem_ids = observed_subset[problem_col].astype(str).to_numpy()[by_student].tolist()
+        attempted_problem_ids = subset[problem_col].astype(str).to_numpy()[by_student].tolist()
         ends = np.cumsum(lengths)
         starts = ends - lengths
         student_inter_dict: dict[str, StudentInteraction] = {
