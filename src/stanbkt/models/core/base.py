@@ -831,21 +831,30 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
     def get_kcs_in_fitted_kcs(self, kcs: set[str]) -> set[str]:
-        """Return the set of KCs in the data that were fitted previously."""
+        """Return the set of KCs in the data that were fitted previously.
+
+        Parameters
+        ----------
+        kcs : set[str]
+            KC IDs present in the data.
+        """
         self._fit_check()
         fitted_kcs: set[str] = self.fits.get_fitted_kcs()
         return kcs.intersection(fitted_kcs)
 
     @staticmethod
-    def _empty_point_estimate_prediction_frame() -> pd.DataFrame:
+    def _empty_point_estimate_prediction_frame(
+        column_mapping: Optional[Mapping[str, str]] = None,
+    ) -> pd.DataFrame:
+        mapping = ColumnNames.apply_default_mapping(column_mapping)
         return pd.DataFrame(
             columns=[
-                ColumnNames.KC_ID,
-                ColumnNames.STUDENT_ID,
-                ColumnNames.PROBLEM_ID,
+                mapping[ColumnNames.KC_ID],
+                mapping[ColumnNames.STUDENT_ID],
+                mapping[ColumnNames.PROBLEM_ID],
                 "pKnow",
                 "pCorrectness",
-                ColumnNames.CORRECTNESS,
+                mapping[ColumnNames.CORRECTNESS],
             ]
         )
 
@@ -950,7 +959,7 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         if filtered_data.empty:
-            return self._empty_point_estimate_prediction_frame()
+            return self._empty_point_estimate_prediction_frame(resolved_mapping)
 
         prepared_covariates, covariate_columns = self._prepare_joint_covariates(
             filtered_data, student_covariates, resolved_mapping
@@ -999,16 +1008,14 @@ class BKTModelBase(VerboseMixin, ABC):
                 p_know=p_know,
                 p_correctness=p_correctness,
                 kc_data=kc_data,
-                correctness_col_name=resolved_mapping.get(
-                    ColumnNames.CORRECTNESS, ColumnNames.CORRECTNESS
-                ),
+                column_mapping=resolved_mapping,
             )
-            kc_predictions.insert(0, ColumnNames.KC_ID, str(kc_id))
+            kc_predictions.insert(0, resolved_mapping[ColumnNames.KC_ID], str(kc_id))
             predictions.append(kc_predictions)
         self.fits._release_transient_fits()
 
         if not predictions:
-            return self._empty_point_estimate_prediction_frame()
+            return self._empty_point_estimate_prediction_frame(resolved_mapping)
 
         return pd.concat(predictions, ignore_index=True)
 
@@ -1233,9 +1240,10 @@ class BKTModelBase(VerboseMixin, ABC):
         p_know: np.ndarray,
         p_correctness: np.ndarray,
         kc_data: KCData,
-        correctness_col_name: str = ColumnNames.CORRECTNESS,
+        column_mapping: Optional[Mapping[str, str]] = None,
     ) -> pd.DataFrame:
         """Convert dense state arrays to long-form prediction output using only valid entries."""
+        mapping = ColumnNames.apply_default_mapping(column_mapping)
         # Ragged "arrays" for valid non-na entries
         student_id_segs: list[npt.NDArray] = []
         problem_id_segs: list[npt.NDArray] = []
@@ -1279,8 +1287,8 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         long_data_df: dict[str, Any] = {
-            "student_id": pd.Categorical(student_ids),
-            "problem_id": pd.Categorical(problem_ids),
+            mapping[ColumnNames.STUDENT_ID]: pd.Categorical(student_ids),
+            mapping[ColumnNames.PROBLEM_ID]: pd.Categorical(problem_ids),
             "pKnow": p_know_vals,
             "pCorrectness": (
                 np.concatenate(p_correctness_segs)
@@ -1288,7 +1296,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 else np.empty(0, dtype=np.float64)
             ),
         }
-        long_data_df[correctness_col_name] = correctness_vals
+        long_data_df[mapping[ColumnNames.CORRECTNESS]] = correctness_vals
 
         return pd.DataFrame(long_data_df)
 
@@ -2019,7 +2027,7 @@ class BKTModelBase(VerboseMixin, ABC):
         summary_cols += [f"{_PCORRECT}_{stat}" for stat in stat_labels]
         return pd.DataFrame(
             columns=[
-                "kc_id",
+                col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID),
                 col_mapping[ColumnNames.STUDENT_ID],
                 col_mapping[ColumnNames.PROBLEM_ID],
                 col_mapping[ColumnNames.CORRECTNESS],

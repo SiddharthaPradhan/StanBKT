@@ -144,7 +144,7 @@ def _summary_frame_from_arrays(
     obs_student_ids, obs_problem_ids, obs_correctness, obs_order = obs_arrays
     q_arr = np.asarray(quantiles, dtype=np.float64)
     result: dict[str, Any] = {
-        "kc_id": np.repeat(kc_id_str, len(obs_student_ids)),
+        col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID): np.repeat(kc_id_str, len(obs_student_ids)),
         col_mapping[ColumnNames.STUDENT_ID]: pd.Categorical(obs_student_ids),
         col_mapping[ColumnNames.PROBLEM_ID]: pd.Categorical(obs_problem_ids),
         col_mapping[ColumnNames.CORRECTNESS]: obs_correctness,
@@ -342,7 +342,7 @@ def _summarize_single_kc_draws(
     kc_summary.sort_values(by=sort_cols, inplace=True)
     if has_order_col:
         kc_summary.drop(columns=["_order"], inplace=True)
-    kc_summary.insert(0, "kc_id", str(kc))
+    kc_summary.insert(0, col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID), str(kc))
     return kc_summary
 
 
@@ -436,7 +436,7 @@ def posterior_summary(
     ]
 
     if not draws:
-        return pd.DataFrame(columns=["kc_id"] + param_id_cols + summary_cols)
+        return pd.DataFrame(columns=[col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)] + param_id_cols + summary_cols)
 
     # get first value to check if draws are CmdStanGQ objects or already-processed DataFrames
     first_val = next(iter(draws.values()))
@@ -471,7 +471,7 @@ def posterior_summary(
                 result_frames.append(kc_summary)
 
         if not result_frames:
-            return pd.DataFrame(columns=["kc_id"] + param_id_cols + summary_cols)
+            return pd.DataFrame(columns=[col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)] + param_id_cols + summary_cols)
         return pd.concat(result_frames, ignore_index=True)
     else:
         draw_frames = cast(dict[str, pd.DataFrame], draws)
@@ -483,6 +483,6 @@ def posterior_summary(
             result_frames.append(kc_summary)
 
     if not result_frames:
-        return pd.DataFrame(columns=["kc_id"] + param_id_cols + summary_cols)
+        return pd.DataFrame(columns=[col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID)] + param_id_cols + summary_cols)
 
     return pd.concat(result_frames, ignore_index=True)
