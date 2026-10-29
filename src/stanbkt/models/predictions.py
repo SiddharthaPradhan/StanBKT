@@ -13,7 +13,7 @@ import numpy.typing as npt
 import pandas as pd
 from numba import njit
 
-from stanbkt.fits.fit_types import CmdStanFit
+from stanbkt.fits.fit_types import CmdStanFit, FitMethod
 from stanbkt.utils.compilation import compile_stan_model
 from stanbkt.utils.data_utils import (
     ColumnNames,
@@ -489,6 +489,21 @@ def predict_posterior(
     if backend == "numba" and output == "stan":
         raise ValueError(
             "'backend=numba' does not support output='stan'. Use output='draws' or 'summary'."
+        )
+
+    # cmdstanpy's generate_quantities only accepts MCMC, MLE and VB fits
+    if model._fit_method == FitMethod.PATHFINDER and (output == "stan" or backend == "stan"):
+        prefix = "predict_smoothed_posterior" if smoothed else "predict_posterior"
+        if output == "stan":
+            hint = (
+                f"'{prefix}_stan' returns raw Stan output, which is not available for Pathfinder "
+                f"fits. Use '{prefix}_draws' or '{prefix}_summary' with backend='numba' instead."
+            )
+        else:
+            hint = "Use backend='numba', which predicts from the same Pathfinder draws."
+        raise ValueError(
+            "The Stan backend runs CmdStanPy's generate_quantities, which does not support "
+            f"Pathfinder fits. {hint}"
         )
 
     if output == "stan":
