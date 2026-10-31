@@ -61,6 +61,40 @@ def test_stan_model_cache_key_changes_when_included_file_changes(
     assert first_key != second_key
 
 
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "#include shared.stan",
+        '#include "shared.stan"',
+        "#include <shared.stan>",
+        "  #include shared.stan // shared functions",
+    ],
+)
+def test_collect_stan_sources_finds_all_include_spellings(
+    tmp_path: Path, directive: str
+) -> None:
+    included = tmp_path / "shared.stan"
+    included.write_text("real foo() { return 1; }", encoding="utf-8")
+
+    stan_file = tmp_path / "model.stan"
+    stan_file.write_text(
+        f"functions {{\n{directive}\n}}\nmodel {{ target += foo(); }}",
+        encoding="utf-8",
+    )
+
+    assert compilation._collect_stan_sources(stan_file) == [
+        stan_file.resolve(),
+        included.resolve(),
+    ]
+
+
+def test_collect_stan_sources_ignores_commented_include(tmp_path: Path) -> None:
+    stan_file = tmp_path / "model.stan"
+    stan_file.write_text("// #include missing.stan\nmodel { }", encoding="utf-8")
+
+    assert compilation._collect_stan_sources(stan_file) == [stan_file.resolve()]
+
+
 def test_compile_stan_model_caches_only_executable_and_reuses_it(
     tmp_path: Path,
     monkeypatch,

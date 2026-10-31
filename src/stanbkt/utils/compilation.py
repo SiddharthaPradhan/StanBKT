@@ -17,7 +17,11 @@ from platformdirs import PlatformDirs
 from urllib.error import URLError
 from ssl import SSLCertVerificationError
 
-_INCLUDE_PATTERN = re.compile(r'^\s*#include\s+"(?P<path>[^"]+)"', re.MULTILINE)
+# stanc accepts bare, quoted and angle bracket include paths
+_INCLUDE_PATTERN = re.compile(
+    r'^\s*#include\s+(?:"(?P<quoted>[^"]+)"|<(?P<angled>[^>]+)>|(?P<bare>\S+))',
+    re.MULTILINE,
+)
 _CACHE_NAMESPACE = "compiled_stan"
 _COMPILE_LOCKS: dict[str, threading.Lock] = {}
 _COMPILE_LOCKS_GUARD = threading.Lock()
@@ -228,7 +232,8 @@ def _collect_stan_sources(
     source_paths = [normalized_file]
     source_text = _read_text(normalized_file)
     for match in _INCLUDE_PATTERN.finditer(source_text):
-        include_file = _resolve_include_path(match.group("path"), normalized_file)
+        include_path = match["quoted"] or match["angled"] or match["bare"]
+        include_file = _resolve_include_path(include_path, normalized_file)
         source_paths.extend(_collect_stan_sources(include_file, seen=seen))
     return source_paths
 
