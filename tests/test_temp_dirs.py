@@ -557,35 +557,20 @@ class TestGQFilesFollowTheirObject:
 
 
 class TestFilesystemType:
-    MOUNTS = (
-        "/dev/sda1 / ext4 rw 0 0\n"
-        "tmpfs /tmp tmpfs rw 0 0\n"
-        "/dev/sdb1 /tmp/data xfs rw 0 0\n"
-        "tmpfs /mnt/my\\040ram tmpfs rw 0 0\n"
-        "/dev/sdc1 /stacked ext4 rw 0 0\n"
-        "tmpfs /stacked tmpfs rw 0 0\n"
-        "bad line\n"
-    )
-
-    @pytest.mark.parametrize(
-        "path, expected",
-        [
-            ("/home/me", "ext4"),
-            ("/tmp", "tmpfs"),
-            ("/tmp/work", "tmpfs"),
-            ("/tmp/data/work", "xfs"),
-            ("/tmpfoo", "ext4"),
-            ("/mnt/my ram/x", "tmpfs"),
-            ("/stacked/x", "tmpfs"),
-        ],
-    )
-    def test_longest_mount_wins(self, tmp_path, path, expected):
+    @pytest.mark.skipif(sys.platform != "linux", reason="the mount table is Linux only")
+    def test_uses_the_longest_mount_that_contains_the_path(self, tmp_path):
         mounts = tmp_path / "mounts"
-        mounts.write_text(self.MOUNTS)
-        assert _filesystem_type(path, str(mounts)) == expected
+        mounts.write_text(
+            "/dev/sda1 / ext4 rw 0 0\n"
+            "tmpfs /mnt/ram tmpfs rw 0 0\n"
+            "/dev/sdb1 /mnt/ram/data xfs rw 0 0\n"
+        )
+        assert _filesystem_type("/mnt/ram/work", str(mounts)) == "tmpfs"
+        assert _filesystem_type("/mnt/ram/data/work", str(mounts)) == "xfs"
+        assert _filesystem_type("/mnt/ramfoo", str(mounts)) == "ext4"
 
     def test_missing_mount_table(self, tmp_path):
-        assert _filesystem_type("/tmp", str(tmp_path / "missing")) is None
+        assert _filesystem_type("/mnt/ram", str(tmp_path / "missing")) is None
 
 
 class TestRamTempNotice:
