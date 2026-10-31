@@ -1,4 +1,5 @@
 from __future__ import annotations
+from cmdstanpy import install_cxx_toolchain
 from cmdstanpy.utils import cxx_toolchain_path
 from stanbkt.utils.verbose import VerbosityLevel
 
@@ -23,6 +24,8 @@ _INCLUDE_PATTERN = re.compile(
     re.MULTILINE,
 )
 _CACHE_NAMESPACE = "compiled_stan"
+_CRAN_RTOOLS_URL = "https://cran.r-project.org/bin/windows/Rtools/"
+_ARCHIVED_RTOOLS_URL = "https://cran-archive.r-project.org/bin/windows/Rtools/"
 _COMPILE_LOCKS: dict[str, threading.Lock] = {}
 _COMPILE_LOCKS_GUARD = threading.Lock()
 N_CORES = os.cpu_count()
@@ -33,6 +36,15 @@ if N_CORES is None:
 def is_sys_windows() -> bool:
     """Check if the current system is Windows."""
     return platform.system() == "Windows"
+
+
+def _use_archived_rtools_url() -> None:
+    """Point CmdStanPy's RTools download at the CRAN archive, where RTools 4.0 was moved."""
+    get_url = install_cxx_toolchain.get_url
+    def _archived_url(version: str) -> str:
+        return get_url(version).replace(_CRAN_RTOOLS_URL, _ARCHIVED_RTOOLS_URL)
+
+    setattr(install_cxx_toolchain, "get_url", _archived_url)
 
 
 def setup_cmdstanpy(n_cores: int = N_CORES, version: Optional[str] = None) -> None:
@@ -85,6 +97,7 @@ def setup_cmdstanpy(n_cores: int = N_CORES, version: Optional[str] = None) -> No
             print(
                 "Windows OS detected. Installing CmdStan and RTools (for g++ and Mingw)"
             )
+            _use_archived_rtools_url()
             installed = csp.install_cmdstan(version=version, cores=n_cores, compiler=True)
 
         else:  # linux or macos

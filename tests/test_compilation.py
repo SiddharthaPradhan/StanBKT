@@ -409,3 +409,39 @@ def test_setup_cmdstanpy_installs_missing_version(tmp_path: Path, monkeypatch) -
     compilation.setup_cmdstanpy(n_cores=1, version="2.36.0")
 
     assert install_calls == [{"version": "2.36.0", "cores": 1}]
+
+
+def test_archived_rtools_url_replaces_the_cran_location(monkeypatch) -> None:
+    toolchain = compilation.install_cxx_toolchain
+    monkeypatch.setattr(
+        toolchain,
+        "get_url",
+        lambda version: f"https://cran.r-project.org/bin/windows/Rtools/rtools{version}-x86_64.exe",
+    )
+    compilation._use_archived_rtools_url()
+    assert (
+        toolchain.get_url("40")
+        == "https://cran-archive.r-project.org/bin/windows/Rtools/rtools40-x86_64.exe"
+    )
+
+
+@pytest.mark.parametrize("windows, redirected", [(True, True), (False, False)])
+def test_setup_cmdstanpy_only_redirects_rtools_on_windows(
+    monkeypatch, windows: bool, redirected: bool
+) -> None:
+    import urllib.request
+
+    calls: list[bool] = []
+
+    def _missing_cmdstan() -> str:
+        raise ValueError("not found")
+
+    monkeypatch.setattr(compilation, "is_sys_windows", lambda: windows)
+    monkeypatch.setattr(compilation.csp, "cmdstan_path", _missing_cmdstan)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(compilation.csp, "install_cmdstan", lambda **kwargs: True)
+    monkeypatch.setattr(compilation, "_use_archived_rtools_url", lambda: calls.append(True))
+
+    compilation.setup_cmdstanpy(n_cores=1)
+    assert bool(calls) is redirected
+
