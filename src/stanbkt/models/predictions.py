@@ -24,6 +24,7 @@ from stanbkt.utils.data_utils import (
     tile_categorical,
 )
 from stanbkt.utils.posterior_utils import (
+    release_gq_draws,
     _observation_index_arrays,
     _summary_frame_from_arrays,
 )
@@ -541,9 +542,16 @@ def predict_posterior(
                 column_mapping=resolved_mapping,
                 student_covariates=student_covariates,
             )
-        return model._process_predict_gq(
+        draws = model._process_predict_gq(
             resolved_stan_output, data_cp, resolved_mapping
         )
+        # a run started here is not visible to the caller, a passed stan_output is theirs to keep
+        for gq_fit in resolved_stan_output.values():
+            if stan_output is None:
+                model._remove_gq_files(gq_fit)
+            elif model.low_memory:
+                release_gq_draws(gq_fit)
+        return draws
 
     resolved_quantiles = quantiles if quantiles is not None else [0.025, 0.975]
     if not all(0 <= q <= 1 for q in resolved_quantiles):

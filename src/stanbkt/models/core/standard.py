@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import os
 from stanbkt.fits.fit_options import StanFitOptions
 from stanbkt.fits.fit_factory import FitFactory
 from stanbkt.models.priors import PriorsBase, StandardPriors
@@ -51,6 +53,9 @@ class StandardBKT(BKTModelBase):
     cpp_compile_kwargs : dict, optional
         Additional C++ compile options forwarded as ``cpp_options`` to
         :external+cmdstanpy:py:class:`cmdstanpy.CmdStanModel`.
+    guess_slip_scale : float, default 0.5
+        Upper bound on guess and slip, which are modeled as ``guess_slip_scale * inv_logit(x)``.
+        The guess and slip priors apply to ``x``.
 
     Attributes
     ----------
@@ -64,10 +69,12 @@ class StandardBKT(BKTModelBase):
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
         post_outcome_regression: bool = False,
-        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        verbose: VerbosityLevel | int = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
         low_memory: bool = False,
+        guess_slip_scale: float = 0.5,
+        temp_dir: str | os.PathLike[str] | None = None,
     ):
         """Initialize a StandardBKT model instance.
 
@@ -88,7 +95,7 @@ class StandardBKT(BKTModelBase):
             Whether to jointly estimate a regression of a post-test outcome on each student's
             final (filtered) mastery probability at T+1, after their last response. Requires `post_outcome` at fit time.
         verbose : VerbosityLevel, default=VerbosityLevel.INFO
-            Verbosity level for logging.
+            Verbosity level for logging. ``0`` disables logging and values above ``3`` are treated as ``3``.
         stan_compile_kwargs : dict, optional
             Additional keyword arguments for Stan model compilation, forwarded as ``stanc_options``.
         cpp_compile_kwargs : dict, optional
@@ -97,7 +104,15 @@ class StandardBKT(BKTModelBase):
         low_memory : bool, default=False
             Whether to evict each KC's fit to disk after fitting, reloading it lazily on
             next access. Reduces peak memory usage when fitting many KCs at the cost of
-            some performance.
+            some performance. Fits are kept in ``temp_dir``, which should not be held in RAM.
+        guess_slip_scale : float, default=0.5
+            Upper bound on guess and slip, which are modeled as ``guess_slip_scale * inv_logit(x)``.
+            The guess and slip priors apply to ``x``, so with the default they are on the
+            half-logit scale and with 1.0 on the plain logit scale. Must be in (0, 1].
+        temp_dir : str | os.PathLike[str], optional
+            Folder for temporary files: CmdStan output, evicted fits and files staged by ``save``.
+            Defaults to ``TMPDIR`` if set, otherwise the user cache folder with ``low_memory``
+            and the system temp dir without it. Not stored when the model is saved.
         """
 
         super().__init__(
@@ -109,6 +124,8 @@ class StandardBKT(BKTModelBase):
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
             low_memory=low_memory,
+            guess_slip_scale=guess_slip_scale,
+            temp_dir=temp_dir,
         )
 
     @property
@@ -186,6 +203,7 @@ class StandardBKT(BKTModelBase):
             "grainsize": int(n_students),
             "nGroups": 1,
             "groups": np.ones(n_students, dtype=np.int32),
+            "guess_slip_scale": float(self.guess_slip_scale),
             "individual_pi_know": int(self.individual_initial_knowledge),
             "joint_pi_know": int(is_joint),
             "nTrainStudents": int(n_students),
@@ -202,7 +220,7 @@ class StandardBKT(BKTModelBase):
             if is_joint:
                 data_dict["prior_pi_know_mu"] = [0.0]
                 data_dict["prior_pi_know_std"] = [1.0]
-                data_dict["unif_prior_pi_know"] = 1
+                data_dict["unif_prior_pi_know"] = [1]
 
                 b0_mu = raw_priors.get("pi_b0_know_mu")
                 b0_std = raw_priors.get("pi_b0_know_std")
@@ -214,19 +232,14 @@ class StandardBKT(BKTModelBase):
                     b0_mu is None or b0_std is None
                 )
 
-                b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+                (
+                    data_dict["prior_pi_b1_know_mu"],
+                    data_dict["prior_pi_b1_know_std"],
+                    data_dict["unif_prior_pi_b1_know"],
+                ) = PriorsBase._covariate_prior_data(
                     raw_priors.get("pi_b1_know_mu"),
                     raw_priors.get("pi_b1_know_std"),
                     n_covariates,
-                )
-                data_dict["prior_pi_b1_know_mu"] = (
-                    b1_mu if b1_mu is not None else [0.0] * n_covariates
-                )
-                data_dict["prior_pi_b1_know_std"] = (
-                    b1_std if b1_std is not None else [5.0] * n_covariates
-                )
-                data_dict["unif_prior_pi_b1_know"] = int(
-                    b1_mu is None or b1_std is None
                 )
 
                 sigma_lambda = raw_priors.get("pi_sigma_lambda")
@@ -241,7 +254,7 @@ class StandardBKT(BKTModelBase):
                 data_dict["prior_pi_b1_know_std"] = [5.0] * n_covariates
                 data_dict["prior_pi_sigma_lambda"] = 0.5
                 data_dict["unif_prior_pi_b0_know"] = 1
-                data_dict["unif_prior_pi_b1_know"] = 1
+                data_dict["unif_prior_pi_b1_know"] = [1] * n_covariates
                 data_dict["unif_prior_pi_sigma"] = 1
 
             for param in ("pi_know", "learn", "forget", "guess", "slip"):
@@ -257,11 +270,11 @@ class StandardBKT(BKTModelBase):
                     # the corresponding uniform-prior flag to ignore them.
                     data_dict[f"prior_{mu_key}"] = [0.0]
                     data_dict[f"prior_{std_key}"] = [1.0]
-                    data_dict[f"unif_prior_{param}"] = 1
+                    data_dict[f"unif_prior_{param}"] = [1]
                 elif np.isscalar(mu_value) and np.isscalar(std_value):
                     data_dict[f"prior_{mu_key}"] = [mu_value]
                     data_dict[f"prior_{std_key}"] = [std_value]
-                    data_dict[f"unif_prior_{param}"] = 0
+                    data_dict[f"unif_prior_{param}"] = [0]
                 else:
                     raise ValueError(
                         f"Unsupported prior value type for parameter '{param}': "

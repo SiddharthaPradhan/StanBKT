@@ -71,6 +71,18 @@ a finer timestamp or an explicit sequence number. See :doc:`data_format`.
 None of the KCs in the prediction data have a fit. Check the KC column and ``column_mapping``, and
 ``model.fits.get_fitted_kcs()``.
 
+"'output_dir' cannot be passed in fit options"
+----------------------------------------------
+
+Output locations are managed by the model, because CmdStan file names only differ by the second and KCs sharing a
+folder would overwrite each other's results. Use the ``temp_dir`` argument of the model. See :doc:`performance`.
+
+"No space left on device" or memory running out during fitting
+--------------------------------------------------------------
+
+CmdStan's CSV files may be filling a temp dir that is held in RAM. Pass ``temp_dir`` with a folder on a large disk,
+or set ``TMPDIR``. See :doc:`performance`.
+
 High R-hat or low ESS
 ---------------------
 

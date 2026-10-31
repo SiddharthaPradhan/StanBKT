@@ -126,6 +126,34 @@ def _copy_fit_csvfiles_if_available(fit: CmdStanFit, target_dir: str) -> bool:
     return True
 
 
+def _write_fit_csvfiles(fit: CmdStanFit, target_dir: str, move: bool) -> None:
+    """Make ``target_dir`` hold exactly the CSV files of ``fit``.
+
+    A refit would otherwise leave the earlier chains beside the new ones, and ``from_csv``
+    reads every CSV in the folder. Moving updates the paths held by the fit.
+    """
+    runset = getattr(fit, "runset", None)
+    csv_files = getattr(runset, "csv_files", None)
+    sources = (
+        {os.path.abspath(os.fspath(csv_file)) for csv_file in csv_files}
+        if isinstance(csv_files, (list, tuple))
+        else set()
+    )
+    resolved_target = os.path.abspath(target_dir)
+
+    if os.path.isdir(resolved_target):
+        for file_name in os.listdir(resolved_target):
+            file_path = os.path.join(resolved_target, file_name)
+            if file_name.endswith(".csv") and file_path not in sources:
+                os.remove(file_path)
+
+    # a fit reloaded from this folder is already in place
+    if sources and all(os.path.dirname(source) == resolved_target for source in sources):
+        return
+    if move or not _copy_fit_csvfiles_if_available(fit, target_dir):
+        fit.save_csvfiles(target_dir)
+
+
 def _copy_persisted_csvfiles(source_dir: str, target_dir: str) -> None:
     """Copy the CmdStan CSV files of a persisted fit folder into ``target_dir``."""
     if os.path.abspath(source_dir) == os.path.abspath(target_dir):
@@ -283,6 +311,7 @@ def save_fit_artifacts(
     fit_metadata: FitMetadata,
     summary_cache: dict[str, pd.DataFrame],
     persisted_fit_folders: dict[str, str] | None = None,
+    move_csvfiles: bool = False,
 ) -> FitMetadata:
     """Persist fit CSVs, cache CSVs, and metadata to disk.
 
@@ -299,6 +328,9 @@ def save_fit_artifacts(
     persisted_fit_folders : dict[str, str] | None, optional
         Folders with the already persisted CSVs of KCs that are not in ``fits``,
         keyed by KC. Their CSVs are copied without loading the fit.
+    move_csvfiles : bool, default False
+        Whether to move the CSVs of ``fits`` instead of copying them, so that eviction
+        does not keep a second copy.
 
     Returns
     -------
@@ -316,9 +348,7 @@ def save_fit_artifacts(
         kc_name = fit_save.kc
         kc_fit_save_folder = os.path.join(fits_base_location, str(fit_save.save_folder))
         if kc_name in fits:
-            fit = fits[kc_name]
-            if not _copy_fit_csvfiles_if_available(fit, kc_fit_save_folder):
-                fit.save_csvfiles(kc_fit_save_folder)
+            _write_fit_csvfiles(fits[kc_name], kc_fit_save_folder, move_csvfiles)
         elif kc_name in persisted_fit_folders:
             _copy_persisted_csvfiles(persisted_fit_folders[kc_name], kc_fit_save_folder)
         else:

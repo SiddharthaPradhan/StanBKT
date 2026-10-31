@@ -73,8 +73,8 @@ class PriorsBase(ABC):
     # logit_pi_know ~ beta0 + beta1 * pretest + sigma* logit_pi_know_z
     pi_b0_know_mu: float | None | _UnsetType = _UNSET
     pi_b0_know_std: float | None | _UnsetType = _UNSET
-    pi_b1_know_mu: float | list[float] | None | _UnsetType = _UNSET
-    pi_b1_know_std: float | list[float] | None | _UnsetType = _UNSET
+    pi_b1_know_mu: float | list[float | None] | None | _UnsetType = _UNSET
+    pi_b1_know_std: float | list[float | None] | None | _UnsetType = _UNSET
     pi_sigma_lambda: float | None | _UnsetType = _UNSET
 
     # priors for the post-test outcome regression, independent of InitKnowledgeStrategy
@@ -83,8 +83,8 @@ class PriorsBase(ABC):
     post_b0_std: float | None | _UnsetType = _UNSET
     post_b_mastery_mu: float | None | _UnsetType = _UNSET
     post_b_mastery_std: float | None | _UnsetType = _UNSET
-    post_b1_mu: float | list[float] | None | _UnsetType = _UNSET
-    post_b1_std: float | list[float] | None | _UnsetType = _UNSET
+    post_b1_mu: float | list[float | None] | None | _UnsetType = _UNSET
+    post_b1_std: float | list[float | None] | None | _UnsetType = _UNSET
     post_sigma_lambda: float | None | _UnsetType = _UNSET
 
     # whether to fill in missing values with defaults or None (non-informative)
@@ -247,10 +247,10 @@ class PriorsBase(ABC):
 
     @staticmethod
     def _expand_covariate_priors(
-        mu: float | list[float] | None,
-        std: float | list[float] | None,
+        mu: float | list[float | None] | None,
+        std: float | list[float | None] | None,
         n_covariates: int,
-    ) -> tuple[list[float] | None, list[float] | None]:
+    ) -> tuple[list[float | None] | None, list[float | None] | None]:
         """Broadcast scalar pi_b1_know_mu/std priors to length ``n_covariates``.
 
         A list is validated against ``n_covariates`` and returned unchanged.
@@ -258,7 +258,7 @@ class PriorsBase(ABC):
         covariates are a different axis than groups.
         """
 
-        def _expand(value: float | list[float] | None) -> list[float] | None:
+        def _expand(value: float | list[float | None] | None) -> list[float | None] | None:
             if value is None:
                 return None
             if isinstance(value, list):
@@ -271,6 +271,49 @@ class PriorsBase(ABC):
             return [value] * n_covariates
 
         return _expand(mu), _expand(std)
+
+    @staticmethod
+    def _covariate_prior_data(
+        mu: float | list[float | None] | None,
+        std: float | list[float | None] | None,
+        n_covariates: int,
+    ) -> tuple[list[float], list[float], list[int]]:
+        """Return the Stan prior means, std devs and flat prior flags, one per covariate.
+
+        A covariate has a flat prior when its mean or std dev is None, its values are then
+        only placeholders that Stan ignores.
+        """
+        expanded_mu, expanded_std = PriorsBase._expand_covariate_priors(mu, std, n_covariates)
+        return PriorsBase._flat_prior_data(
+            expanded_mu if expanded_mu is not None else [None] * n_covariates,
+            expanded_std if expanded_std is not None else [None] * n_covariates,
+            placeholder_std=5.0,
+        )
+
+    @staticmethod
+    def _flat_prior_data(
+        mu: list[float | None], std: list[float | None], placeholder_std: float
+    ) -> tuple[list[float], list[float], list[int]]:
+        """Return Stan prior means, std devs and flat prior flags from per group or covariate lists.
+
+        An entry is flat when its mean or std dev is None, its values are then only placeholders
+        that Stan ignores.
+        """
+        if len(mu) != len(std):
+            raise ValueError(
+                f"Prior means and std devs must have the same length, got {len(mu)} and {len(std)}."
+            )
+        stan_mu, stan_std, flat = [], [], []
+        for mu_value, std_value in zip(mu, std):
+            if mu_value is None or std_value is None:
+                stan_mu.append(0.0)
+                stan_std.append(placeholder_std)
+                flat.append(1)
+            else:
+                stan_mu.append(mu_value)
+                stan_std.append(std_value)
+                flat.append(0)
+        return stan_mu, stan_std, flat
 
 
 @dataclass
@@ -289,8 +332,9 @@ class StandardPriors(PriorsBase):
     Each parameter can be specified as a scalar or None (non-informative prior). Use
     :class:`MultiPriors` for per group values with :class:`MultiBKT`.
 
-    Guess and slip are modeled on the half-logit scale to constrain them to [0, 0.5].
-    All other parameters are modeled on the logit scale.
+    Guess and slip are modeled as ``guess_slip_scale * inv_logit(x)``, which constrains them to
+    [0, guess_slip_scale], and their priors apply to ``x``. ``guess_slip_scale`` is set on the
+    model and defaults to 0.5, the half-logit scale. All other parameters are modeled on the logit scale.
 
     Parameters
     ----------
@@ -304,13 +348,13 @@ class StandardPriors(PriorsBase):
     forget_std : float |  None, default 5.0
         Prior std dev for logit-scale forgetting rate.
     guess_mu : float |  None, default -1.0
-        Prior mean for half-logit-scale guessing probability.
+        Prior mean for scaled-logit-scale guessing probability (half-logit by default).
     guess_std : float |  None, default 5.0
-        Prior std dev for half-logit-scale guessing probability.
+        Prior std dev for scaled-logit-scale guessing probability (half-logit by default).
     slip_mu : float |  None, default -1.0
-        Prior mean for half-logit-scale slipping probability.
+        Prior mean for scaled-logit-scale slipping probability (half-logit by default).
     slip_std : float |  None, default 5.0
-        Prior std dev for half-logit-scale slipping probability.
+        Prior std dev for scaled-logit-scale slipping probability (half-logit by default).
     pi_know_mu : float |  None, default -2.0
         Prior mean for logit-scale initial knowledge probability.
     pi_know_std : float |  None, default 5.0
@@ -320,10 +364,10 @@ class StandardPriors(PriorsBase):
         Used only with `InitKnowledgeStrategy.JOINT`.
     pi_b0_know_std : float | None, default 5.0
         Prior std dev for the intercept (b0). Used only with `InitKnowledgeStrategy.JOINT`.
-    pi_b1_know_mu : float | list[float] | None, default 0.0
+    pi_b1_know_mu : float | list[float | None] | None, default 0.0
         Prior mean for the covariate slopes (b1). A scalar applies to every covariate, a list
         gives one value per covariate. Used only with `InitKnowledgeStrategy.JOINT`.
-    pi_b1_know_std : float | list[float] | None, default 5.0
+    pi_b1_know_std : float | list[float | None] | None, default 5.0
         Prior std dev for the covariate slopes (b1), scalar or one value per covariate.
         Used only with `InitKnowledgeStrategy.JOINT`.
     pi_sigma_lambda : float | None, default 5.0
@@ -339,9 +383,9 @@ class StandardPriors(PriorsBase):
         Prior mean for the effect of final mastery on the post-test outcome.
     post_b_mastery_std : float | None, default 5.0
         Prior std dev for the effect of final mastery on the post-test outcome.
-    post_b1_mu : float | list[float] | None, default 0.0
+    post_b1_mu : float | list[float | None] | None, default 0.0
         Prior mean for the post-test covariate slopes, scalar or one value per covariate.
-    post_b1_std : float | list[float] | None, default 5.0
+    post_b1_std : float | list[float | None] | None, default 5.0
         Prior std dev for the post-test covariate slopes, scalar or one value per covariate.
     post_sigma_lambda : float | None, default 0.5
         Rate of the Exponential prior on the post-test outcome residual std dev.
@@ -455,7 +499,8 @@ class StandardPriors(PriorsBase):
         -----
         BKT specific priors are modeled as a Normal distributions with means and standard
         deviations specified on the logit scale for learn and forget probability parameters.
-        Guess and slip are modeled on the half-logit scale to constrain them to [0, 0.5] on the probability scale.
+        Guess and slip are modeled on the scaled logit scale, ``guess_slip_scale * inv_logit(x)``, which
+        constrains them to [0, guess_slip_scale] on the probability scale (half-logit and [0, 0.5] by default).
 
         In cases where estimation_type = :attr:`stanbkt.models.model_types.InitKnowledgeStrategy.JOINT`, the b0 and b1 parameters
         are modeled as Normal distributions. Additionally, the
@@ -512,13 +557,13 @@ class MultiPriors(PriorsBase):
     forget_std : float | list[float] | None, default 5.0
         Prior std dev for logit-scale forgetting rate.
     guess_mu : float | list[float] | None, default -1.0
-        Prior mean for half-logit-scale guessing probability.
+        Prior mean for scaled-logit-scale guessing probability (half-logit by default).
     guess_std : float | list[float] | None, default 5.0
-        Prior std dev for half-logit-scale guessing probability.
+        Prior std dev for scaled-logit-scale guessing probability (half-logit by default).
     slip_mu : float | list[float] | None, default -1.0
-        Prior mean for half-logit-scale slipping probability.
+        Prior mean for scaled-logit-scale slipping probability (half-logit by default).
     slip_std : float | list[float] | None, default 5.0
-        Prior std dev for half-logit-scale slipping probability.
+        Prior std dev for scaled-logit-scale slipping probability (half-logit by default).
     pi_know_mu : float | list[float] | None, default -2.0
         Prior mean for logit-scale initial knowledge probability.
     pi_know_std : float | list[float] | None, default 5.0
@@ -528,10 +573,10 @@ class MultiPriors(PriorsBase):
         Used only with `InitKnowledgeStrategy.JOINT`.
     pi_b0_know_std : float | None, default 5.0
         Prior std dev for the intercept (b0). Used only with `InitKnowledgeStrategy.JOINT`.
-    pi_b1_know_mu : float | list[float] | None, default 0.0
+    pi_b1_know_mu : float | list[float | None] | None, default 0.0
         Prior mean for the covariate slopes (b1). A scalar applies to every covariate, a list
         gives one value per covariate. Used only with `InitKnowledgeStrategy.JOINT`.
-    pi_b1_know_std : float | list[float] | None, default 5.0
+    pi_b1_know_std : float | list[float | None] | None, default 5.0
         Prior std dev for the covariate slopes (b1), scalar or one value per covariate.
         Used only with `InitKnowledgeStrategy.JOINT`.
     pi_sigma_lambda : float | None, default 5.0
@@ -547,9 +592,9 @@ class MultiPriors(PriorsBase):
         Prior mean for the effect of final mastery on the post-test outcome.
     post_b_mastery_std : float | None, default 5.0
         Prior std dev for the effect of final mastery on the post-test outcome.
-    post_b1_mu : float | list[float] | None, default 0.0
+    post_b1_mu : float | list[float | None] | None, default 0.0
         Prior mean for the post-test covariate slopes, scalar or one value per covariate.
-    post_b1_std : float | list[float] | None, default 5.0
+    post_b1_std : float | list[float | None] | None, default 5.0
         Prior std dev for the post-test covariate slopes, scalar or one value per covariate.
     post_sigma_lambda : float | None, default 0.5
         Rate of the Exponential prior on the post-test outcome residual std dev.
@@ -573,6 +618,7 @@ class MultiPriors(PriorsBase):
     pi_know_mu: float | list[float] | None | _UnsetType = _UNSET
     pi_know_std: float | list[float] | None | _UnsetType = _UNSET
 
+    @staticmethod
     def expected_class() -> type[BKTModelBase]:
         """Return the expected BKT model class type for these priors."""
         from stanbkt.models.core.multi import MultiBKT
@@ -708,7 +754,8 @@ class MultiPriors(PriorsBase):
         -----
         BKT specific priors are modeled as a Normal distributions with means and standard
         deviations specified on the logit scale for learn and forget probability parameters.
-        Guess and slip are modeled on the half-logit scale to constrain them to [0, 0.5] on the probability scale.
+        Guess and slip are modeled on the scaled logit scale, ``guess_slip_scale * inv_logit(x)``, which
+        constrains them to [0, guess_slip_scale] on the probability scale (half-logit and [0, 0.5] by default).
 
         In cases where estimation_type = :attr:`stanbkt.models.model_types.InitKnowledgeStrategy.JOINT`, the b0 and b1 parameters
         are modeled as Normal distributions. Additionally, the

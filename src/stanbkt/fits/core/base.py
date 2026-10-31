@@ -4,7 +4,7 @@ import os
 
 from abc import ABC, abstractmethod
 from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
-from typing import Union
+from typing import Union, cast
 
 import pandas as pd
 from cmdstanpy import from_csv as cmdstan_from_csv
@@ -22,6 +22,7 @@ from stanbkt.fits.persistence.fit_io import (
     sanitize_kc_name,
     save_fit_artifacts,
 )
+from stanbkt.utils.temp_dirs import WorkDir
 from stanbkt.fits.persistence.metadata import (
     fit_metadata_from_json,
     fit_metadata_to_json,
@@ -54,7 +55,7 @@ class FitBase(VerboseMixin, ABC):
 
     def __init__(
         self,
-        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        verbose: VerbosityLevel | int = VerbosityLevel.INFO,
         fits: dict[str, CmdStanFit] | None = None,
         fit_metadata: FitMetadata | None = None,
         fit_artifact_base_location: str | None = None,
@@ -101,6 +102,8 @@ class FitBase(VerboseMixin, ABC):
         )
         self._should_cache_summary: bool = cache_summary
         self._fit_artifact_base_location: str | None = fit_artifact_base_location
+        # work dir of the owning model, kept alive by the fits that are reloaded from it
+        self._work_dir: WorkDir | None = None
         # when set, summaries and predictions drop fits they had to reload from disk
         self.release_reloaded_fits: bool = False
         self._transient_loaded: set[str] = set()
@@ -245,7 +248,8 @@ class FitBase(VerboseMixin, ABC):
         RuntimeError
             If no artifact base location has been configured.
         KeyError
-            If the KC does not exist or is not currently loaded in memory.
+            If the KC does not exist or is not currently loaded in memory. With ``low_memory`` a
+            fit that is not in memory is already on disk, so nothing happens.
         """
         if self._fit_artifact_base_location is None:
             raise RuntimeError(
@@ -255,6 +259,8 @@ class FitBase(VerboseMixin, ABC):
         if kc not in self.get_fitted_kcs():
             raise KeyError(f"No fit found for KC '{kc}'.")
         if kc not in self.stan_fits:
+            if self.release_reloaded_fits:
+                return
             raise KeyError(
                 f"Fit for KC '{kc}' is not currently loaded in memory and cannot be released."
             )
@@ -269,6 +275,7 @@ class FitBase(VerboseMixin, ABC):
             summary_cache={
                 kc: self._summary_cache[kc] for kc in [kc] if kc in self._summary_cache
             },
+            move_csvfiles=True,
         )
         self._fit_metadata.fit_saves[kc] = saved_single_metadata.fit_saves[kc]
         self.stan_fits.pop(kc, None)
@@ -276,6 +283,9 @@ class FitBase(VerboseMixin, ABC):
 
     def get_fit(self, kc: str) -> CmdStanFit:
         """Get the fit for a knowledge component.
+
+        With ``low_memory`` a fit on disk is read on every call and not kept by the model, so it
+        is freed once you drop it. Hold on to the result if you need it more than once.
 
         Parameters
         ----------
@@ -292,16 +302,31 @@ class FitBase(VerboseMixin, ABC):
         KeyError
             If no fit exists for the specified KC.
         """
-        if kc not in self.stan_fits:
-            if kc not in self._fit_metadata.fit_saves:
-                raise KeyError(f"No fit found for KC '{kc}'.")
-            if self._fit_artifact_base_location is None:
-                raise KeyError(
-                    f"Fit for KC '{kc}' is not loaded in memory and no artifact location is configured."
-                )
+        if kc in self.stan_fits:
+            return self.stan_fits[kc]
+        kc_fit = self._load_persisted_fit(kc)
+        if not self.release_reloaded_fits:
+            self.stan_fits[kc] = kc_fit
+        return kc_fit
 
-            self.stan_fits[kc] = cmdstan_from_csv(self._persisted_fit_folder(kc))
-        return self.stan_fits[kc]
+    def _load_persisted_fit(self, kc: str) -> CmdStanFit:
+        """Read a KC fit from its persisted CSVs."""
+        if kc not in self._fit_metadata.fit_saves:
+            raise KeyError(f"No fit found for KC '{kc}'.")
+        if self._fit_artifact_base_location is None:
+            raise KeyError(
+                f"Fit for KC '{kc}' is not loaded in memory and no artifact location is configured."
+            )
+
+        kc_fit = cmdstan_from_csv(self._persisted_fit_folder(kc))
+        # from_csv returns None for CSVs from a method it cannot load
+        if kc_fit is None:
+            raise ValueError(
+                f"Could not load the fit for KC '{kc}' from '{self._persisted_fit_folder(kc)}'."
+            )
+        if self._work_dir is not None:
+            self._work_dir.keep_alive(kc_fit)
+        return cast(CmdStanFit, kc_fit)
 
     def _persisted_fit_folder(self, kc: str) -> str | None:
         """Folder holding the persisted CSVs of a KC fit, None when no artifact location is set."""
@@ -320,11 +345,11 @@ class FitBase(VerboseMixin, ABC):
         fit reloaded from disk stays in memory.
         """
         self._release_transient_fits()
-        was_resident = kc in self.stan_fits
-        kc_fit = self.get_fit(kc)
-        if self.release_reloaded_fits and not was_resident:
+        if self.release_reloaded_fits and kc not in self.stan_fits:
+            self.stan_fits[kc] = self._load_persisted_fit(kc)
             self._transient_loaded.add(kc)
-        return kc_fit
+            return self.stan_fits[kc]
+        return self.get_fit(kc)
 
     def _release_transient_fits(self) -> None:
         """Evict fits reloaded from disk by ``_get_fit_transient`` (they are already persisted)."""

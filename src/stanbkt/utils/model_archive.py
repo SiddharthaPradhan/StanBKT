@@ -36,8 +36,8 @@ def pack_model_directory(source_dir: str, archive_path: str | os.PathLike[str]) 
     return normalized_archive_path
 
 
-def unpack_model_archive(archive_path: str | os.PathLike[str], target_dir: str) -> str:
-    """Extract a StanBKT model archive into a target directory."""
+def _validated_archive_path(archive_path: str | os.PathLike[str]) -> str:
+    """Return the normalized archive path after checking it is a readable archive."""
     normalized_archive_path = normalize_model_archive_path(archive_path)
     if not os.path.exists(normalized_archive_path):
         raise FileNotFoundError(
@@ -47,6 +47,23 @@ def unpack_model_archive(archive_path: str | os.PathLike[str], target_dir: str) 
         raise ValueError(
             f"Model archive '{normalized_archive_path}' is not a valid zip archive."
         )
+    return normalized_archive_path
+
+
+def read_model_archive_file(
+    archive_path: str | os.PathLike[str], file_name: str
+) -> bytes | None:
+    """Read one file from a StanBKT model archive without extracting the rest."""
+    normalized_archive_path = _validated_archive_path(archive_path)
+    with zipfile.ZipFile(normalized_archive_path, mode="r") as archive_file:
+        if file_name not in archive_file.namelist():
+            return None
+        return archive_file.read(file_name)
+
+
+def unpack_model_archive(archive_path: str | os.PathLike[str], target_dir: str) -> str:
+    """Extract a StanBKT model archive into a target directory."""
+    normalized_archive_path = _validated_archive_path(archive_path)
 
     with zipfile.ZipFile(normalized_archive_path, mode="r") as archive_file:
         archive_file.extractall(target_dir)

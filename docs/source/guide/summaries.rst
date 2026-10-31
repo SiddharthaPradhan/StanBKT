@@ -34,7 +34,7 @@ Parameters in the summary
 
 - ``lp__``: the log density, for MCMC diagnostics.
 - ``logit_pi_know_group``, ``logit_learn_group``, ``logit_forget_group``, ``logit_guess_group``,
-  ``logit_slip_group``: the parameters on their unconstrained (logit or half-logit) scale, where the priors apply.
+  ``logit_slip_group``: the parameters on their unconstrained (logit, or scaled logit for guess and slip) scale, where the priors apply.
 - ``pi_know``, ``learn``, ``forget``, ``guess``, ``slip``: the same parameters on the probability scale. Use these
   to interpret the model.
 - Under JOINT, ``pi_b0_know_param``, ``pi_b1_know_param``, ``pi_sigma_param`` and ``logit_pi_know_z``

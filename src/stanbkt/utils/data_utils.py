@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 import pandas as pd
-from typing import Optional, Callable, Any, Union
+from typing import Optional, Callable, Any, Union, cast
 from collections.abc import Iterable, Mapping
 import numpy.typing as npt
 import numpy as np
@@ -273,8 +273,10 @@ def prepare_student_covariates(
     )
     bad = ~np.isfinite(values)
     if bad.any():
-        bad_columns = [col for col, flag in zip(covariate_columns, bad.any(axis=0)) if flag]
-        bad_students = [sid for sid, flag in zip(required_ids, bad.any(axis=1)) if flag]
+        bad_by_column = cast(np.ndarray, bad.any(axis=0))
+        bad_by_student = cast(np.ndarray, bad.any(axis=1))
+        bad_columns = [col for col, flag in zip(covariate_columns, bad_by_column) if flag]
+        bad_students = [sid for sid, flag in zip(required_ids, bad_by_student) if flag]
         raise ValueError(
             f"'{arg_name}' has NaN or infinite values in column(s) "
             f"{bad_columns} for student(s) {bad_students[:5]}"

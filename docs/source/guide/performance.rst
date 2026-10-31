@@ -49,15 +49,55 @@ Low memory mode
 
 ``low_memory=True`` keeps fits on disk instead of in memory, for models with many KCs.
 
-- Each KC's fit is evicted to a temporary directory after fitting and reloaded lazily when needed.
+- Each KC's fit is moved to the model's temporary folder after fitting and reloaded lazily when needed. Only one
+  copy of the CSV files is kept.
 - ``summary()`` and every ``predict*`` method release the fits they had to reload when they finish.
 - Cached summaries never reload a fit.
+- ``model.fits.get_fit(kc)`` reads the fit from disk on every call and the model does not keep it, so it is freed
+  once you drop it. Hold on to the result if you need it more than once.
+- Passing ``stan_output`` to ``predict_posterior_summary`` or ``predict_posterior_draws`` frees the cached draws of
+  those objects afterwards. They are read from disk again if you need them.
 - ``save()`` copies evicted fits from disk without loading them.
 
 .. code-block:: python
 
-   model = StandardBKT(low_memory=True)
+   model = StandardBKT(low_memory=True, temp_dir="/scratch/stanbkt")
    model.fit(large_df)
+
+``low_memory`` covers the fits. Stan posterior prediction still reads all draws of one KC into memory, which is
+about 64 GB for 1 million observations and 4000 draws. Use ``backend="numba"`` if that is too much.
+
+Temporary files
+---------------
+
+CmdStan writes its output to CSV files, which can be much larger than the data. The system temp dir is held in RAM
+on many Linux machines, so these files can use up memory even though they are "on disk". The folder is chosen in
+this order:
+
+1. The ``temp_dir`` argument of the model or of :func:`~stanbkt.utils.model_io.load_model`.
+2. The ``TMPDIR`` environment variable.
+3. With ``low_memory=True``, ``tmp`` in the stanbkt user cache folder (``~/.cache/stanbkt/tmp`` on Linux).
+4. Otherwise the system temp dir.
+
+On Linux, if the chosen folder is held in RAM (``tmpfs``) and was not passed as ``temp_dir``, the model logs the
+folder and its free space at the ``INFO`` level when it first needs temporary files.
+
+Each model uses its own ``stanbkt_work_*`` subfolder and removes it on exit. Plan for this much free space:
+
+- Fits: every chain of every KC, for as long as the model exists.
+- ``save()``: a second copy of the fits while the archive is written.
+- ``load_model``: the extracted archive, for as long as the model exists.
+- Stan posterior prediction: the draws of the KC being processed, which ``predict_posterior_summary`` and
+  ``predict_posterior_draws`` delete as they finish. The ``predict_posterior_stan`` output stays until you drop the
+  returned objects, unless you moved it with ``save_csvfiles``.
+
+A process that is killed cannot remove its folder. Leftover folders in the user cache are removed the next time
+``stanbkt`` is imported, and those in any other location the next time a model creates a folder there. Folders of
+running processes and the compiled model cache are never touched. On network drives without file lock support,
+leftover folders are not removed automatically.
+
+CmdStanPy's input data file stays in the system temp dir unless ``TMPDIR`` is set. It is small and is deleted after
+each run.
 
 Large prediction outputs
 ------------------------

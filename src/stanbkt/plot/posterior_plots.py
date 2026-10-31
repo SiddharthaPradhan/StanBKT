@@ -360,7 +360,7 @@ def _point_estimate_correctness_per_problem(
         )
         problems_to_plot = [problem_ids[i] for i in problems_to_plot]
         data = data[data[column_mapping[ColumnNames.PROBLEM_ID]].isin(problems_to_plot)]
-    correctness_by_problem: pd.Series[np.float64] = (
+    correctness_by_problem: pd.Series = (
         data[column_mapping[ColumnNames.CORRECTNESS]]
         .groupby(data[column_mapping[ColumnNames.PROBLEM_ID]], observed=True)
         .agg(agg_func)

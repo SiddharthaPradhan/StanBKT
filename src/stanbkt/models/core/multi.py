@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import os
 from importlib.resources import files
 from typing import Any, Callable, Literal, Optional, Union
 
@@ -24,15 +25,6 @@ from stanbkt.utils.data_utils import (
 from stanbkt.utils.verbose import VerbosityLevel
 
 
-def _is_all_none(val: Any) -> bool:
-    """Return True if val is None or a list where every element is None."""
-    if val is None:
-        return True
-    if isinstance(val, list):
-        return all(v is None for v in val)
-    return False
-
-
 class MultiBKT(BKTModelBase):
     """Grouped Bayesian Knowledge Tracing model.
 
@@ -50,7 +42,7 @@ class MultiBKT(BKTModelBase):
     fit_method : FitMethod, default FitMethod.MCMC
         The method to use for fitting the Stan model.
     verbose : VerbosityLevel, default VerbosityLevel.INFO
-        Verbosity level for logging.
+        Verbosity level for logging. ``0`` disables logging and values above ``3`` are treated as ``3``.
     stan_compile_kwargs : dict | None, optional
         Additional Stan compilation options.
     cpp_compile_kwargs : dict | None, optional
@@ -68,19 +60,28 @@ class MultiBKT(BKTModelBase):
     low_memory : bool
         Whether to evict each KC's fit to disk after fitting, reloading it lazily on
         next access. Reduces peak memory usage when fitting many KCs at the cost of
-        some performance.
+        some performance. Fits are kept in ``temp_dir``, which should not be held in RAM.
+    guess_slip_scale : float, default 0.5
+        Upper bound on guess and slip, which are modeled as ``guess_slip_scale * inv_logit(x)``.
+        The guess and slip priors apply to ``x``.
+    temp_dir : str | os.PathLike[str], optional
+        Folder for temporary files: CmdStan output, evicted fits and files staged by ``save``.
+        Defaults to ``TMPDIR`` if set, otherwise the user cache folder with ``low_memory``
+        and the system temp dir without it. Not stored when the model is saved.
     """
 
     def __init__(
         self,
         fit_method: FitMethod = FitMethod.MCMC,
-        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        verbose: VerbosityLevel | int = VerbosityLevel.INFO,
         stan_compile_kwargs: dict | None = None,
         cpp_compile_kwargs: dict | None = None,
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
         post_outcome_regression: bool = False,
         low_memory: bool = False,
+        guess_slip_scale: float = 0.5,
+        temp_dir: str | os.PathLike[str] | None = None,
     ):
         """Initialize a MultiBKT model instance.
 
@@ -104,7 +105,7 @@ class MultiBKT(BKTModelBase):
             Whether to jointly estimate a regression of a post-test outcome on each student's
             final (filtered) mastery probability at T+1, after their last response. Requires `post_outcome` at fit time.
         verbose : VerbosityLevel, default=VerbosityLevel.INFO
-            Verbosity level for logging.
+            Verbosity level for logging. ``0`` disables logging and values above ``3`` are treated as ``3``.
         stan_compile_kwargs : dict, optional
             Additional keyword arguments for Stan model compilation, forwarded as ``stanc_options``.
         cpp_compile_kwargs : dict, optional
@@ -113,7 +114,15 @@ class MultiBKT(BKTModelBase):
         low_memory : bool, default=False
             Whether to evict each KC's fit to disk after fitting, reloading it lazily on
             next access. Reduces peak memory usage when fitting many KCs at the cost of
-            some performance.
+            some performance. Fits are kept in ``temp_dir``, which should not be held in RAM.
+        guess_slip_scale : float, default=0.5
+            Upper bound on guess and slip, which are modeled as ``guess_slip_scale * inv_logit(x)``.
+            The guess and slip priors apply to ``x``, so with the default they are on the
+            half-logit scale and with 1.0 on the plain logit scale. Must be in (0, 1].
+        temp_dir : str | os.PathLike[str], optional
+            Folder for temporary files: CmdStan output, evicted fits and files staged by ``save``.
+            Defaults to ``TMPDIR`` if set, otherwise the user cache folder with ``low_memory``
+            and the system temp dir without it. Not stored when the model is saved.
         """
         super().__init__(
             verbose=verbose,
@@ -124,6 +133,8 @@ class MultiBKT(BKTModelBase):
             stan_compile_kwargs=stan_compile_kwargs,
             cpp_compile_kwargs=cpp_compile_kwargs,
             low_memory=low_memory,
+            guess_slip_scale=guess_slip_scale,
+            temp_dir=temp_dir,
         )
         self._use_groups = True
 
@@ -188,6 +199,7 @@ class MultiBKT(BKTModelBase):
             "grainsize": int(n_students),
             "nGroups": n_groups,
             "groups": kc_data.groups,
+            "guess_slip_scale": float(self.guess_slip_scale),
             "individual_pi_know": int(self.individual_initial_knowledge),
             "joint_pi_know": int(is_joint),
             "nTrainStudents": int(n_students),
@@ -212,7 +224,7 @@ class MultiBKT(BKTModelBase):
         if is_joint:
             data_dict["prior_pi_know_mu"] = [0.0] * n_groups
             data_dict["prior_pi_know_std"] = [1.0] * n_groups
-            data_dict["unif_prior_pi_know"] = 1
+            data_dict["unif_prior_pi_know"] = [1] * n_groups
 
             b0_mu = raw_priors.get("pi_b0_know_mu")
             b0_std = raw_priors.get("pi_b0_know_std")
@@ -220,18 +232,15 @@ class MultiBKT(BKTModelBase):
             data_dict["prior_pi_b0_know_std"] = b0_std if b0_std is not None else 5.0
             data_dict["unif_prior_pi_b0_know"] = int(b0_mu is None or b0_std is None)
 
-            b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+            (
+                data_dict["prior_pi_b1_know_mu"],
+                data_dict["prior_pi_b1_know_std"],
+                data_dict["unif_prior_pi_b1_know"],
+            ) = PriorsBase._covariate_prior_data(
                 raw_priors.get("pi_b1_know_mu"),
                 raw_priors.get("pi_b1_know_std"),
                 n_covariates,
             )
-            data_dict["prior_pi_b1_know_mu"] = (
-                b1_mu if b1_mu is not None else [0.0] * n_covariates
-            )
-            data_dict["prior_pi_b1_know_std"] = (
-                b1_std if b1_std is not None else [5.0] * n_covariates
-            )
-            data_dict["unif_prior_pi_b1_know"] = int(b1_mu is None or b1_std is None)
 
             sigma_lambda = raw_priors.get("pi_sigma_lambda")
             data_dict["prior_pi_sigma_lambda"] = (
@@ -245,7 +254,7 @@ class MultiBKT(BKTModelBase):
             data_dict["prior_pi_b1_know_std"] = [5.0] * n_covariates
             data_dict["prior_pi_sigma_lambda"] = 0.5
             data_dict["unif_prior_pi_b0_know"] = 1
-            data_dict["unif_prior_pi_b1_know"] = 1
+            data_dict["unif_prior_pi_b1_know"] = [1] * n_covariates
             data_dict["unif_prior_pi_sigma"] = 1
 
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
@@ -256,20 +265,15 @@ class MultiBKT(BKTModelBase):
             mu_val = expanded_priors.get(mu_key)
             std_val = expanded_priors.get(std_key)
 
-            if _is_all_none(mu_val) or _is_all_none(std_val):
-                # Non-informative uniform prior — provide dummy values
-                # (Stan ignores prior_* when unif_prior_{param} == 1)
-                data_dict[f"prior_{mu_key}"] = [0.0] * n_groups
-                data_dict[f"prior_{std_key}"] = [1.0] * n_groups  # must be > 0
-                data_dict[f"unif_prior_{param}"] = 1
-            else:
-                mu_list = mu_val if isinstance(mu_val, list) else [mu_val] * n_groups
-                std_list = (
-                    std_val if isinstance(std_val, list) else [std_val] * n_groups
-                )
-                data_dict[f"prior_{mu_key}"] = mu_list
-                data_dict[f"prior_{std_key}"] = std_list
-                data_dict[f"unif_prior_{param}"] = 0
+            (
+                data_dict[f"prior_{mu_key}"],
+                data_dict[f"prior_{std_key}"],
+                data_dict[f"unif_prior_{param}"],
+            ) = PriorsBase._flat_prior_data(
+                mu_val if isinstance(mu_val, list) else [mu_val] * n_groups,
+                std_val if isinstance(std_val, list) else [std_val] * n_groups,
+                placeholder_std=1.0,  # must be > 0
+            )
 
         data_dict.update(self._post_outcome_stan_data(kc_data, raw_priors))
         return data_dict

@@ -149,6 +149,13 @@ class FitFactory:
                 raise FitMethodMismatchError(
                     f"Incompatible fit options type {type(fit_options).__name__} for fit method '{fit_method}'. Expected {fit_option_class.__name__}."
                 )
+            # CmdStan file names only differ by the second, so KCs sharing a folder overwrite each other
+            for reserved in ("output_dir", "gq_output_dir"):
+                if reserved in fit_options.extra_kwargs:
+                    raise ValueError(
+                        f"'{reserved}' cannot be passed in fit options. Use the 'temp_dir' "
+                        "argument of the model to choose where temporary files are written."
+                    )
             if (
                 isinstance(fit_options, MCMCFitOptions)  # if MCMC
                 and fit_options.threads_per_chain > 1  # multi threading is enabled

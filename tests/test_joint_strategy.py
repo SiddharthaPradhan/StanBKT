@@ -141,7 +141,7 @@ class TestFitPersistence:
         assert data["joint_pi_know"] == 1
         assert data["nCovariates"] == n_cov
         assert len(data["prior_pi_b1_know_mu"]) == n_cov
-        assert data["unif_prior_pi_know"] == 1
+        assert data["unif_prior_pi_know"] == [1]
         assert data["unif_prior_pi_b0_know"] == 0
 
 

@@ -54,6 +54,9 @@ group column (``ColumnNames.GROUP``) in the data passed to ``fit`` and every ``p
 - ``stan_compile_kwargs`` and ``cpp_compile_kwargs``: forwarded to CmdStanPy as ``stanc_options`` and
   ``cpp_options``. ``STAN_THREADS`` must be set in ``cpp_compile_kwargs`` to use ``threads_per_chain > 1``.
 - ``low_memory``: evict each KC's fit to disk after fitting and reload it lazily when needed.
+- ``temp_dir``: folder for temporary files such as CmdStan output and evicted fits, see :doc:`guide/performance`.
+- ``guess_slip_scale``: upper bound on ``guess`` and ``slip``, modeled as ``guess_slip_scale * inv_logit(x)``.
+  Defaults to 0.5. It changes the scale the ``guess`` and ``slip`` priors are on, see :doc:`guide/priors`.
 
 .. code-block:: python
 
@@ -455,7 +458,13 @@ Logging Control
 ^^^^^^^^^^^^^^^
 
 Control verbosity to specify the amount of logging information printed during model fitting and prediction.
-Three levels are available: DEBUG, INFO, and WARN, listed in decreasing order of verbosity. 
+Four levels are available: DEBUG (3), INFO (2), WARN (1) and SILENT (0), listed in decreasing order of verbosity.
+Integers are accepted too, and values above 3 are treated as 3.
+
+SILENT disables StanBKT's messages and, while the model is running, CmdStanPy's log messages and progress bars.
+Python warnings about your data, such as dropped students, are still raised. Use the :mod:`warnings` module to
+filter them. CmdStanPy's logger is shared by the whole process, so a SILENT model also hides the CmdStanPy messages
+of any other model running at the same time.
 
 .. code-block:: python
    :emphasize-lines: 2,5

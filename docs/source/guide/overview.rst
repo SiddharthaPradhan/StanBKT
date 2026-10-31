@@ -28,13 +28,15 @@ Each KC has five parameters. All of them are estimated on the logit scale and tr
      - (0, 1)
    * - ``guess``
      - Probability of a correct response without knowing the skill.
-     - (0, 0.5)
+     - (0, 0.5) by default
    * - ``slip``
      - Probability of an incorrect response despite knowing the skill.
-     - (0, 0.5)
+     - (0, 0.5) by default
 
 ``guess`` and ``slip`` are capped at 0.5 (``0.5 * inv_logit(x)``) so that a correct response is always more
 likely when the skill is known. This removes the label switching where "known" and "not known" swap meaning.
+The cap is set with the ``guess_slip_scale`` constructor argument, which can be any value in (0, 1]. Values above
+0.5 no longer rule out label switching, and 1.0 removes the cap.
 
 In :class:`~stanbkt.models.MultiBKT` every parameter is estimated per group. ``pi_know`` can also be estimated
 per student, see :doc:`initial_knowledge`.

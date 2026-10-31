@@ -628,3 +628,58 @@ class TestPiB1KnowAcceptsList:
         # n_groups=2 here is unrelated to the 3-covariate pi_b1_know list; the
         # per-group length check must not apply to pi_b1_know_mu/std.
         MultiPriors._validate_single(p, MultiBKT, JOINT, n_groups=2)
+
+
+class TestCovariatePriorData:
+    def test_none_in_mean_list_is_flat_for_that_covariate(self):
+        assert PriorsBase._covariate_prior_data([1.0, None], [3.0, 3.0], 2) == (
+            [1.0, 0.0],
+            [3.0, 5.0],
+            [0, 1],
+        )
+
+    def test_none_in_std_list_is_flat_for_that_covariate(self):
+        assert PriorsBase._covariate_prior_data([1.0, 2.0], [None, 3.0], 2) == (
+            [0.0, 2.0],
+            [5.0, 3.0],
+            [1, 0],
+        )
+
+    def test_none_for_the_whole_prior_is_flat_for_all(self):
+        assert PriorsBase._covariate_prior_data(None, 3.0, 2) == ([0.0, 0.0], [5.0, 5.0], [1, 1])
+        assert PriorsBase._covariate_prior_data(1.0, None, 2)[2] == [1, 1]
+
+    def test_scalars_and_lists_mix(self):
+        assert PriorsBase._covariate_prior_data(1.0, [2.0, None], 2) == (
+            [1.0, 0.0],
+            [2.0, 5.0],
+            [0, 1],
+        )
+
+    def test_no_covariates(self):
+        assert PriorsBase._covariate_prior_data(None, None, 0) == ([], [], [])
+
+    def test_wrong_length_raises(self):
+        with pytest.raises(ValueError, match="length 2"):
+            PriorsBase._covariate_prior_data([1.0], None, 2)
+
+    def test_instance_can_read_expected_class(self):
+        assert MultiPriors().expected_class() is MultiPriors.expected_class()
+
+
+class TestFlatPriorData:
+    def test_none_is_flat_per_entry(self):
+        assert PriorsBase._flat_prior_data([-2.0, None], [1.0, 1.0], placeholder_std=1.0) == (
+            [-2.0, 0.0],
+            [1.0, 1.0],
+            [0, 1],
+        )
+        assert PriorsBase._flat_prior_data([-2.0, 0.5], [None, 2.0], placeholder_std=7.0) == (
+            [0.0, 0.5],
+            [7.0, 2.0],
+            [1, 0],
+        )
+
+    def test_different_lengths_raise(self):
+        with pytest.raises(ValueError, match="same length"):
+            PriorsBase._flat_prior_data([1.0], [1.0, 2.0], placeholder_std=1.0)

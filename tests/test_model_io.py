@@ -156,7 +156,7 @@ class TestLoadModel:
         assert model.fits is not None
         assert model.fits.num_fitted_kcs == 1
         assert set(model.fits.stan_fits.keys()) == {"kc_1"}
-        assert hasattr(model, "_loaded_artifact_dir")
+        assert model._work_dir is not None
 
     def test_load_model_lazily_loads_fits_when_low_memory_enabled(self, tmp_path):
         artifact_dir = tmp_path / "artifact"

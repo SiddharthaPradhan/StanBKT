@@ -321,6 +321,7 @@ class TestSave:
             "individual_initial_knowledge": False,
             "init_knowledge_strategy": "correctness_only",
             "post_outcome_regression": False,
+            "guess_slip_scale": 0.5,
         }
 
 

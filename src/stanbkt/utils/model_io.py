@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import tempfile
 from typing import Any
 
 from stanbkt.fits.errors import FitMethodMismatchError
@@ -14,8 +13,13 @@ from stanbkt.fits.persistence.metadata import fit_metadata_from_json
 from stanbkt.fits.fit_types import FitMethod
 from stanbkt.models.core.base import BKTModelBase
 from stanbkt.models.model_types import InitKnowledgeStrategy
-from stanbkt.utils.model_archive import MODEL_ARCHIVE_SUFFIX, unpack_model_archive
-from stanbkt.utils.verbose import VerbosityLevel
+from stanbkt.utils.model_archive import (
+    MODEL_ARCHIVE_SUFFIX,
+    read_model_archive_file,
+    unpack_model_archive,
+)
+from stanbkt.utils.temp_dirs import WorkDir, ram_temp_notice, resolve_temp_root
+from stanbkt.utils.verbose import VerbosityLevel, silence_cmdstanpy
 
 
 MODEL_METADATA_SAVE_FILE = "model_metadata.json"
@@ -116,6 +120,8 @@ def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
     init_knowledge_strategy_raw = raw_kwargs.get(
         "init_knowledge_strategy", InitKnowledgeStrategy.CORRECTNESS_ONLY.value
     )
+    # defaulted for archives saved before guess_slip_scale was configurable
+    guess_slip_scale_raw = raw_kwargs.get("guess_slip_scale", 0.5)
 
     if not isinstance(fit_method_raw, str):
         raise ValueError(
@@ -140,6 +146,13 @@ def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
             "Saved model init kwargs field 'individual_initial_knowledge' must be boolean."
         )
 
+    if isinstance(guess_slip_scale_raw, bool) or not isinstance(
+        guess_slip_scale_raw, (int, float)
+    ):
+        raise ValueError(
+            "Saved model init kwargs field 'guess_slip_scale' must be a number."
+        )
+
     parsed_kwargs: dict[str, Any] = dict(raw_kwargs)
     parsed_kwargs["fit_method"] = FitMethod(fit_method_raw)
     parsed_kwargs["verbose"] = VerbosityLevel(verbose_raw)
@@ -150,11 +163,26 @@ def _parse_model_init_kwargs(raw_kwargs: dict[str, Any]) -> dict[str, Any]:
     parsed_kwargs["init_knowledge_strategy"] = InitKnowledgeStrategy(
         init_knowledge_strategy_raw
     )
+    parsed_kwargs["guess_slip_scale"] = float(guess_slip_scale_raw)
     return parsed_kwargs
+
+
+def _saved_low_memory(archive_path: str) -> bool:
+    """Read the saved ``low_memory`` flag, invalid metadata is reported later during load."""
+    raw_metadata = read_model_archive_file(archive_path, MODEL_METADATA_SAVE_FILE)
+    if raw_metadata is None:
+        return False
+    try:
+        metadata = json.loads(raw_metadata)
+        return metadata["model_init_kwargs"]["low_memory"] is True
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 def load_model(
     load_base_location: str | os.PathLike[str],
+    temp_dir: str | os.PathLike[str] | None = None,
+    low_memory: bool | None = None,
 ) -> BKTModelBase:
     """Load a previously saved StanBKT model.
 
@@ -162,6 +190,13 @@ def load_model(
     ----------
     load_base_location : str | os.PathLike[str]
         Path to a saved StanBKT model archive.
+    temp_dir : str | os.PathLike[str], optional
+        Folder for temporary files, including the extracted archive. See the ``temp_dir``
+        argument of the model classes.
+    low_memory : bool, optional
+        Overrides the saved ``low_memory`` setting. With ``True`` fits are read from disk only
+        when needed, so any saved model can be loaded lazily.
+
     Returns
     -------
     BKTModelBase
@@ -179,8 +214,12 @@ def load_model(
         If resolved model class is not a ``BKTModelBase`` subclass.
     """
     archive_path = os.fspath(load_base_location)
-    extracted_artifacts = tempfile.TemporaryDirectory(prefix="stanbkt_load_")
-    extracted_path = extracted_artifacts.name
+    resolved_low_memory = (
+        low_memory if low_memory is not None else _saved_low_memory(archive_path)
+    )
+    temp_root = resolve_temp_root(temp_dir, resolved_low_memory)
+    work_dir = WorkDir(temp_root)
+    extracted_path = os.path.join(work_dir.path, "loaded")
 
     try:
         unpack_model_archive(archive_path, extracted_path)
@@ -196,6 +235,7 @@ def load_model(
 
         resolved_model_class, init_kwargs = _resolve_model_class(extracted_path)
         parsed_init_kwargs = _parse_model_init_kwargs(init_kwargs)
+        parsed_init_kwargs["low_memory"] = resolved_low_memory
         saved_fit_method = parsed_init_kwargs.get("fit_method")
         if saved_fit_method != fit_metadata.fit_method:
             raise FitMethodMismatchError(
@@ -204,14 +244,23 @@ def load_model(
             )
 
         model = resolved_model_class(**parsed_init_kwargs)
-        model.fits = model.fit_class._load(extracted_path, lazy=model.low_memory)
+        with silence_cmdstanpy(model.verbose == VerbosityLevel.SILENT):
+            model.fits = model.fit_class._load(extracted_path, lazy=model.low_memory)
+        model.fits.set_verbosity(model.verbose)
         model.fits.release_reloaded_fits = model.low_memory
         model._is_fitted = model.fits.num_fitted_kcs > 0
+        model.temp_dir = os.fspath(temp_dir) if temp_dir is not None else None
+        notice = ram_temp_notice(temp_root, temp_dir)
+        if notice is not None:
+            model.log(notice, level=VerbosityLevel.INFO)
 
         # Keep extracted files alive because CmdStan fit objects store CSV paths and
         # some operations (e.g., generate_quantities with previous_fit) read them lazily.
-        setattr(model, "_loaded_artifact_dir", extracted_artifacts)
+        model._work_dir = work_dir
+        model.fits._work_dir = work_dir
+        for fit in model.fits.stan_fits.values():
+            work_dir.keep_alive(fit)
         return model
     except Exception:
-        extracted_artifacts.cleanup()
+        work_dir.cleanup()
         raise

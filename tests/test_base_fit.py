@@ -435,7 +435,7 @@ class TestSummaryRelease:
 
     def test_summary_keeps_fits_that_were_already_resident(self, tmp_path, monkeypatch):
         fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
-        fit.get_fit("kc_b")
+        fit.stan_fits["kc_b"] = self._mcmc_mock("resident")
         fit._summary()
         assert set(fit.stan_fits) == {"kc_b"}
 
@@ -472,7 +472,7 @@ class TestSummaryRelease:
 
     def test_transient_fits_are_released_after_the_pass(self, tmp_path, monkeypatch):
         fit = self._evicted_fit(tmp_path, monkeypatch, release_reloaded_fits=True)
-        fit.get_fit("kc_b")
+        fit.stan_fits["kc_b"] = self._mcmc_mock("resident")
         fit._get_fit_transient("kc_a")
         fit._get_fit_transient("kc_b")
         fit._get_fit_transient("kc_c")

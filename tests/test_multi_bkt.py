@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from stanbkt.fits.fit_types import FitMethod, FitSaveEntry
-from stanbkt.models.core.multi import MultiBKT, _is_all_none
+from stanbkt.models.core.multi import MultiBKT
 from stanbkt.models.model_types import InitKnowledgeStrategy
 from stanbkt.models.priors import MultiPriors
 from stanbkt.utils.data_utils import KCData
@@ -114,28 +114,6 @@ def _mock_fit_mle(n_groups: int = 2) -> MagicMock:
     fit.stan_variable = stan_variable
     return fit
 
-
-# ---------------------------------------------------------------------------
-# _is_all_none helper
-# ---------------------------------------------------------------------------
-
-
-class TestIsAllNone:
-    def test_none_is_all_none(self):
-        assert _is_all_none(None) is True
-
-    def test_list_of_nones_is_all_none(self):
-        assert _is_all_none([None, None]) is True
-
-    def test_list_with_float_is_not_all_none(self):
-        assert _is_all_none([None, 1.0]) is False
-
-    def test_float_is_not_all_none(self):
-        assert _is_all_none(0.0) is False
-
-    def test_empty_list_is_all_none(self):
-        # vacuously true — no element is non-None
-        assert _is_all_none([]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +264,9 @@ class TestBuildStanDataDict:
         kc_data = _kc_data_with_groups(4, 3, 2)
         result = model._build_stan_data_dict(kc_data)
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
-            flag = result[f"unif_prior_{param}"]
-            assert flag in (0, 1), f"unif_prior_{param} must be 0 or 1, got {flag}"
+            flags = result[f"unif_prior_{param}"]
+            assert len(flags) == 2
+            assert set(flags) <= {0, 1}, f"unif_prior_{param} must be 0 or 1, got {flags}"
 
     def test_informative_priors_set_unif_flag_to_zero(self):
         model = MultiBKT()
@@ -295,7 +274,7 @@ class TestBuildStanDataDict:
         priors = MultiPriors(use_defaults=True)
         result = model._build_stan_data_dict(kc_data, priors=priors)
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
-            assert result[f"unif_prior_{param}"] == 0
+            assert result[f"unif_prior_{param}"] == [0, 0]
 
     def test_none_priors_set_unif_flag_to_one(self):
         model = MultiBKT()
@@ -303,7 +282,17 @@ class TestBuildStanDataDict:
         priors = MultiPriors(use_defaults=False)  # all None
         result = model._build_stan_data_dict(kc_data, priors=priors)
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
-            assert result[f"unif_prior_{param}"] == 1
+            assert result[f"unif_prior_{param}"] == [1, 1]
+
+    def test_none_inside_list_is_flat_for_that_group(self):
+        model = MultiBKT()
+        kc_data = _kc_data_with_groups(4, 3, 2)
+        priors = MultiPriors(learn_mu=[-2.0, None], learn_std=[1.0, 3.0])
+        result = model._build_stan_data_dict(kc_data, priors=priors)
+        assert result["prior_learn_mu"] == [-2.0, 0.0]
+        assert result["prior_learn_std"] == [1.0, 1.0]
+        assert result["unif_prior_learn"] == [0, 1]
+        assert result["unif_prior_forget"] == [0, 0]
 
     def test_dummy_std_is_positive_for_uniform_priors(self):
         """Dummy std placeholder must be > 0 (Stan constraint on prior_*_std)."""
@@ -784,7 +773,7 @@ class TestMultiBKTJoint:
         assert len(data["prior_learn_mu"]) == 2
         assert data["prior_pi_b0_know_std"] == 5.0
         assert len(data["prior_pi_b1_know_mu"]) == 2
-        assert data["unif_prior_pi_know"] == 1
+        assert data["unif_prior_pi_know"] == [1, 1]
         assert data["covariates"].shape == (4, 2)
 
     def test_b1_list_prior_is_per_covariate_not_per_group(self):

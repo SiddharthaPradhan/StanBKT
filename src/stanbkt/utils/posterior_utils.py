@@ -6,6 +6,8 @@ from itertools import chain
 from typing import Any, Callable, Optional, Sequence, Union, Mapping, cast
 
 import cmdstanpy as csp
+import os
+
 import numpy as np
 import pandas as pd
 from numba import njit, prange
@@ -329,7 +331,7 @@ def _summarize_single_kc_draws(
     grouped = kc_df.groupby(groupby_cols, sort=False, observed=True)[agg_cols]
     # built in aggregations, a python callable per quantile would run once per group
     stats = grouped.agg(list(_STAT_LABELS))
-    quants = grouped.quantile(quantiles).unstack(level=-1).reindex(stats.index)
+    quants = grouped.quantile(np.asarray(quantiles, dtype=np.float64)).unstack(level=-1).reindex(stats.index)
     columns: dict[str, Any] = {}
     for col in agg_cols:
         for stat in _STAT_LABELS:
@@ -344,6 +346,16 @@ def _summarize_single_kc_draws(
         kc_summary.drop(columns=["_order"], inplace=True)
     kc_summary.insert(0, col_mapping.get(ColumnNames.KC_ID, ColumnNames.KC_ID), str(kc))
     return kc_summary
+
+
+def release_gq_draws(gq_kc: Any) -> None:
+    """Drop the draws a CmdStanGQ cached on first read, it rereads its CSVs when they are needed.
+
+    Kept when the CSVs are gone, as the draws could not be read again.
+    """
+    csv_files = getattr(getattr(gq_kc, "runset", None), "csv_files", None)
+    if csv_files and all(os.path.exists(csv_file) for csv_file in csv_files):
+        gq_kc._draws = np.array(())
 
 
 def _summarize_single_kc_gq(

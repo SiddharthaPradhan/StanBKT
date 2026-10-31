@@ -26,7 +26,7 @@ import pandas as pd
 import os
 import tempfile
 from numba import njit, prange
-from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel
+from stanbkt.utils.verbose import VerboseMixin, VerbosityLevel, quiet_when_silent
 from stanbkt.fits.fit_options import MCMCFitOptions, PFFitOptions, StanFitOptions
 from stanbkt.fits.fit_types import CmdStanFit, FitSaveEntry
 from stanbkt.fits.fit_types import FitMethod
@@ -52,8 +52,15 @@ from stanbkt.utils.data_utils import (
 )
 from stanbkt.utils.model_archive import pack_model_directory
 from stanbkt.utils.summary_utils import label_summary_index
+from stanbkt.utils.temp_dirs import (
+    WorkDir,
+    resolve_temp_root,
+    run_dir_of,
+    ram_temp_notice,
+)
 from stanbkt.utils.posterior_utils import (
     gq_to_draws,
+    release_gq_draws,
     _process_single_kc_gq,
     _summarize_single_kc_gq,
 )
@@ -98,8 +105,11 @@ class BKTModelBase(VerboseMixin, ABC):
         Independent of `individual_initial_knowledge`/`init_knowledge_strategy` and can be
         combined with either. Requires `post_outcome` (and optionally `student_post_covariates`)
         to be passed to `fit`.
+    guess_slip_scale : float
+        Upper bound on guess and slip, which are modeled as ``guess_slip_scale * inv_logit(x)``.
+        The guess and slip priors apply to ``x``, so their meaning depends on this value.
     verbose : VerbosityLevel
-        Verbosity level for logging.
+        Verbosity level for logging. ``0`` disables logging and values above ``3`` are treated as ``3``.
     stan_compile_kwargs : dict
         Additional keyword arguments for Stan model compilation.
     cpp_compile_kwargs : dict
@@ -107,7 +117,11 @@ class BKTModelBase(VerboseMixin, ABC):
     low_memory : bool
         Whether to evict each KC's fit to disk after fitting, reloading it lazily on
         next access. Reduces peak memory usage when fitting many KCs at the cost of
-        some performance.
+        some performance. Fits are kept in ``temp_dir``, which should not be held in RAM.
+    temp_dir : str | os.PathLike[str], optional
+        Folder for temporary files: CmdStan output, evicted fits and files staged by ``save``.
+        Defaults to ``TMPDIR`` if set, otherwise the user cache folder with ``low_memory``
+        and the system temp dir without it. Not stored when the model is saved.
     """
 
     def __init__(
@@ -116,10 +130,12 @@ class BKTModelBase(VerboseMixin, ABC):
         individual_initial_knowledge: bool = False,
         init_knowledge_strategy: InitKnowledgeStrategy = InitKnowledgeStrategy.CORRECTNESS_ONLY,
         post_outcome_regression: bool = False,
-        verbose: VerbosityLevel = VerbosityLevel.INFO,
+        verbose: VerbosityLevel | int = VerbosityLevel.INFO,
         stan_compile_kwargs: Optional[Dict[str, Any]] = None,
         cpp_compile_kwargs: Optional[Dict[str, Any]] = None,
         low_memory: bool = False,
+        guess_slip_scale: float = 0.5,
+        temp_dir: str | os.PathLike[str] | None = None,
     ):
 
         # verify if initial_knowledge_strategy is valid given the individual_initial_knowledge setting
@@ -131,6 +147,10 @@ class BKTModelBase(VerboseMixin, ABC):
                 f"Invalid combination of 'individual_initial_knowledge' and 'init_knowledge_strategy'. "
                 f"When 'individual_initial_knowledge' is False, 'init_knowledge_strategy' must be 'CORRECTNESS_ONLY'. "
                 f"Got individual_initial_knowledge={individual_initial_knowledge} and init_knowledge_strategy={init_knowledge_strategy}."
+            )
+        if not 0.0 < guess_slip_scale <= 1.0:
+            raise ValueError(
+                f"'guess_slip_scale' must be in (0, 1], got {guess_slip_scale}."
             )
         super().__init__(verbose=verbose)
         resolved_fit_method = FitMethod(fit_method)
@@ -148,6 +168,8 @@ class BKTModelBase(VerboseMixin, ABC):
         # whether to jointly estimate a regression of a post-test outcome on each
         # student's final (filtered) mastery, independent of init_knowledge_strategy
         self.post_outcome_regression: bool = post_outcome_regression
+        # upper bound on guess and slip, guess = guess_slip_scale * inv_logit(logit_guess)
+        self.guess_slip_scale: float = float(guess_slip_scale)
         # Flag to control whether the model uses group-specific parameters
         self._use_groups: bool = False
         # Model is instantiated lazily during first fit and cached
@@ -155,9 +177,12 @@ class BKTModelBase(VerboseMixin, ABC):
         self._hidden_states_model: Optional[csp.CmdStanModel] = None
         self._smoothed_hidden_states_model: Optional[csp.CmdStanModel] = None
         self.fits: BaseFit = self.fit_class()
+        self.fits.set_verbosity(self.verbose)
         self._is_fitted: bool = False
         self.low_memory: bool = low_memory
-        self._fit_artifact_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+        self.temp_dir: str | None = os.fspath(temp_dir) if temp_dir is not None else None
+        # created on first use, holds CmdStan output and evicted fits
+        self._work_dir: WorkDir | None = None
 
     def __str__(self) -> str:
         """Return a user-friendly string representation of the model."""
@@ -187,6 +212,7 @@ class BKTModelBase(VerboseMixin, ABC):
             f"is_fitted={self._is_fitted})"
         )
 
+    @quiet_when_silent
     def fit(
         self,
         data: pd.DataFrame,
@@ -268,12 +294,14 @@ class BKTModelBase(VerboseMixin, ABC):
         ValueError
             If data validation fails or incompatible cpp_compile_kwargs and stan_fit_options.
         """
+        # created here since the KCs are fitted on worker threads
+        work_dir = self._get_work_dir()
         if self.low_memory:
-            if self._fit_artifact_tmpdir is None:
-                self._fit_artifact_tmpdir = tempfile.TemporaryDirectory(
-                    prefix="stanbkt_fit_cache_"
+            # a loaded model already has its earlier KCs at this location
+            if self.fits._fit_artifact_base_location is None:
+                self.fits.set_fit_artifact_base_location(
+                    os.path.join(work_dir.path, "artifacts")
                 )
-            self.fits.set_fit_artifact_base_location(self._fit_artifact_tmpdir.name)
             self.fits.release_reloaded_fits = True
 
         if self._stan_model is None:
@@ -333,11 +361,10 @@ class BKTModelBase(VerboseMixin, ABC):
         )
 
         def _fit_kc(kc_id, kc_data):
-            # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
             kc_priors = (
                 priors.get(
                     str(kc_id), self._default_priors()
-                )  # ty:ignore[no-matching-overload]
+                )
                 if isinstance(priors, dict)
                 else priors
             )
@@ -357,6 +384,7 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
         def _record_kc(kc_id, kc_data, fit_result):
+            replaced_fit = self.fits.stan_fits.get(str(kc_id))
             self.fits.add_fit(
                 str(kc_id),
                 fit_result,
@@ -375,8 +403,11 @@ class BKTModelBase(VerboseMixin, ABC):
                 covariate_columns=kc_data.covariate_columns,
                 post_covariate_columns=kc_data.post_covariate_columns,
             )
+            work_dir.remove_run_dir(run_dir_of(replaced_fit))
             if self.low_memory:
+                run_dir = run_dir_of(fit_result)
                 self.fits.release_fit_from_memory(str(kc_id))
+                work_dir.remove_run_dir(run_dir)
             self.log(f"Finished fitting KC: {kc_id}", level=VerbosityLevel.DEBUG)
             self._is_fitted = True
 
@@ -608,7 +639,7 @@ class BKTModelBase(VerboseMixin, ABC):
             data["prior_post_sigma_lambda"] = 0.5
             data["unif_prior_post_b0"] = 1
             data["unif_prior_post_b_mastery"] = 1
-            data["unif_prior_post_b1"] = 1
+            data["unif_prior_post_b1"] = [1] * n_post_covariates
             return data
 
         b0_mu = raw_priors.get("post_b0_mu")
@@ -623,12 +654,13 @@ class BKTModelBase(VerboseMixin, ABC):
         data["prior_post_b_mastery_std"] = bm_std if bm_std is not None else 5.0
         data["unif_prior_post_b_mastery"] = int(bm_mu is None or bm_std is None)
 
-        b1_mu, b1_std = PriorsBase._expand_covariate_priors(
+        (
+            data["prior_post_b1_mu"],
+            data["prior_post_b1_std"],
+            data["unif_prior_post_b1"],
+        ) = PriorsBase._covariate_prior_data(
             raw_priors.get("post_b1_mu"), raw_priors.get("post_b1_std"), n_post_covariates
         )
-        data["prior_post_b1_mu"] = b1_mu if b1_mu is not None else [0.0] * n_post_covariates
-        data["prior_post_b1_std"] = b1_std if b1_std is not None else [5.0] * n_post_covariates
-        data["unif_prior_post_b1"] = int(b1_mu is None or b1_std is None)
 
         sigma_lambda = raw_priors.get("post_sigma_lambda")
         data["prior_post_sigma_lambda"] = sigma_lambda if sigma_lambda is not None else 0.5
@@ -655,18 +687,54 @@ class BKTModelBase(VerboseMixin, ABC):
             raise RuntimeError("Stan model is not compiled. Cannot fit the model.")
 
         if self._fit_method == FitMethod.MCMC:
-            return self._stan_model.sample(data=data_dict, **fit_options.to_dict())
+            run_fit = self._stan_model.sample
         elif self._fit_method == FitMethod.VB:
-            return self._stan_model.variational(data=data_dict, **fit_options.to_dict())
+            run_fit = self._stan_model.variational
         elif self._fit_method == FitMethod.MLE:
-            return self._stan_model.optimize(data=data_dict, **fit_options.to_dict())
+            run_fit = self._stan_model.optimize
         elif self._fit_method == FitMethod.PATHFINDER:
-            return self._stan_model.pathfinder(data=data_dict, **fit_options.to_dict())
+            run_fit = self._stan_model.pathfinder
         else:
             raise ValueError(
                 f"Invalid fitting method '{self._fit_method}'. Supported methods are '{FitMethod.MCMC}', '{FitMethod.VB}', '{FitMethod.MLE}', and '{FitMethod.PATHFINDER}'."
             )
+        work_dir = self._get_work_dir()
+        run_options = fit_options.to_dict()
+        if self.verbose == VerbosityLevel.SILENT and "show_progress" in run_options:
+            run_options["show_progress"] = False
+        fit_result = run_fit(
+            data=data_dict,
+            output_dir=work_dir.new_run_dir("fit"),
+            **run_options,
+        )
+        work_dir.keep_alive(fit_result)
+        return fit_result
 
+    def set_verbosity(self, level: VerbosityLevel | int) -> None:
+        """Set the verbosity level for logging, including the logging of the fits.
+
+        Parameters
+        ----------
+        level : VerbosityLevel
+            New verbosity level. ``0`` disables logging and values above ``3`` are
+            treated as ``3``.
+        """
+        super().set_verbosity(level)
+        self.fits.set_verbosity(self.verbose)
+
+    def _get_work_dir(self) -> WorkDir:
+        """Return the folder for temporary files, creating it on first use."""
+        if self._work_dir is None:
+            root = resolve_temp_root(self.temp_dir, self.low_memory)
+            self._work_dir = WorkDir(root)
+            notice = ram_temp_notice(root, self.temp_dir)
+            if notice is not None:
+                self.log(notice, level=VerbosityLevel.INFO)
+        # reloaded fits read from this folder too
+        self.fits._work_dir = self._work_dir
+        return self._work_dir
+
+    @quiet_when_silent
     def summary(
         self,
         kcs: Union[list[str], str, None] = None,
@@ -776,6 +844,7 @@ class BKTModelBase(VerboseMixin, ABC):
             "individual_initial_knowledge": self.individual_initial_knowledge,
             "init_knowledge_strategy": self.init_knowledge_strategy.value,
             "post_outcome_regression": self.post_outcome_regression,
+            "guess_slip_scale": self.guess_slip_scale,
         }
 
     def save(self, save_base_location: str | os.PathLike[str]) -> None:
@@ -794,7 +863,9 @@ class BKTModelBase(VerboseMixin, ABC):
         self._fit_check()
         archive_path = os.fspath(save_base_location)
 
-        with tempfile.TemporaryDirectory(prefix="stanbkt_save_") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="stanbkt_save_", dir=self._get_work_dir().path
+        ) as temp_dir:
             self.fits._save(temp_dir)
 
             model_metadata = {
@@ -1028,6 +1099,7 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return pd.concat(predictions, ignore_index=True)
 
+    @quiet_when_silent
     def predict(
         self,
         data: Optional[pd.DataFrame] = None,
@@ -1083,6 +1155,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_smoothed(
         self,
         data: Optional[pd.DataFrame] = None,
@@ -1479,11 +1552,15 @@ class BKTModelBase(VerboseMixin, ABC):
     def _extract_individual_pi_know_point_estimate(
         self,
         fit: CmdStanFit,
-        kc_data: KCData,
-        kc_id: str,
+        kc_data: Optional[KCData],
+        kc_id: Optional[str],
         point_estimate: Literal["mean", "median", "mode"],
     ) -> npt.NDArray[np.float64]:
         """Per-student pi_know point estimates under individualized initial knowledge."""
+        if kc_data is None or kc_id is None:
+            raise ValueError(
+                "'kc_data' and 'kc_id' are required to extract parameters with individual initial knowledge."
+            )
         draws = self._individual_pi_know_draw_matrix(fit, kc_data, kc_id)
         if point_estimate == "mean":
             return draws.mean(axis=0)
@@ -1591,6 +1668,7 @@ class BKTModelBase(VerboseMixin, ABC):
 
         return None
 
+    @quiet_when_silent
     def predict_posterior_stan(
         self,
         data: pd.DataFrame,
@@ -1635,6 +1713,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_posterior_draws(
         self,
         data: pd.DataFrame,
@@ -1687,6 +1766,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_smoothed_posterior_stan(
         self,
         data: pd.DataFrame,
@@ -1730,6 +1810,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_smoothed_posterior_draws(
         self,
         data: pd.DataFrame,
@@ -1782,6 +1863,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_posterior_summary(
         self,
         data: pd.DataFrame,
@@ -1848,6 +1930,7 @@ class BKTModelBase(VerboseMixin, ABC):
             student_covariates=student_covariates,
         )
 
+    @quiet_when_silent
     def predict_smoothed_posterior_summary(
         self,
         data: pd.DataFrame,
@@ -1954,11 +2037,23 @@ class BKTModelBase(VerboseMixin, ABC):
         data_dict = self._augment_stan_data_for_predict(
             kc_id_str, kc_data, kc_fit_result, data_dict
         )
+        work_dir = self._get_work_dir()
+        run_dir = work_dir.new_run_dir("gq")
         gq_fit = gq_model.generate_quantities(
             data=data_dict,
-            previous_fit=kc_fit_result,  # type: ignore[type-var]
+            # Pathfinder fits are rejected in predict_posterior
+            previous_fit=kc_fit_result,  # ty:ignore[invalid-argument-type]
+            gq_output_dir=run_dir,
         )
+        work_dir.keep_alive(gq_fit)
+        # output the caller drops should not stay on disk until the model is gone
+        work_dir.remove_run_dir_with(gq_fit, run_dir)
         return kc_id_str, gq_fit, kc_data
+
+    def _remove_gq_files(self, gq_fit: Any) -> None:
+        """Delete the CSVs of a generated quantities run that nobody else can read."""
+        if self._work_dir is not None:
+            self._work_dir.remove_run_dir(run_dir_of(gq_fit))
 
     def _predict_generated_quantities(
         self,
@@ -1990,6 +2085,8 @@ class BKTModelBase(VerboseMixin, ABC):
             )
 
         n_cores = self._resolve_n_cores(n_cores)
+        # created here since the KCs can run on worker threads
+        self._get_work_dir()
         resolved_mapping = ColumnNames.apply_default_mapping(column_mapping)
         prepared_covariates, covariate_columns = self._prepare_joint_covariates(
             data, student_covariates, resolved_mapping
@@ -2028,11 +2125,10 @@ class BKTModelBase(VerboseMixin, ABC):
                 if kc_fit_result is None:
                     continue
 
-                # the `priors.get` is valid but `ty` is not currently smart enough, hence the ignore
                 kc_priors = (
                     priors.get(
                         str(kc_id), self._default_priors()
-                    )  # ty:ignore[no-matching-overload]
+                    )
                     if isinstance(priors, dict)
                     else priors
                 )
@@ -2076,7 +2172,7 @@ class BKTModelBase(VerboseMixin, ABC):
                 kc_priors = (
                     priors.get(
                         str(kc_id), self._default_priors()
-                    )  # ty:ignore[no-matching-overload]
+                    )
                     if isinstance(priors, dict)
                     else priors
                 )
@@ -2253,6 +2349,9 @@ class BKTModelBase(VerboseMixin, ABC):
             kc_summary = _summarize_single_kc_gq(
                 kc_id_str, gq_kc, kc_data, col_mapping, quantiles
             )
+            # the caller still holds gq_kc, so its cached draws would add up over the KCs
+            if self.low_memory:
+                release_gq_draws(gq_kc)
             if kc_summary.empty:
                 return None
             return kc_summary
@@ -2318,6 +2417,7 @@ class BKTModelBase(VerboseMixin, ABC):
             )
             if not kc_summary.empty:
                 result_frames.append(kc_summary)
+            self._remove_gq_files(gq_fit)
 
         self._predict_generated_quantities(
             data=data,

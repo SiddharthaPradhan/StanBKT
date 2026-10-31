@@ -174,7 +174,8 @@ class MCMCFitOptions(BaseFitOptions):
     iter_sampling: int = 1000
     save_warmup: bool | None = None
     thin: int | None = None
-    seed: int | list[int] | None = None
+    # only MCMC takes one seed per chain
+    seed: int | list[int] | None = None  # ty:ignore[invalid-attribute-override]
     adapt_delta: float | None = None
     max_treedepth: int | None = None
     show_progress: bool = True

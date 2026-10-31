@@ -155,7 +155,7 @@ class TestBuildStanDataDict:
             _kc_data(3, 4), priors=StandardPriors(use_defaults=False)
         )
         for param in ("pi_know", "learn", "forget", "guess", "slip"):
-            assert result[f"unif_prior_{param}"] == 1
+            assert result[f"unif_prior_{param}"] == [1]
 
     def test_uniform_priors_use_positive_dummy_std(self):
         model = StandardBKT()
@@ -1741,9 +1741,9 @@ class TestBuildStanDataDictJoint:
         assert data["prior_pi_b0_know_std"] == 5.0
         assert data["prior_pi_sigma_lambda"] == 5.0
         assert data["unif_prior_pi_b0_know"] == 0
-        assert data["unif_prior_pi_b1_know"] == 0
+        assert data["unif_prior_pi_b1_know"] == [0] * data["nCovariates"]
         assert data["unif_prior_pi_sigma"] == 0
-        assert data["unif_prior_pi_know"] == 1
+        assert data["unif_prior_pi_know"] == [1]
 
     def test_scalar_b1_prior_broadcast_to_covariates(self):
         model = self._model()
@@ -1770,8 +1770,16 @@ class TestBuildStanDataDictJoint:
         priors = StandardPriors(use_defaults=False)
         data = model._build_stan_data_dict(_joint_kc_data(), priors)
         assert data["unif_prior_pi_b0_know"] == 1
-        assert data["unif_prior_pi_b1_know"] == 1
+        assert data["unif_prior_pi_b1_know"] == [1] * data["nCovariates"]
         assert data["unif_prior_pi_sigma"] == 1
+
+    def test_none_inside_list_is_flat_for_that_covariate(self):
+        model = self._model()
+        priors = StandardPriors(pi_b1_know_mu=[1.0, None], pi_b1_know_std=[3.0, 3.0])
+        data = model._build_stan_data_dict(_joint_kc_data(2), priors)
+        assert data["prior_pi_b1_know_mu"] == [1.0, 0.0]
+        assert data["prior_pi_b1_know_std"] == [3.0, 5.0]
+        assert data["unif_prior_pi_b1_know"] == [0, 1]
 
     def test_fit_time_train_size_matches_students(self):
         model = self._model()
@@ -1787,3 +1795,13 @@ class TestBuildStanDataDictJoint:
         assert data["joint_pi_know"] == 0
         assert data["covariates"].shape == (3, 0)
         assert data["unif_prior_pi_b0_know"] == 1
+
+
+class TestIndividualPointEstimateArguments:
+    @pytest.mark.parametrize("kc_data, kc_id", [(None, "kc"), (_kc_data(), None)])
+    def test_missing_kc_information_raises(self, kc_data, kc_id):
+        model = StandardBKT(individual_initial_knowledge=True)
+        with pytest.raises(ValueError, match="'kc_data' and 'kc_id' are required"):
+            model._extract_individual_pi_know_point_estimate(
+                MagicMock(), kc_data=kc_data, kc_id=kc_id, point_estimate="mean"
+            )
